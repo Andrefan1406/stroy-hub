@@ -372,6 +372,11 @@ async function fetchAndParseSheet(source, sheet) {
   const labelsRow = raw[labelsRowIndex];
   const firstDateCol = endColIndex + 1;
 
+  // Плановые начало/конец раздела (см. gpr_report_plan_dates в db.js) —
+  // необязательная колонка: если на каком-то листе её нет, просто не будет
+  // плановых дат для этого источника, синк остальных данных не ломаем.
+  const startColIndex = labelsRow.findIndex((v) => typeof v === 'string' && /начал/i.test(v));
+
   // На "ГПР факт" (Развязка) колонки "Конструктивы" вообще нет — само
   // название работы там без подписи в строке заголовков (соседняя ячейка
   // "Объем работы" — это подпись для КОЛИЧЕСТВА, не имени работы), поэтому
@@ -464,6 +469,7 @@ async function fetchAndParseSheet(source, sheet) {
   }
 
   const rows = [];
+  const planRows = [];
   // Одна и та же работа изредка встречается ДВАЖДЫ под одной позицией на
   // отдельных строках с непересекающимися интервалами дат (см. "ГПР
   // Экополис поз. 103,104,105": "Монолитный каркас"/"Каменная кладка" —
@@ -617,6 +623,22 @@ async function fetchAndParseSheet(source, sheet) {
     workNameOccurrences.set(occurrenceKey, occurrence);
     const storedWorkName = occurrence > 1 ? `${workName} (${occurrence})` : workName;
 
+    // Начало/конец — одно значение на весь раздел (не по неделям, в
+    // отличие от dateColumns ниже), поэтому читаются один раз здесь.
+    if (startColIndex !== -1) {
+      const startCell = row[startColIndex];
+      const endCell = row[endColIndex];
+      const isDateSerial = (v) => typeof v === 'number' && Number.isFinite(v) && v >= MIN_DATE_SERIAL && v <= MAX_DATE_SERIAL;
+      planRows.push({
+        source_key: source.key,
+        position,
+        block: currentBlock,
+        work_name: storedWorkName,
+        plan_start: isDateSerial(startCell) ? excelSerialToISODate(startCell) : null,
+        plan_end: isDateSerial(endCell) ? excelSerialToISODate(endCell) : null,
+      });
+    }
+
     for (const { colIndex, reportDate } of dateColumns) {
       const cell = row[colIndex];
       let percent = null;
@@ -639,18 +661,20 @@ async function fetchAndParseSheet(source, sheet) {
     }
   }
 
-  return rows;
+  return { rows, planRows };
 }
 
 async function fetchAndParse() {
-  const all = [];
+  const allRows = [];
+  const allPlanRows = [];
   for (const source of SOURCES) {
     for (const sheet of source.sheets) {
-      const rows = await fetchAndParseSheet(source, sheet);
-      all.push(...rows);
+      const { rows, planRows } = await fetchAndParseSheet(source, sheet);
+      allRows.push(...rows);
+      allPlanRows.push(...planRows);
     }
   }
-  return all;
+  return { rows: allRows, planRows: allPlanRows };
 }
 
 function storeValues(rows) {
@@ -673,6 +697,22 @@ function storeValues(rows) {
 
   replaceAll(rows);
   return rows.length;
+}
+
+function storePlanDates(planRows) {
+  const db = getWriteDb();
+  const insert = db.prepare(`
+    INSERT INTO gpr_report_plan_dates (source_key, position, block, work_name, plan_start, plan_end)
+    VALUES (@source_key, @position, @block, @work_name, @plan_start, @plan_end)
+  `);
+
+  const replaceAll = db.transaction((allRows) => {
+    db.prepare(`DELETE FROM gpr_report_plan_dates`).run();
+    for (const row of allRows) insert.run(row);
+  });
+
+  replaceAll(planRows);
+  return planRows.length;
 }
 
 // Контрольный рубеж — пятница, за которую уже наступил срок отчитаться.
@@ -761,9 +801,12 @@ function computeGprReportGaps({ asOf } = {}) {
 }
 
 async function runSyncOnce() {
-  const rows = await fetchAndParse();
+  const { rows, planRows } = await fetchAndParse();
   const count = storeValues(rows);
-  console.log(`[gpr-report-sync] загружено ${count} значений (${SOURCES.map((s) => s.key).join(', ')})`);
+  const planCount = storePlanDates(planRows);
+  console.log(
+    `[gpr-report-sync] загружено ${count} значений, ${planCount} плановых сроков (${SOURCES.map((s) => s.key).join(', ')})`
+  );
   return count;
 }
 

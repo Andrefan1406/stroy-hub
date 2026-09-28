@@ -21,6 +21,7 @@ const rascenkiAdminRouter = require('./rascenkiAdmin');
 const concreteDailyReportRouter = require('./concreteDailyReport');
 const concreteDashboardRouter = require('./concreteDashboard');
 const concreteRequestsBoardRouter = require('./concreteRequestsBoard');
+const internalApiRouter = require('./internalApi');
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -63,6 +64,7 @@ app.use('/api/admin/rascenki', rascenkiAdminRouter);
 app.use('/api/concrete-dashboard', concreteDailyReportRouter);
 app.use('/api/concrete-dashboard', concreteDashboardRouter);
 app.use('/api/concrete-board', concreteRequestsBoardRouter);
+app.use('/api/internal', internalApiRouter);
 
 initSchema();
 startConcreteSync();
