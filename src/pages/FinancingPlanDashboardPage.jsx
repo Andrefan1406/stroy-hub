@@ -986,103 +986,102 @@ const FinancingPlanDashboardPage = () => {
 
             {objectSummary && plan && !position && (
               <>
-                <div style={s.detailHeader}>
-                  <div style={s.detailTitle}>{plan.name} — {summaryOnly ? "сводная информация" : "все позиции"}</div>
-                  <div style={s.detailStats}>
-                    <div>
-                      <div style={s.statLabel}>Общая стоимость (план)</div>
-                      <div style={s.statValue}>{formatMoney(plan.total)}</div>
-                    </div>
-                    {objectFinishSummary && (
-                      <>
-                        <div>
-                          <div style={s.statLabel}>Окончание по плану</div>
-                          <div style={{ ...s.statValue, color: PLAN_COLOR }}>{objectFinishSummary.planFinish}</div>
-                        </div>
-                        <div>
-                          <div style={s.statLabel}>Окончание по прогнозу</div>
-                          <div style={{ ...s.statValue, color: FORECAST_COLOR }}>
-                            {objectFinishSummary.factFinish || "—"}
-                          </div>
-                        </div>
-                        <div>
-                          <div style={s.statLabel}>Отставание от плана</div>
-                          <div
-                            style={{
-                              ...s.statValue,
-                              color:
-                                objectFinishSummary.delayDays > 0
-                                  ? FORECAST_COLOR
-                                  : objectFinishSummary.delayDays < 0
-                                  ? FACT_COLOR
-                                  : "#e8eaf0",
-                            }}
-                          >
-                            {objectFinishSummary.delayDays > 0
-                              ? `+${objectFinishSummary.delayDays} дн.`
-                              : objectFinishSummary.delayDays < 0
-                              ? `${objectFinishSummary.delayDays} дн.`
-                              : "0 дн."}
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div style={s.tabs}>
-                  {TABS.map((t) => (
-                    <button key={t.id} style={s.tabBtn(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-
-                {activeTab === "schedule" && (
-                  <GanttTable
-                    sections={objectSections}
-                    timeline={objectTimeline}
-                    showPlan={showPlan}
-                    onTogglePlan={setShowPlan}
-                    showFact={showFact}
-                    onToggleFact={setShowFact}
-                    showForecast={showForecast}
-                    onToggleForecast={setShowForecast}
-                  />
-                )}
-                {activeTab === "estimate" && (
-                  <EstimateView
-                    sections={objectSections}
-                    total={plan.total}
-                    apartmentsArea={objectSummary.apartments_area_m2}
-                    commercialArea={objectSummary.commercial_area_m2}
-                  />
-                )}
-                {activeTab === "finplan" && (
-                  <FinPlanTable
-                    sections={objectSections}
-                    timeline={objectTimeline}
-                    mode={finPlanMode}
-                    onModeChange={setFinPlanMode}
-                  />
-                )}
-
-                {!summaryOnly && (
+                {summaryOnly ? (
                   <>
-                    <h3 style={s.subheading}>Позиции</h3>
-                    <div style={s.grid}>
-                      {Object.entries(plan.positions).map(([key, pos]) => (
-                        <StatCard
-                          key={key}
-                          title={`Поз.${key}`}
-                          description={pos.description}
-                          total={pos.total}
-                          finish={computeFinishSummary(pos.sections)}
-                          onClick={() => selectPosition(key)}
-                        />
+                    <div style={s.detailHeader}>
+                      <div style={s.detailTitle}>{plan.name} — сводная информация</div>
+                      <div style={s.detailStats}>
+                        <div>
+                          <div style={s.statLabel}>Общая стоимость (план)</div>
+                          <div style={s.statValue}>{formatMoney(plan.total)}</div>
+                        </div>
+                        {objectFinishSummary && (
+                          <>
+                            <div>
+                              <div style={s.statLabel}>Окончание по плану</div>
+                              <div style={{ ...s.statValue, color: PLAN_COLOR }}>{objectFinishSummary.planFinish}</div>
+                            </div>
+                            <div>
+                              <div style={s.statLabel}>Окончание по прогнозу</div>
+                              <div style={{ ...s.statValue, color: FORECAST_COLOR }}>
+                                {objectFinishSummary.factFinish || "—"}
+                              </div>
+                            </div>
+                            <div>
+                              <div style={s.statLabel}>Отставание от плана</div>
+                              <div
+                                style={{
+                                  ...s.statValue,
+                                  color:
+                                    objectFinishSummary.delayDays > 0
+                                      ? FORECAST_COLOR
+                                      : objectFinishSummary.delayDays < 0
+                                      ? FACT_COLOR
+                                      : "#e8eaf0",
+                                }}
+                              >
+                                {objectFinishSummary.delayDays > 0
+                                  ? `+${objectFinishSummary.delayDays} дн.`
+                                  : objectFinishSummary.delayDays < 0
+                                  ? `${objectFinishSummary.delayDays} дн.`
+                                  : "0 дн."}
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={s.tabs}>
+                      {TABS.map((t) => (
+                        <button key={t.id} style={s.tabBtn(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>
+                          {t.label}
+                        </button>
                       ))}
                     </div>
+
+                    {activeTab === "schedule" && (
+                      <GanttTable
+                        sections={objectSections}
+                        timeline={objectTimeline}
+                        showPlan={showPlan}
+                        onTogglePlan={setShowPlan}
+                        showFact={showFact}
+                        onToggleFact={setShowFact}
+                        showForecast={showForecast}
+                        onToggleForecast={setShowForecast}
+                      />
+                    )}
+                    {activeTab === "estimate" && (
+                      <EstimateView
+                        sections={objectSections}
+                        total={plan.total}
+                        apartmentsArea={objectSummary.apartments_area_m2}
+                        commercialArea={objectSummary.commercial_area_m2}
+                      />
+                    )}
+                    {activeTab === "finplan" && (
+                      <FinPlanTable
+                        sections={objectSections}
+                        timeline={objectTimeline}
+                        mode={finPlanMode}
+                        onModeChange={setFinPlanMode}
+                      />
+                    )}
                   </>
+                ) : (
+                  <div style={s.grid}>
+                    {Object.entries(plan.positions).map(([key, pos]) => (
+                      <StatCard
+                        key={key}
+                        title={`Поз.${key}`}
+                        description={pos.description}
+                        total={pos.total}
+                        finish={computeFinishSummary(pos.sections)}
+                        onClick={() => selectPosition(key)}
+                      />
+                    ))}
+                  </div>
                 )}
               </>
             )}
