@@ -81,12 +81,12 @@ def build_object_plan(object_key: str) -> dict:
     obj = OBJECTS[object_key]
     smeta_cache: dict[str, dict[str, float]] = {}
 
-    # Все позиции этого объекта — из одного источника ГПР ('nz4'); если
-    # появятся объекты с несколькими источниками ГПР, это место придётся
-    # обобщить так же, как SOURCES в server/syncGprReport.js.
-    plan_rows = fetch_gpr_plan_dates("nz4")
+    # Все позиции этого объекта — из одного источника ГПР (obj["gpr_source"],
+    # см. config.py); сам источник может объединять несколько листов
+    # (server/syncGprReport.js:SOURCES), это уже разрулено на стороне синка.
+    plan_rows = fetch_gpr_plan_dates(obj["gpr_source"])
     plan_all = plan_dates_by_key(plan_rows)
-    fact_rows = fetch_gpr_values("nz4")
+    fact_rows = fetch_gpr_values(obj["gpr_source"])
     fact_all = compute_section_timeline(fact_rows)
 
     positions = {}
