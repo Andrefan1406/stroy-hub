@@ -356,6 +356,16 @@ const s = {
     overflow: "hidden",
     textOverflow: "ellipsis",
   },
+  // Подпись месяца повёрнута на 90° — при большом числе месяцев в строке
+  // это единственный способ показать полное название без горизонтального
+  // скролла (см. th выше — там подпись не помещалась и обрезалась "…").
+  thMonth: {
+    writingMode: "vertical-rl",
+    transform: "rotate(180deg)",
+    height: 80,
+    padding: "8px 2px",
+    whiteSpace: "nowrap",
+  },
   thFirst: {
     position: "sticky",
     left: 0,
@@ -560,7 +570,7 @@ function GanttTable({
         <div style={{ display: "grid", gridTemplateColumns }}>
           <div style={{ ...s.th, ...s.thFirst }}>Раздел работ</div>
           {timeline.map((m, i) => (
-            <div key={i} style={{ ...s.th, ...(i === today ? s.todayCol : {}) }}>
+            <div key={i} style={{ ...s.th, ...s.thMonth, ...(i === today ? s.todayCol : {}) }}>
               {m.label}
               {m.monthIndex === 0 ? ` ${String(m.year).slice(2)}` : ""}
             </div>
@@ -772,7 +782,7 @@ function FinPlanTable({ sections, timeline, mode, onModeChange }) {
         <div style={{ display: "grid", gridTemplateColumns }}>
           <div style={{ ...s.th, ...s.thFirst }}>Раздел работ</div>
           {timeline.map((m, i) => (
-            <div key={i} style={{ ...s.th, ...(i === today ? s.todayCol : {}) }}>
+            <div key={i} style={{ ...s.th, ...s.thMonth, ...(i === today ? s.todayCol : {}) }}>
               {m.label}
               {m.monthIndex === 0 ? ` ${String(m.year).slice(2)}` : ""}
             </div>
