@@ -17,7 +17,13 @@ import sys
 
 from config import OBJECTS, SMETAS
 from forecast import compute_forecast
-from gpr_timeline import compute_section_timeline, fetch_gpr_plan_dates, fetch_gpr_values, plan_dates_by_key
+from gpr_timeline import (
+    compute_section_timeline,
+    fetch_gpr_plan_dates,
+    fetch_gpr_values,
+    plan_dates_by_key,
+    resync_source,
+)
 from smeta_reader import aggregate_by_section, read_smeta_rows
 
 # Разделы сметы, у которых по своей природе нет соответствия в графике работ.
@@ -80,6 +86,15 @@ def redistribute_overhead(sections: list[dict]) -> list[dict]:
 def build_object_plan(object_key: str) -> dict:
     obj = OBJECTS[object_key]
     smeta_cache: dict[str, dict[str, float]] = {}
+
+    # Точечный пересинк перед КАЖДЫМ открытием финплана — таблицы ГПР правят
+    # вживую (см. историю: без этого факт мог отставать от планового
+    # 6-часового крона на часы). Fail-open — если Sheets недоступен, работаем
+    # на последних засинканных данных, а не роняем страницу финплана.
+    try:
+        resync_source(obj["gpr_source"])
+    except Exception as exc:
+        print(f"[financing-plan] пересинк ГПР '{obj['gpr_source']}' не удался, используем последние данные: {exc}")
 
     # Все позиции этого объекта — из одного источника ГПР (obj["gpr_source"],
     # см. config.py); сам источник может объединять несколько листов

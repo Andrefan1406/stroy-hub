@@ -25,6 +25,25 @@ load_dotenv()
 NODE_API_URL = os.environ.get("NODE_API_URL", "http://localhost:4000")
 
 
+def resync_source(source_key: str) -> dict:
+    """Точечный пересинк ОДНОГО источника (server/syncGprReport.js:resyncSource)
+    прямо перед чтением его данных — таблицы ГПР правятся вживую людьми на
+    площадке, а плановый кроновый синк раз в несколько часов может отставать.
+    Один источник — секунды, а не полный обход всех источников синка."""
+    api_key = os.environ.get("INTERNAL_API_KEY")
+    if not api_key:
+        raise SystemExit("Не задана INTERNAL_API_KEY в .env (см. .env.example)")
+
+    resp = requests.post(
+        f"{NODE_API_URL}/api/internal/gpr-resync",
+        json={"source_key": source_key},
+        headers={"X-Internal-Api-Key": api_key},
+        timeout=60,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def fetch_gpr_values(source_key: str) -> list[dict]:
     api_key = os.environ.get("INTERNAL_API_KEY")
     if not api_key:

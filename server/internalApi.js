@@ -6,6 +6,7 @@
 const express = require('express');
 const { requireInternalApiKey } = require('./adminAuth');
 const { getWriteDb } = require('./db');
+const { resyncSource } = require('./syncGprReport');
 
 const router = express.Router();
 router.use(requireInternalApiKey);
@@ -51,6 +52,24 @@ router.get('/gpr-plan-dates', (req, res) => {
     .all(sourceKey);
 
   res.json({ source_key: sourceKey, rows });
+});
+
+// Точечный пересинк ОДНОГО источника ГПР (см. resyncSource в
+// syncGprReport.js) — вызывается перед открытием финплана (Python-сервис),
+// чтобы данные не ждали планового 6-часового крона. Источник — таблицы
+// правятся вживую людьми на площадке, а не по расписанию.
+router.post('/gpr-resync', async (req, res) => {
+  const { source_key: sourceKey } = req.body || {};
+  if (!sourceKey) {
+    return res.status(400).json({ error: 'Параметр source_key обязателен' });
+  }
+
+  try {
+    const result = await resyncSource(sourceKey);
+    res.json({ source_key: sourceKey, ...result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 module.exports = router;

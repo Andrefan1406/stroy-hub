@@ -698,7 +698,11 @@ async function fetchAndParse() {
   return { rows: allRows, planRows: allPlanRows };
 }
 
-function storeValues(rows) {
+// sourceKeys — null для полного пересинка (все источники, старое
+// поведение: удаляем всю таблицу и вставляем всё заново); массив ключей —
+// для точечного пересинка (resyncSource ниже): удаляем только строки ЭТИХ
+// источников, остальные (даже не пересинканные сейчас) не трогаем.
+function storeValues(rows, sourceKeys = null) {
   const db = getWriteDb();
   const insert = db.prepare(`
     INSERT INTO gpr_report_values (source_key, source_label, position, block, work_name, report_date, percent)
@@ -708,32 +712,67 @@ function storeValues(rows) {
     INSERT INTO sync_meta (key, value) VALUES (@key, @value)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `);
+  const deleteBySource = db.prepare(`DELETE FROM gpr_report_values WHERE source_key = ?`);
+  const countAll = db.prepare(`SELECT COUNT(*) as c FROM gpr_report_values`);
 
-  const replaceAll = db.transaction((allRows) => {
-    db.prepare(`DELETE FROM gpr_report_values`).run();
-    for (const row of allRows) insert.run(row);
+  const replace = db.transaction((someRows) => {
+    if (sourceKeys) {
+      for (const key of sourceKeys) deleteBySource.run(key);
+    } else {
+      db.prepare(`DELETE FROM gpr_report_values`).run();
+    }
+    for (const row of someRows) insert.run(row);
     upsertMeta.run({ key: 'gpr_report_last_synced_at', value: new Date().toISOString() });
-    upsertMeta.run({ key: 'gpr_report_row_count', value: String(allRows.length) });
+    upsertMeta.run({ key: 'gpr_report_row_count', value: String(countAll.get().c) });
   });
 
-  replaceAll(rows);
+  replace(rows);
   return rows.length;
 }
 
-function storePlanDates(planRows) {
+function storePlanDates(planRows, sourceKeys = null) {
   const db = getWriteDb();
   const insert = db.prepare(`
     INSERT INTO gpr_report_plan_dates (source_key, position, block, work_name, plan_start, plan_end)
     VALUES (@source_key, @position, @block, @work_name, @plan_start, @plan_end)
   `);
+  const deleteBySource = db.prepare(`DELETE FROM gpr_report_plan_dates WHERE source_key = ?`);
 
   const replaceAll = db.transaction((allRows) => {
-    db.prepare(`DELETE FROM gpr_report_plan_dates`).run();
+    if (sourceKeys) {
+      for (const key of sourceKeys) deleteBySource.run(key);
+    } else {
+      db.prepare(`DELETE FROM gpr_report_plan_dates`).run();
+    }
     for (const row of allRows) insert.run(row);
   });
 
   replaceAll(planRows);
   return planRows.length;
+}
+
+// Точечный пересинк ОДНОГО источника (а не всех SOURCES, как runSyncOnce)
+// — вызывается синхронно перед открытием финплана (services/financing-api,
+// см. build_financing_plan.py:build_object_plan), чтобы данные не ждали
+// следующего планового кронового прогона (раз в CRON_SCHEDULE, по
+// умолчанию 6 часов). Один источник — обычно один-два листа, занимает
+// секунды, а не полный обход всех источников.
+async function resyncSource(sourceKey) {
+  const source = SOURCES.find((s) => s.key === sourceKey);
+  if (!source) throw new Error(`Неизвестный источник ГПР: ${sourceKey}`);
+
+  const rows = [];
+  const planRows = [];
+  for (const sheet of source.sheets) {
+    const { rows: sheetRows, planRows: sheetPlanRows } = await fetchAndParseSheet(source, sheet);
+    rows.push(...sheetRows);
+    planRows.push(...sheetPlanRows);
+  }
+
+  const count = storeValues(rows, [sourceKey]);
+  const planCount = storePlanDates(planRows, [sourceKey]);
+  console.log(`[gpr-report-sync] точечный пересинк '${sourceKey}': ${count} значений, ${planCount} плановых сроков`);
+  return { count, planCount };
 }
 
 // Контрольный рубеж — пятница, за которую уже наступил срок отчитаться.
@@ -841,6 +880,7 @@ function startGprReportSync() {
 module.exports = {
   startGprReportSync,
   runSyncOnce,
+  resyncSource,
   computeGprReportGaps,
   lastFridayOnOrBefore,
   SOURCES,
