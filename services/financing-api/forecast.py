@@ -30,8 +30,23 @@ forecast_start для раздела в процессе — дата после
 Для завершённого раздела — прогноз не нужен, берём фактические даты как есть
 (фронтенд вообще не рисует по ним полосу прогноза — предсказывать нечего).
 Для ещё не начатого — Дата_прогноз = ПланДата + накопленный сдвиг.
+
+Зимний простой монолитных работ (WINTER_PAUSE_*): бетон зимой не льют —
+раздел "Монолитный каркас" физически не может идти с 15 ноября по конец
+февраля. По плану эти работы должны укладываться в тёплый сезон (значит
+план этого простоя не учитывает), но ПРОГНОЗ, посчитанный от реального
+отставания, может показать окончание внутри зимнего окна — это невозможно,
+поэтому если прогнозируемое (до поправки) окончание раздела попадает на/после
+начала простоя, весь остаток работ замораживается целиком до конца февраля
+(а не размазывается по зиме) и доделывается уже после. Добавленные дни
+становятся частью delay_days этого раздела и дальше расходятся на все
+последующие ещё не начатые разделы через обычный carry_forward_days — так
+что отдельной пропагации не требуется.
 """
+import calendar
 from datetime import date, timedelta
+
+WINTER_PAUSE_START_MONTH_DAY = (11, 15)  # 15 ноября
 
 
 def _parse(d: str) -> date:
@@ -40,6 +55,46 @@ def _parse(d: str) -> date:
 
 def _weeks_between(a: date, b: date) -> float:
     return max((b - a).days, 0) / 7
+
+
+def _feb_end(year: int) -> date:
+    return date(year, 2, 29 if calendar.isleap(year) else 28)
+
+
+def _relevant_winter_window(anchor: date) -> tuple[date, date]:
+    """Ближайшее (текущее идущее или ещё предстоящее относительно anchor)
+    окно зимнего простоя — с 15 ноября по конец февраля следующего года."""
+    month, day = WINTER_PAUSE_START_MONTH_DAY
+    candidates = []
+    for start_year in (anchor.year - 1, anchor.year, anchor.year + 1):
+        gap_start = date(start_year, month, day)
+        gap_end = _feb_end(start_year + 1)
+        candidates.append((gap_start, gap_end))
+    for gap_start, gap_end in sorted(candidates):
+        if gap_end >= anchor:
+            return gap_start, gap_end
+    return candidates[-1]
+
+
+def _apply_winter_pause(work_name: str, forecast_start: date, forecast_end: date) -> date:
+    """Если work_name — "Монолитный каркас" и forecast_end (до поправки)
+    приходится на/после начала зимнего простоя, сдвигает его на полную
+    длительность простоя (работы не идут НИ ДНЯ из окна, а не частично).
+
+    gap_start_effective — не просто начало окна, а более позднее из (начало
+    окна, forecast_start): если сам старт раздела уже перенёсся внутрь зимы
+    (унаследованным сдвигом от более раннего раздела той же позиции), то
+    считать "оставшиеся дни" от начала окна, а не от даты старта, значило бы
+    сдвинуть на кусок времени ДО начала работ, которого в реальности и так
+    не было бы отработано — двойной сдвиг."""
+    if "монолитный каркас" not in work_name.lower():
+        return forecast_end
+    gap_start, gap_end = _relevant_winter_window(forecast_start)
+    gap_start_effective = max(forecast_start, gap_start)
+    if forecast_end <= gap_start_effective:
+        return forecast_end
+    remaining_days = (forecast_end - gap_start_effective).days
+    return gap_end + timedelta(days=remaining_days)
 
 
 def compute_forecast(sections: list[dict]) -> list[dict]:
@@ -89,12 +144,14 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
             remaining_weeks = remaining_percent / effective_p_week
             forecast_start = as_of
             forecast_end = as_of + timedelta(days=round(remaining_weeks * 7))
+            forecast_end = _apply_winter_pause(sec["name"], forecast_start, forecast_end)
         else:
             # Ещё не начат — своей скорости нет, сдвигаем плановые даты на
             # то, что перенёс предыдущий (по хронологии) раздел — может быть
             # и в плюс (отставание), и в минус (опережение).
             forecast_start = plan_start + timedelta(days=carry_forward_days)
             forecast_end = plan_end + timedelta(days=carry_forward_days)
+            forecast_end = _apply_winter_pause(sec["name"], forecast_start, forecast_end)
 
         delay_days = (forecast_end - plan_end).days
         if has_own_fact:
