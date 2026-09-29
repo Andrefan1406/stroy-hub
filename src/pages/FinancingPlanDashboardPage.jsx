@@ -73,6 +73,16 @@ function todayIndex(timeline) {
   return timeline.findIndex((t) => t.year === now.getFullYear() && t.monthIndex === now.getMonth());
 }
 
+// Доля месяца (0..1) от начала месяца до конкретного дня — используется для
+// точной обрезки полосы прогноза на границах зимнего простоя (в отличие от
+// factFillFraction ниже, тут есть настоящая дата, а не только %, поэтому
+// доля считается по фактическим дням месяца, а не по равномерному приближению.
+function monthDayFraction(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  return Math.min(Math.max((d - 1) / daysInMonth, 0), 1);
+}
+
 // Сводит разделы со всех позиций объекта в один список — по одной строке на
 // НАЗВАНИЕ раздела (сумма стоимости, мин.начало/макс.окончание, % готовности
 // как средневзвешенное по стоимости). Даёт "агрегированный" график/смету/
@@ -92,6 +102,8 @@ function aggregateSectionsByName(positions) {
           end: null,
           forecast_start: null,
           forecast_end: null,
+          forecast_pause_start: null,
+          forecast_pause_end: null,
           fact_start: null,
           fact_end: null,
           fact_as_of: null,
@@ -110,6 +122,16 @@ function aggregateSectionsByName(positions) {
       // где-то по прогнозу должен начаться этот раздел".
       if (sec.forecast_start && (!agg.forecast_start || sec.forecast_start < agg.forecast_start)) {
         agg.forecast_start = sec.forecast_start;
+      }
+      // Разные позиции могут получить чуть разное окно паузы (если старт
+      // прогноза уже сам сдвинут в зиму, см. forecast.py) — берём самую
+      // раннюю границу начала и самую позднюю границу конца, чтобы
+      // объединённая полоса накрывала паузу любой из позиций целиком.
+      if (sec.forecast_pause_start && (!agg.forecast_pause_start || sec.forecast_pause_start < agg.forecast_pause_start)) {
+        agg.forecast_pause_start = sec.forecast_pause_start;
+      }
+      if (sec.forecast_pause_end && (!agg.forecast_pause_end || sec.forecast_pause_end > agg.forecast_pause_end)) {
+        agg.forecast_pause_end = sec.forecast_pause_end;
       }
       if (sec.fact_start && (!agg.fact_start || sec.fact_start < agg.fact_start)) agg.fact_start = sec.fact_start;
       if (sec.fact_end && (!agg.fact_end || sec.fact_end > agg.fact_end)) agg.fact_end = sec.fact_end;
@@ -132,6 +154,8 @@ function aggregateSectionsByName(positions) {
       end: agg.end,
       forecast_start: agg.forecast_start,
       forecast_end: agg.forecast_end,
+      forecast_pause_start: agg.forecast_pause_start,
+      forecast_pause_end: agg.forecast_pause_end,
       fact_percent: factPercent,
       fact_started: agg.anyStarted,
       fact_completed: agg.allCompleted && factPercent != null && factPercent >= 100,
@@ -222,6 +246,42 @@ function computeForecastOverlay(sec, timeline) {
       cells.set(i, { left: 0, width: 1, roundLeft: i === forecastStartIdx, roundRight: i === forecastEndIdx });
     }
   }
+
+  // Зимний простой монолитных работ (forecast.py:_apply_winter_pause) — если
+  // задан, вырезаем эти месяцы из уже построенной полосы: месяцы целиком
+  // внутри паузы удаляются, месяцы на границах обрезаются по фактическому
+  // дню (monthDayFraction), а не выбрасываются целиком.
+  if (sec.forecast_pause_start && sec.forecast_pause_end) {
+    const pauseStartIdx = monthIndexOf(timeline, sec.forecast_pause_start);
+    const pauseEndIdx = monthIndexOf(timeline, sec.forecast_pause_end);
+    if (pauseStartIdx !== -1 && pauseEndIdx !== -1) {
+      const pauseStartFrac = monthDayFraction(sec.forecast_pause_start);
+      const pauseEndFrac = monthDayFraction(sec.forecast_pause_end);
+      for (let i = pauseStartIdx; i <= pauseEndIdx; i++) {
+        const existing = cells.get(i);
+        if (!existing) continue;
+        if (i === pauseStartIdx && i === pauseEndIdx) {
+          cells.delete(i);
+          continue;
+        }
+        if (i === pauseStartIdx) {
+          const width = Math.max(pauseStartFrac - existing.left, 0);
+          if (width > 0) cells.set(i, { ...existing, width, roundRight: true });
+          else cells.delete(i);
+          continue;
+        }
+        if (i === pauseEndIdx) {
+          const left = Math.max(pauseEndFrac, existing.left);
+          const width = Math.max(existing.left + existing.width - left, 0);
+          if (width > 0) cells.set(i, { left, width, roundLeft: true, roundRight: existing.roundRight });
+          else cells.delete(i);
+          continue;
+        }
+        cells.delete(i);
+      }
+    }
+  }
+
   return cells;
 }
 

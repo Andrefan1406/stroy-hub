@@ -76,10 +76,15 @@ def _relevant_winter_window(anchor: date) -> tuple[date, date]:
     return candidates[-1]
 
 
-def _apply_winter_pause(work_name: str, forecast_start: date, forecast_end: date) -> date:
+def _apply_winter_pause(
+    work_name: str, forecast_start: date, forecast_end: date
+) -> tuple[date, date | None, date | None]:
     """Если work_name — "Монолитный каркас" и forecast_end (до поправки)
     приходится на/после начала зимнего простоя, сдвигает его на полную
     длительность простоя (работы не идут НИ ДНЯ из окна, а не частично).
+    Возвращает (новый forecast_end, начало паузы, конец паузы) — начало/конец
+    паузы — None, если простой не применялся (фронтенду нечего вырезать из
+    полосы прогноза).
 
     gap_start_effective — не просто начало окна, а более позднее из (начало
     окна, forecast_start): если сам старт раздела уже перенёсся внутрь зимы
@@ -88,13 +93,14 @@ def _apply_winter_pause(work_name: str, forecast_start: date, forecast_end: date
     сдвинуть на кусок времени ДО начала работ, которого в реальности и так
     не было бы отработано — двойной сдвиг."""
     if "монолитный каркас" not in work_name.lower():
-        return forecast_end
+        return forecast_end, None, None
     gap_start, gap_end = _relevant_winter_window(forecast_start)
     gap_start_effective = max(forecast_start, gap_start)
     if forecast_end <= gap_start_effective:
-        return forecast_end
+        return forecast_end, None, None
     remaining_days = (forecast_end - gap_start_effective).days
-    return gap_end + timedelta(days=remaining_days)
+    new_end = gap_end + timedelta(days=remaining_days)
+    return new_end, gap_start_effective, gap_end
 
 
 def compute_forecast(sections: list[dict]) -> list[dict]:
@@ -127,6 +133,9 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
             fact_started and fact_percent is not None and fact_start_str and fact_as_of_str
         )
 
+        pause_start = None
+        pause_end = None
+
         if fact_completed and fact_end_str:
             # Уже завершён — прогнозировать нечего, берём реальные даты.
             forecast_start = _parse(fact_start_str) if fact_start_str else plan_start
@@ -144,14 +153,14 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
             remaining_weeks = remaining_percent / effective_p_week
             forecast_start = as_of
             forecast_end = as_of + timedelta(days=round(remaining_weeks * 7))
-            forecast_end = _apply_winter_pause(sec["name"], forecast_start, forecast_end)
+            forecast_end, pause_start, pause_end = _apply_winter_pause(sec["name"], forecast_start, forecast_end)
         else:
             # Ещё не начат — своей скорости нет, сдвигаем плановые даты на
             # то, что перенёс предыдущий (по хронологии) раздел — может быть
             # и в плюс (отставание), и в минус (опережение).
             forecast_start = plan_start + timedelta(days=carry_forward_days)
             forecast_end = plan_end + timedelta(days=carry_forward_days)
-            forecast_end = _apply_winter_pause(sec["name"], forecast_start, forecast_end)
+            forecast_end, pause_start, pause_end = _apply_winter_pause(sec["name"], forecast_start, forecast_end)
 
         delay_days = (forecast_end - plan_end).days
         if has_own_fact:
@@ -166,6 +175,11 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
                 "forecast_start": forecast_start.isoformat(),
                 "forecast_end": forecast_end.isoformat(),
                 "delay_days": delay_days,
+                # Границы зимнего простоя, применённого к ЭТОМУ разделу (не
+                # None только для "Монолитный каркас", когда простой реально
+                # сработал) — фронтенд вырезает эти даты из полосы "Прогноз".
+                "forecast_pause_start": pause_start.isoformat() if pause_start else None,
+                "forecast_pause_end": pause_end.isoformat() if pause_end else None,
             }
         )
 
