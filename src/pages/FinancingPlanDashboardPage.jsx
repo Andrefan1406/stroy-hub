@@ -314,6 +314,9 @@ const ACCENT = "linear-gradient(135deg, #7c5cff, #33d6c0)";
 const PLAN_COLOR = "#7c5cff";
 const FACT_COLOR = "#57d9c6";
 const FORECAST_COLOR = "#ffb454";
+// Колонка названий разделов в графике/финплане: самое длинное название
+// ("Чистовой монтаж эл.оборудования", ~262px при 16px) + боковые отступы.
+const NAME_COL_WIDTH = 280;
 
 const s = {
   page: {
@@ -321,14 +324,14 @@ const s = {
     background: "#0b0d12",
     color: "#e8eaf0",
     fontFamily: "'Segoe UI', Roboto, -apple-system, sans-serif",
-    padding: "24px 20px 60px",
+    padding: "16px 20px 24px",
   },
   topBar: {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     maxWidth: 1180,
-    margin: "0 auto 20px",
+    margin: "0 auto 12px",
   },
   back: {
     background: "transparent",
@@ -346,7 +349,7 @@ const s = {
     flexWrap: "wrap",
     gap: 6,
     alignItems: "center",
-    marginBottom: 22,
+    marginBottom: 12,
     fontSize: 14,
     color: "#9aa0b4",
   },
@@ -378,27 +381,54 @@ const s = {
   cardRow: { display: "flex", justifyContent: "space-between", fontSize: 13, color: "#9aa0b4", marginBottom: 4 },
   cardValue: { color: "#e8eaf0", fontWeight: 600 },
 
+  // Заголовок, цифры и вкладки собраны плотно (в одну строку каждый блок),
+  // чтобы график/финплан позиции целиком входил в экран без вертикального
+  // скролла; размеры шрифтов прежние, ужаты только отступы.
   detailHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 32,
+    flexWrap: "wrap",
     background: "#171a21",
     border: "1px solid #242835",
     borderRadius: 14,
-    padding: "22px 24px",
-    marginBottom: 20,
+    padding: "10px 20px",
+    marginBottom: 10,
   },
-  detailTitle: { fontSize: 20, fontWeight: 700, marginBottom: 10 },
-  subheading: { fontSize: 16, fontWeight: 700, margin: "28px 0 14px" },
+  detailTitle: { fontSize: 20, fontWeight: 700 },
   detailStats: { display: "flex", gap: 32, flexWrap: "wrap" },
   statLabel: { fontSize: 12, color: "#9aa0b4" },
   statValue: { fontSize: 18, fontWeight: 700, marginTop: 2 },
 
-  tabs: { display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" },
+  posStrip: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 },
+  posChip: (active) => ({
+    background: active ? "rgba(87, 217, 198, 0.15)" : "transparent",
+    border: `1px solid ${active ? FACT_COLOR : "#242835"}`,
+    color: active ? "#e8eaf0" : "#9aa0b4",
+    fontWeight: active ? 700 : 500,
+    borderRadius: 8,
+    padding: "4px 10px",
+    cursor: "pointer",
+    fontSize: 14,
+  }),
+
+  tabsRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    flexWrap: "wrap",
+    marginBottom: 10,
+  },
+  tabs: { display: "flex", gap: 8, flexWrap: "wrap" },
+  toggles: { display: "flex", gap: 20 },
   tabBtn: (active) => ({
     background: active ? ACCENT : "transparent",
     border: active ? "none" : "1px solid #242835",
     color: active ? "#0b0d12" : "#9aa0b4",
     fontWeight: active ? 700 : 500,
     borderRadius: 10,
-    padding: "10px 18px",
+    padding: "8px 16px",
     cursor: "pointer",
     fontSize: 14,
   }),
@@ -429,8 +459,8 @@ const s = {
   thMonth: {
     writingMode: "vertical-rl",
     transform: "rotate(180deg)",
-    height: 80,
-    padding: "8px 2px",
+    height: 56,
+    padding: "4px 2px",
     whiteSpace: "nowrap",
   },
   thFirst: {
@@ -450,14 +480,19 @@ const s = {
     borderBottom: "1px solid #1e222b",
     minWidth: 220,
   },
-  // Без строки с датами под названием — компактнее по высоте (см. GanttTable).
+  // Строка графика/финплана: название в одну строку (колонка NAME_COL_WIDTH
+  // рассчитана под самое длинное название при шрифте 16px; если появится
+  // длиннее — обрежется "…", полное название в подсказке title).
   tdFirstCompact: {
     position: "sticky",
     left: 0,
     background: "#171a21",
-    padding: "6px 12px",
+    padding: "2px 8px",
+    lineHeight: "20px",
     borderBottom: "1px solid #1e222b",
-    minWidth: 220,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
   td: {
     padding: "10px 4px",
@@ -469,11 +504,11 @@ const s = {
   // Без горизонтального паддинга у ячейки (в отличие от обычного s.td) —
   // чтобы полоса работы у соседних активных месяцев стыковалась вплотную,
   // без разрыва, и читалась одной сплошной полосой, а не отдельными кубиками.
-  ganttTd: { padding: "6px 0", textAlign: "center", borderBottom: "1px solid #1e222b", whiteSpace: "nowrap" },
+  ganttTd: { padding: "3px 0", textAlign: "center", borderBottom: "1px solid #1e222b", whiteSpace: "nowrap" },
   // Меньше шрифт и паддинг, чем у обычного s.td — суммы по объекту целиком
   // (агрегат по 9 позициям) четырёхзначные, при 20+ месяцах в строке
   // обычный размер не помещается в колонку и обрезается многоточием.
-  finplanNum: { fontSize: 10, padding: "10px 1px" },
+  finplanNum: { fontSize: 10, padding: "2px 1px", lineHeight: "20px" },
   ganttBarWrap: { position: "relative", height: 18 },
   ganttBar: { background: PLAN_COLOR, height: 18 },
   // Полоса факта — снизу поверх плановой, потоньше, другим цветом, чтобы
@@ -540,6 +575,41 @@ function StatCard({ title, description, total, finish, onClick }) {
   );
 }
 
+function FinishStats({ total, finish }) {
+  const delay = finish ? finish.delayDays : null;
+  return (
+    <div style={s.detailStats}>
+      <div>
+        <div style={s.statLabel}>Общая стоимость (план)</div>
+        <div style={s.statValue}>{formatMoney(total)}</div>
+      </div>
+      {finish && (
+        <>
+          <div>
+            <div style={s.statLabel}>Окончание по плану</div>
+            <div style={{ ...s.statValue, color: PLAN_COLOR }}>{finish.planFinish}</div>
+          </div>
+          <div>
+            <div style={s.statLabel}>Окончание по прогнозу</div>
+            <div style={{ ...s.statValue, color: FORECAST_COLOR }}>{finish.factFinish || "—"}</div>
+          </div>
+          <div>
+            <div style={s.statLabel}>Отставание от плана</div>
+            <div
+              style={{
+                ...s.statValue,
+                color: delay > 0 ? FORECAST_COLOR : delay < 0 ? FACT_COLOR : "#e8eaf0",
+              }}
+            >
+              {delay > 0 ? `+${delay} дн.` : `${delay || 0} дн.`}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Карточка категории/объекта — агрегаты из config.py (без сметы/ГПР, дёшево
 // и быстро открывается верхний уровень навигации).
 function AggregateCard({ title, agg, onClick, summaryToggle }) {
@@ -585,54 +655,36 @@ function AggregateCard({ title, agg, onClick, summaryToggle }) {
   );
 }
 
-function GanttTable({
-  sections,
-  timeline,
-  showPlan,
-  onTogglePlan,
-  showFact,
-  onToggleFact,
-  showForecast,
-  onToggleForecast,
-}) {
+// Галочки слоёв графика — в строке вкладок (а не над таблицей), чтобы не
+// тратить на них отдельную строку по высоте.
+function GanttToggles({ layers }) {
+  return (
+    <div style={s.toggles}>
+      {layers.map(({ label, color, checked, onChange }) => (
+        <label key={label} style={s.factToggle(color)}>
+          <input
+            type="checkbox"
+            style={s.factCheckbox(color)}
+            checked={checked}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+          {label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function GanttTable({ sections, timeline, showPlan, showFact, showForecast }) {
   const dated = sections.filter((sec) => sec.start && sec.end);
   const today = todayIndex(timeline);
   // minmax(0, 1fr), а не просто 1fr — иначе колонки не сжимались бы уже
   // родного min-content подписи месяца, и таблица всё равно бы поехала
   // вбок при большом числе месяцев.
-  const gridTemplateColumns = `220px repeat(${timeline.length}, minmax(0, 1fr))`;
+  const gridTemplateColumns = `${NAME_COL_WIDTH}px repeat(${timeline.length}, minmax(0, 1fr))`;
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 20, marginBottom: 12 }}>
-        <label style={s.factToggle(PLAN_COLOR)}>
-          <input
-            type="checkbox"
-            style={s.factCheckbox(PLAN_COLOR)}
-            checked={showPlan}
-            onChange={(e) => onTogglePlan(e.target.checked)}
-          />
-          План
-        </label>
-        <label style={s.factToggle(FACT_COLOR)}>
-          <input
-            type="checkbox"
-            style={s.factCheckbox(FACT_COLOR)}
-            checked={showFact}
-            onChange={(e) => onToggleFact(e.target.checked)}
-          />
-          Факт
-        </label>
-        <label style={s.factToggle(FORECAST_COLOR)}>
-          <input
-            type="checkbox"
-            style={s.factCheckbox(FORECAST_COLOR)}
-            checked={showForecast}
-            onChange={(e) => onToggleForecast(e.target.checked)}
-          />
-          Прогноз
-        </label>
-      </div>
       <div style={s.tableWrap}>
         <div style={{ display: "grid", gridTemplateColumns }}>
           <div style={{ ...s.th, ...s.thFirst }}>Раздел работ</div>
@@ -650,7 +702,9 @@ function GanttTable({
 
             return (
               <React.Fragment key={sec.name}>
-                <div style={s.tdFirstCompact}>{sec.name}</div>
+                <div style={s.tdFirstCompact} title={sec.name}>
+                  {sec.name}
+                </div>
                 {timeline.map((_, i) => {
                   const active = i >= startIdx && i <= endIdx;
                   const isRunStart = active && i === startIdx;
@@ -829,7 +883,26 @@ function monthsFullyInPause(sec, timeline) {
   return skip;
 }
 
-function FinPlanTable({ sections, timeline, mode, onModeChange }) {
+function FinPlanModeToggles({ mode, onModeChange }) {
+  return (
+    <div style={s.toggles}>
+      {FINPLAN_MODES.map((m) => (
+        <label key={m.id} style={s.factToggle(m.color)}>
+          <input
+            type="radio"
+            name="finplan-mode"
+            style={s.factCheckbox(m.color)}
+            checked={mode === m.id}
+            onChange={() => onModeChange(m.id)}
+          />
+          {m.label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function FinPlanTable({ sections, timeline, mode }) {
   const today = todayIndex(timeline);
   const rows = sections
     .map((sec) => ({ sec, range: sectionMonthlyRange(mode, sec, timeline, today) }))
@@ -850,25 +923,11 @@ function FinPlanTable({ sections, timeline, mode, onModeChange }) {
     rows.reduce((sum, { range }) => (isActive(range, i) ? sum + range.perMonth : sum), 0)
   );
   const grandTotal = monthly.reduce((a, b) => a + b, 0);
-  const gridTemplateColumns = `220px repeat(${timeline.length}, minmax(0, 1fr))`;
+  const gridTemplateColumns = `${NAME_COL_WIDTH}px repeat(${timeline.length}, minmax(0, 1fr))`;
   const activeColor = FINPLAN_MODES.find((m) => m.id === mode).color;
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 20, marginBottom: 12 }}>
-        {FINPLAN_MODES.map((m) => (
-          <label key={m.id} style={s.factToggle(m.color)}>
-            <input
-              type="radio"
-              name="finplan-mode"
-              style={s.factCheckbox(m.color)}
-              checked={mode === m.id}
-              onChange={() => onModeChange(m.id)}
-            />
-            {m.label}
-          </label>
-        ))}
-      </div>
       <div style={s.tableWrap}>
         <div style={{ display: "grid", gridTemplateColumns }}>
           <div style={{ ...s.th, ...s.thFirst }}>Раздел работ</div>
@@ -881,7 +940,9 @@ function FinPlanTable({ sections, timeline, mode, onModeChange }) {
 
           {rows.map(({ sec, range }) => (
             <React.Fragment key={sec.name}>
-              <div style={s.tdFirst}>{sec.name}</div>
+              <div style={s.tdFirstCompact} title={sec.name}>
+                {sec.name}
+              </div>
               {timeline.map((_, i) => (
                 <div key={i} style={{ ...s.td, ...s.finplanNum, ...(i === today ? s.todayCol : {}) }}>
                   {isActive(range, i)
@@ -892,7 +953,7 @@ function FinPlanTable({ sections, timeline, mode, onModeChange }) {
             </React.Fragment>
           ))}
 
-          <div style={{ ...s.tdFirst, fontWeight: 700, background: "#1c2029" }}>Итого за месяц, млн ₸</div>
+          <div style={{ ...s.tdFirstCompact, fontWeight: 700, background: "#1c2029" }}>Итого за месяц, млн ₸</div>
           {monthly.map((v, i) => (
             <div
               key={i}
@@ -1002,6 +1063,72 @@ const FinancingPlanDashboardPage = () => {
     setPositionKey(key);
     setActiveTab("schedule");
   };
+  const openObjectSummary = () => {
+    setPositionKey(null);
+    setSummaryOnly(true);
+  };
+
+  // Экран деталей — общий для сводной по объекту и для позиции: заголовок с
+  // цифрами, полоса переключения позиций (вкладка и галочки при переключении
+  // сохраняются — в отличие от входа с карточки, см. selectPosition), вкладки.
+  const renderDetail = ({ title, total, finish, sections, timeline: tl, apartmentsArea, commercialArea }) => (
+    <>
+      <div style={s.detailHeader}>
+        <div style={s.detailTitle}>{title}</div>
+        <FinishStats total={total} finish={finish} />
+      </div>
+
+      <div style={s.posStrip}>
+        <button style={s.posChip(!positionKey)} onClick={openObjectSummary}>
+          Сводная
+        </button>
+        {Object.keys(plan.positions).map((key) => (
+          <button key={key} style={s.posChip(key === positionKey)} onClick={() => setPositionKey(key)}>
+            {key}
+          </button>
+        ))}
+      </div>
+
+      <div style={s.tabsRow}>
+        <div style={s.tabs}>
+          {TABS.map((t) => (
+            <button key={t.id} style={s.tabBtn(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {activeTab === "schedule" && (
+          <GanttToggles
+            layers={[
+              { label: "План", color: PLAN_COLOR, checked: showPlan, onChange: setShowPlan },
+              { label: "Факт", color: FACT_COLOR, checked: showFact, onChange: setShowFact },
+              { label: "Прогноз", color: FORECAST_COLOR, checked: showForecast, onChange: setShowForecast },
+            ]}
+          />
+        )}
+        {activeTab === "finplan" && <FinPlanModeToggles mode={finPlanMode} onModeChange={setFinPlanMode} />}
+      </div>
+
+      {activeTab === "schedule" && (
+        <GanttTable
+          sections={sections}
+          timeline={tl}
+          showPlan={showPlan}
+          showFact={showFact}
+          showForecast={showForecast}
+        />
+      )}
+      {activeTab === "estimate" && (
+        <EstimateView
+          sections={sections}
+          total={total}
+          apartmentsArea={apartmentsArea}
+          commercialArea={commercialArea}
+        />
+      )}
+      {activeTab === "finplan" && <FinPlanTable sections={sections} timeline={tl} mode={finPlanMode} />}
+    </>
+  );
 
   return (
     <div style={s.page}>
@@ -1083,88 +1210,15 @@ const FinancingPlanDashboardPage = () => {
             {objectSummary && plan && !position && (
               <>
                 {summaryOnly ? (
-                  <>
-                    <div style={s.detailHeader}>
-                      <div style={s.detailTitle}>{plan.name} — сводная информация</div>
-                      <div style={s.detailStats}>
-                        <div>
-                          <div style={s.statLabel}>Общая стоимость (план)</div>
-                          <div style={s.statValue}>{formatMoney(plan.total)}</div>
-                        </div>
-                        {objectFinishSummary && (
-                          <>
-                            <div>
-                              <div style={s.statLabel}>Окончание по плану</div>
-                              <div style={{ ...s.statValue, color: PLAN_COLOR }}>{objectFinishSummary.planFinish}</div>
-                            </div>
-                            <div>
-                              <div style={s.statLabel}>Окончание по прогнозу</div>
-                              <div style={{ ...s.statValue, color: FORECAST_COLOR }}>
-                                {objectFinishSummary.factFinish || "—"}
-                              </div>
-                            </div>
-                            <div>
-                              <div style={s.statLabel}>Отставание от плана</div>
-                              <div
-                                style={{
-                                  ...s.statValue,
-                                  color:
-                                    objectFinishSummary.delayDays > 0
-                                      ? FORECAST_COLOR
-                                      : objectFinishSummary.delayDays < 0
-                                      ? FACT_COLOR
-                                      : "#e8eaf0",
-                                }}
-                              >
-                                {objectFinishSummary.delayDays > 0
-                                  ? `+${objectFinishSummary.delayDays} дн.`
-                                  : objectFinishSummary.delayDays < 0
-                                  ? `${objectFinishSummary.delayDays} дн.`
-                                  : "0 дн."}
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    <div style={s.tabs}>
-                      {TABS.map((t) => (
-                        <button key={t.id} style={s.tabBtn(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>
-                          {t.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    {activeTab === "schedule" && (
-                      <GanttTable
-                        sections={objectSections}
-                        timeline={objectTimeline}
-                        showPlan={showPlan}
-                        onTogglePlan={setShowPlan}
-                        showFact={showFact}
-                        onToggleFact={setShowFact}
-                        showForecast={showForecast}
-                        onToggleForecast={setShowForecast}
-                      />
-                    )}
-                    {activeTab === "estimate" && (
-                      <EstimateView
-                        sections={objectSections}
-                        total={plan.total}
-                        apartmentsArea={objectSummary.apartments_area_m2}
-                        commercialArea={objectSummary.commercial_area_m2}
-                      />
-                    )}
-                    {activeTab === "finplan" && (
-                      <FinPlanTable
-                        sections={objectSections}
-                        timeline={objectTimeline}
-                        mode={finPlanMode}
-                        onModeChange={setFinPlanMode}
-                      />
-                    )}
-                  </>
+                  renderDetail({
+                    title: `${plan.name} — сводная информация`,
+                    total: plan.total,
+                    finish: objectFinishSummary,
+                    sections: objectSections,
+                    timeline: objectTimeline,
+                    apartmentsArea: objectSummary.apartments_area_m2,
+                    commercialArea: objectSummary.commercial_area_m2,
+                  })
                 ) : (
                   <div style={s.grid}>
                     {Object.entries(plan.positions).map(([key, pos]) => (
@@ -1182,90 +1236,16 @@ const FinancingPlanDashboardPage = () => {
               </>
             )}
 
-            {position && (
-              <>
-                <div style={s.detailHeader}>
-                  <div style={s.detailTitle}>{plan.name} — поз.{positionKey}</div>
-                  <div style={s.detailStats}>
-                    <div>
-                      <div style={s.statLabel}>Общая стоимость (план)</div>
-                      <div style={s.statValue}>{formatMoney(position.total)}</div>
-                    </div>
-                    {positionSummary && (
-                      <>
-                        <div>
-                          <div style={s.statLabel}>Окончание по плану</div>
-                          <div style={{ ...s.statValue, color: PLAN_COLOR }}>{positionSummary.planFinish}</div>
-                        </div>
-                        <div>
-                          <div style={s.statLabel}>Окончание по прогнозу</div>
-                          <div style={{ ...s.statValue, color: FORECAST_COLOR }}>
-                            {positionSummary.factFinish || "—"}
-                          </div>
-                        </div>
-                        <div>
-                          <div style={s.statLabel}>Отставание от плана</div>
-                          <div
-                            style={{
-                              ...s.statValue,
-                              color:
-                                positionSummary.delayDays > 0
-                                  ? FORECAST_COLOR
-                                  : positionSummary.delayDays < 0
-                                  ? FACT_COLOR
-                                  : "#e8eaf0",
-                            }}
-                          >
-                            {positionSummary.delayDays > 0
-                              ? `+${positionSummary.delayDays} дн.`
-                              : positionSummary.delayDays < 0
-                              ? `${positionSummary.delayDays} дн.`
-                              : "0 дн."}
-                          </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div style={s.tabs}>
-                  {TABS.map((t) => (
-                    <button key={t.id} style={s.tabBtn(activeTab === t.id)} onClick={() => setActiveTab(t.id)}>
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-
-                {activeTab === "schedule" && (
-                  <GanttTable
-                    sections={position.sections}
-                    timeline={timeline}
-                    showPlan={showPlan}
-                    onTogglePlan={setShowPlan}
-                    showFact={showFact}
-                    onToggleFact={setShowFact}
-                    showForecast={showForecast}
-                    onToggleForecast={setShowForecast}
-                  />
-                )}
-                {activeTab === "estimate" && (
-                  <EstimateView
-                    sections={position.sections}
-                    total={position.total}
-                    apartmentsArea={position.apartments_area_m2}
-                    commercialArea={(position.commercial_floor1_area_m2 || 0) + (position.commercial_basement_area_m2 || 0)}
-                  />
-                )}
-                {activeTab === "finplan" && (
-                  <FinPlanTable
-                    sections={position.sections}
-                    timeline={timeline}
-                    mode={finPlanMode}
-                    onModeChange={setFinPlanMode}
-                  />
-                )}
-              </>
-            )}
+            {position &&
+              renderDetail({
+                title: `${plan.name} — поз.${positionKey}`,
+                total: position.total,
+                finish: positionSummary,
+                sections: position.sections,
+                timeline,
+                apartmentsArea: position.apartments_area_m2,
+                commercialArea: (position.commercial_floor1_area_m2 || 0) + (position.commercial_basement_area_m2 || 0),
+              })}
           </>
         )}
       </div>
