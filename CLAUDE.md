@@ -9,13 +9,14 @@ stroy-hub — внутренний портал строительной ком�
 - **Фронтенд** — Create React App (`src/`), React Router, Firebase Auth для логина.
 - **Бэкенд** — один Express-процесс (`server/index.js`), который проксирует LLM (Ollama Cloud), выполняет text-to-SQL чат аналитики, делает RAG/семантический поиск (Qdrant + Voyage embeddings) и периодически синхронизирует read-only зеркала Google Таблиц в локальный SQLite-файл.
 
-Третья часть — `services/financing-api/`: отдельный Python-сервис (FastAPI) для страницы `/financing-plan` (`src/pages/FinancingPlanDashboardPage.jsx`). Считает смету/график/финплан по объекту: читает сметы напрямую из Google Sheets (свой сервис-аккаунт, `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` в `services/financing-api/.env`, отдельный от корневого), а плановые сроки и факт % готовности — через read-only `server/internalApi.js` (`/api/internal/gpr-plan-dates`, `/api/internal/gpr-values`), защищённый общим секретом `INTERNAL_API_KEY` (сервер-сервер, не Firebase-логин). Сам финплан-эндпоинт (`/financing-plan/{object}`, `/categories`) закрыт Firebase ID-токеном администратора, как и остальные `/api/admin/*`. Запуск: `uvicorn main:app --port 8000` из `services/financing-api/` (venv там же).
+Третья часть — `services/financing-api/`: отдельный Python-сервис (FastAPI) для страницы `/financing-plan` (`src/pages/FinancingPlanDashboardPage.jsx`). Считает смету/график/финплан по объекту: читает сметы напрямую из Google Sheets (свой сервис-аккаунт, `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON` в `services/financing-api/.env`, отдельный от корневого), а плановые сроки и факт % готовности — через read-only `server/internalApi.js` (`/api/internal/gpr-plan-dates`, `/api/internal/gpr-values`), защищённый общим секретом `INTERNAL_API_KEY` (сервер-сервер, не Firebase-логин). Сам финплан-эндпоинт (`/financing-plan/{object}`, `/categories`) закрыт Firebase ID-токеном администратора, как и остальные `/api/admin/*`. Запуск: `npm run financing-api` из корня (то же, что `uvicorn main:app --port 8000` из `services/financing-api/`, venv там же).
 
 ## Команды
 
 ```bash
 npm start           # фронтенд dev-сервер (CRA), http://localhost:3000
 npm run server      # бэкенд (server/index.js), env PORT/SMART_REQUEST_PROXY_PORT, по умолчанию 4000
+npm run financing-api  # Python-сервис финплана (services/financing-api/), порт 8000; путь к venv — Windows (.venv\Scripts)
 npm run build       # продакшен-сборка фронтенда -> build/
 npm test            # Jest через react-scripts (интерактивный watch-режим)
 npm test -- --watchAll=false --testPathPattern=App   # один тестовый файл, без watch
