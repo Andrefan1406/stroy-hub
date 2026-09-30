@@ -969,7 +969,10 @@ const FinancingPlanDashboardPage = () => {
   const [showFact, setShowFact] = useState(false);
   const [showForecast, setShowForecast] = useState(false);
   const [finPlanMode, setFinPlanMode] = useState("plan");
-  const [summaryOnly, setSummaryOnly] = useState(false);
+  // Галочка "Сводная информация" — своя у каждого объекта: { [objectKey]: true }.
+  const [summaryByObject, setSummaryByObject] = useState({});
+  const setObjectSummary = (key, checked) => setSummaryByObject((prev) => ({ ...prev, [key]: checked }));
+  const summaryOnly = !!summaryByObject[objectKey];
 
   // Верхние уровни (категория/объект) — лёгкий эндпоинт, грузится сразу.
   useEffect(() => {
@@ -1030,7 +1033,7 @@ const FinancingPlanDashboardPage = () => {
   };
   const openObjectSummary = () => {
     setPositionKey(null);
-    setSummaryOnly(true);
+    setObjectSummary(objectKey, true);
   };
 
   // Экран деталей — общий для сводной по объекту и для позиции: заголовок с
@@ -1162,7 +1165,10 @@ const FinancingPlanDashboardPage = () => {
                     title={obj.name}
                     agg={obj}
                     onClick={() => selectObject(obj.key)}
-                    summaryToggle={{ checked: summaryOnly, onChange: setSummaryOnly }}
+                    summaryToggle={{
+                      checked: !!summaryByObject[obj.key],
+                      onChange: (checked) => setObjectSummary(obj.key, checked),
+                    }}
                   />
                 ))}
               </div>
