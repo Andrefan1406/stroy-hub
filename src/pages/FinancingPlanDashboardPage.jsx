@@ -762,7 +762,8 @@ function EstimateView({ sections, total, apartmentsArea, commercialArea }) {
 // - "forecast" — разница план/факт, но только будущее: остаток (cost * (1 -
 //                fact%/100)), размазан от "сейчас" (as_of для начатых, сдвинутый
 //                план для ещё не начатых) до forecast_end. Завершённые разделы
-//                не участвуют — остатка нет.
+//                не участвуют — остатка нет. Месяцы зимнего простоя пропускаются
+//                (см. monthsFullyInPause в FinPlanTable).
 function sectionMonthlyRange(mode, sec, timeline, todayIdx) {
   if (mode === "plan") {
     const startIdx = monthIndexOf(timeline, sec.start);
@@ -812,18 +813,41 @@ const FINPLAN_MODES = [
   { id: "forecast", label: "Прогноз", footnoteLabel: "Остаток", color: FORECAST_COLOR },
 ];
 
+// Месяцы, целиком попадающие в зимний простой раздела (forecast.py) — в
+// режиме "Прогноз" работы в них не идут, значит и денег на них нет.
+// Граничные месяцы (ноябрь с 15-го) остаются рабочими.
+function monthsFullyInPause(sec, timeline) {
+  const skip = new Set();
+  if (!sec.forecast_pause_start || !sec.forecast_pause_end) return skip;
+  timeline.forEach((t, i) => {
+    const mm = String(t.monthIndex + 1).padStart(2, "0");
+    const lastDay = String(new Date(t.year, t.monthIndex + 1, 0).getDate()).padStart(2, "0");
+    if (sec.forecast_pause_start <= `${t.year}-${mm}-01` && sec.forecast_pause_end >= `${t.year}-${mm}-${lastDay}`) {
+      skip.add(i);
+    }
+  });
+  return skip;
+}
+
 function FinPlanTable({ sections, timeline, mode, onModeChange }) {
   const today = todayIndex(timeline);
   const rows = sections
     .map((sec) => ({ sec, range: sectionMonthlyRange(mode, sec, timeline, today) }))
-    .filter((r) => r.range);
+    .filter((r) => r.range)
+    .map(({ sec, range }) => {
+      let skip = mode === "forecast" ? monthsFullyInPause(sec, timeline) : new Set();
+      let activeMonths = 0;
+      for (let i = range.startIdx; i <= range.endIdx; i++) if (!skip.has(i)) activeMonths++;
+      if (activeMonths === 0) {
+        skip = new Set();
+        activeMonths = range.endIdx - range.startIdx + 1;
+      }
+      return { sec, range: { ...range, skip, perMonth: range.amount / activeMonths } };
+    });
+  const isActive = (range, i) => i >= range.startIdx && i <= range.endIdx && !range.skip.has(i);
 
   const monthly = timeline.map((_, i) =>
-    rows.reduce((sum, { range }) => {
-      if (i < range.startIdx || i > range.endIdx) return sum;
-      const dur = range.endIdx - range.startIdx + 1;
-      return sum + range.amount / dur;
-    }, 0)
+    rows.reduce((sum, { range }) => (isActive(range, i) ? sum + range.perMonth : sum), 0)
   );
   const grandTotal = monthly.reduce((a, b) => a + b, 0);
   const gridTemplateColumns = `220px repeat(${timeline.length}, minmax(0, 1fr))`;
@@ -858,18 +882,13 @@ function FinPlanTable({ sections, timeline, mode, onModeChange }) {
           {rows.map(({ sec, range }) => (
             <React.Fragment key={sec.name}>
               <div style={s.tdFirst}>{sec.name}</div>
-              {timeline.map((_, i) => {
-                const active = i >= range.startIdx && i <= range.endIdx;
-                const dur = range.endIdx - range.startIdx + 1;
-                const perMonth = range.amount / dur;
-                return (
-                  <div key={i} style={{ ...s.td, ...s.finplanNum, ...(i === today ? s.todayCol : {}) }}>
-                    {active
-                      ? (perMonth / 1_000_000).toLocaleString("ru-RU", { maximumFractionDigits: 0, useGrouping: false })
-                      : "—"}
-                  </div>
-                );
-              })}
+              {timeline.map((_, i) => (
+                <div key={i} style={{ ...s.td, ...s.finplanNum, ...(i === today ? s.todayCol : {}) }}>
+                  {isActive(range, i)
+                    ? (range.perMonth / 1_000_000).toLocaleString("ru-RU", { maximumFractionDigits: 0, useGrouping: false })
+                    : "—"}
+                </div>
+              ))}
             </React.Fragment>
           ))}
 
