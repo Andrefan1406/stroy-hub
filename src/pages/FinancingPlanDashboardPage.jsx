@@ -73,14 +73,24 @@ function todayIndex(timeline) {
   return timeline.findIndex((t) => t.year === now.getFullYear() && t.monthIndex === now.getMonth());
 }
 
-// Доля месяца (0..1) от начала месяца до конкретного дня — используется для
-// точной обрезки полосы прогноза на границах зимнего простоя (в отличие от
-// factFillFraction ниже, тут есть настоящая дата, а не только %, поэтому
-// доля считается по фактическим дням месяца, а не по равномерному приближению.
-function monthDayFraction(dateStr) {
+// Позиция даты на шкале графика в "месяцах": индекс месяца + доля дня
+// внутри него. atEnd — дата включительно (конец дня): 31.08 -> конец
+// августа, 01.07 без atEnd -> начало июля. null, если дата вне шкалы.
+function datePos(timeline, dateStr, atEnd) {
+  const idx = monthIndexOf(timeline, dateStr);
+  if (idx === -1) return null;
   const [y, m, d] = dateStr.split("-").map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
-  return Math.min(Math.max((d - 1) / daysInMonth, 0), 1);
+  return idx + (atEnd ? d : d - 1) / daysInMonth;
+}
+
+// Кусок отрезка [a, b) (в единицах datePos), попадающий в клетку месяца i,
+// в долях ширины клетки; null — отрезок эту клетку не задевает.
+function cellPiece(a, b, i) {
+  const left = Math.max(a, i);
+  const right = Math.min(b, i + 1);
+  if (right <= left) return null;
+  return { left: left - i, width: right - left, startsHere: a >= i, endsHere: b <= i + 1 };
 }
 
 // Сводит разделы со всех позиций объекта в один список — по одной строке на
@@ -186,110 +196,50 @@ function computeFinishSummary(sections) {
   return { planFinish, factFinish, delayDays };
 }
 
-// Какая доля (0..1) месяца i закрашивается фактом — % готовности считаем
-// равномерно распределённым по плановой длительности раздела (реальных
-// понедельных отметок по каждому месяцу у нас на фронте нет, только
-// итоговый %), поэтому это приближение, а не точная посуточная картина.
-function factFillFraction(startIdx, endIdx, factPercent, i) {
-  if (factPercent == null || i < startIdx || i > endIdx) return 0;
-  const totalMonths = endIdx - startIdx + 1;
-  const factMonths = totalMonths * (factPercent / 100);
-  const posInRun = i - startIdx;
-  if (posInRun < Math.floor(factMonths)) return 1;
-  if (posInRun === Math.floor(factMonths)) return factMonths - Math.floor(factMonths);
-  return 0;
-}
-
-// Где и как рисовать полосу "Прогноз" для раздела — возвращает Map<monthIndex,
-// {left, width, roundLeft, roundRight}> (доли 0..1 внутри ячейки месяца).
+// Отрезки полос раздела на шкале datePos (см. выше) — по дням, а не целыми
+// месяцами: одинаковая длительность выглядит одинаковой длины, где бы в
+// месяце ни начиналась.
 //
-// Три случая:
-// - Завершён (fact% >= 100) — прогнозировать нечего, полосы нет вообще.
-// - В процессе (0 < fact% < 100) — прогноз стыкуется ВПЛОТНУЮ к концу уже
-//   нарисованной полосы факта (та же точка, что даёт factFillFraction,
-//   с точностью до доли месяца, а не только до месяца целиком), левый край
-//   всегда квадратный (шов, не начало отрезка), скруглён только правый —
-//   у истинного конца прогноза.
-// - Ещё не начат — целиком фактических данных нет, весь отрезок (со сдвигом
-//   от предыдущих разделов, вперёд ИЛИ назад — опережение плана тоже
-//   возможно) просто переносится из forecast_start/forecast_end как есть,
-//   с обычными скруглёнными краями с обеих сторон.
-function computeForecastOverlay(sec, timeline) {
-  if (!sec.forecast_end) return new Map();
-  const percent = sec.fact_percent;
-  const isCompleted = percent != null && percent >= 100;
-  if (isCompleted) return new Map();
+// План — от плановой даты начала до плановой даты окончания (включительно).
+// Факт — та же точка старта, длина = % готовности от длины плана: реальных
+// понедельных отметок по каждому месяцу у нас на фронте нет, только
+// итоговый %, поэтому это приближение, а не точная посуточная картина.
+// Прогноз, три случая:
+// - завершён (fact% >= 100) — прогнозировать нечего, полосы нет;
+// - в процессе — стыкуется ВПЛОТНУЮ к концу полосы факта (левый край —
+//   шов, не скругляется), до forecast_end;
+// - ещё не начат — forecast_start..forecast_end как есть.
+// Зимний простой монолитных работ (forecast.py:_apply_winter_pause)
+// вырезается из прогноза по дням; если раздел стартует прямо в паузу,
+// куска "до паузы" просто не остаётся.
+function sectionSpans(sec, timeline) {
+  const planStart = datePos(timeline, sec.start, false);
+  const planEnd = datePos(timeline, sec.end, true);
+  if (planStart == null || planEnd == null) return null;
+  const pct = sec.fact_percent;
 
-  const forecastEndIdx = monthIndexOf(timeline, sec.forecast_end);
-  if (forecastEndIdx === -1) return new Map();
+  const fact = pct != null && pct > 0 ? { a: planStart, b: planStart + (planEnd - planStart) * Math.min(pct, 100) / 100 } : null;
 
-  const cells = new Map();
-  const isInProgress = percent != null && percent > 0;
-
-  if (isInProgress) {
-    const startIdx = monthIndexOf(timeline, sec.start);
-    const endIdx = monthIndexOf(timeline, sec.end);
-    const totalMonths = endIdx - startIdx + 1;
-    const factMonths = totalMonths * (percent / 100);
-    const joinContinuous = startIdx + factMonths;
-    const joinCell = Math.floor(joinContinuous);
-    const joinFrac = joinContinuous - joinCell;
-    if (joinCell > forecastEndIdx) return cells; // защита от аномальных данных
-    for (let i = joinCell; i <= forecastEndIdx; i++) {
-      const left = i === joinCell ? joinFrac : 0;
-      cells.set(i, { left, width: 1 - left, roundLeft: false, roundRight: i === forecastEndIdx });
-    }
-  } else if (sec.forecast_start) {
-    const forecastStartIdx = monthIndexOf(timeline, sec.forecast_start);
-    if (forecastStartIdx === -1) return cells;
-    for (let i = forecastStartIdx; i <= forecastEndIdx; i++) {
-      cells.set(i, { left: 0, width: 1, roundLeft: i === forecastStartIdx, roundRight: i === forecastEndIdx });
+  let forecast = [];
+  const forecastEnd = sec.forecast_end ? datePos(timeline, sec.forecast_end, true) : null;
+  if (forecastEnd != null && !(pct != null && pct >= 100)) {
+    const inProgress = pct != null && pct > 0;
+    const a = inProgress ? fact.b : sec.forecast_start ? datePos(timeline, sec.forecast_start, false) : null;
+    if (a != null && forecastEnd > a) forecast = [{ a, b: forecastEnd, seamLeft: inProgress }];
+  }
+  if (forecast.length && sec.forecast_pause_start && sec.forecast_pause_end) {
+    const pauseA = datePos(timeline, sec.forecast_pause_start, false);
+    const pauseB = datePos(timeline, sec.forecast_pause_end, true);
+    if (pauseA != null && pauseB != null) {
+      const [f] = forecast;
+      forecast = [
+        { a: f.a, b: Math.min(f.b, pauseA), seamLeft: f.seamLeft },
+        { a: Math.max(f.a, pauseB), b: f.b, seamLeft: false },
+      ].filter((p) => p.b > p.a);
     }
   }
 
-  // Зимний простой монолитных работ (forecast.py:_apply_winter_pause) — если
-  // задан, вырезаем эти месяцы из уже построенной полосы: месяцы целиком
-  // внутри паузы удаляются, месяцы на границах обрезаются по фактическому
-  // дню (monthDayFraction), а не выбрасываются целиком.
-  if (sec.forecast_pause_start && sec.forecast_pause_end) {
-    const pauseStartIdx = monthIndexOf(timeline, sec.forecast_pause_start);
-    const pauseEndIdx = monthIndexOf(timeline, sec.forecast_pause_end);
-    if (pauseStartIdx !== -1 && pauseEndIdx !== -1) {
-      const pauseStartFrac = monthDayFraction(sec.forecast_pause_start);
-      const pauseEndFrac = monthDayFraction(sec.forecast_pause_end);
-      for (let i = pauseStartIdx; i <= pauseEndIdx; i++) {
-        const existing = cells.get(i);
-        if (!existing) continue;
-        if (i === pauseStartIdx && i === pauseEndIdx) {
-          cells.delete(i);
-          continue;
-        }
-        if (i === pauseStartIdx) {
-          // Раздел стартует прямо в паузу (не успел начаться до зимы) — куска
-          // "до паузы" нет; без этой проверки полоса неначатого раздела,
-          // которая рисуется с начала месяца, показала бы работу до старта.
-          if (sec.forecast_start && sec.forecast_pause_start <= sec.forecast_start) {
-            cells.delete(i);
-            continue;
-          }
-          const width = Math.max(pauseStartFrac - existing.left, 0);
-          if (width > 0) cells.set(i, { ...existing, width, roundRight: true });
-          else cells.delete(i);
-          continue;
-        }
-        if (i === pauseEndIdx) {
-          const left = Math.max(pauseEndFrac, existing.left);
-          const width = Math.max(existing.left + existing.width - left, 0);
-          if (width > 0) cells.set(i, { left, width, roundLeft: true, roundRight: existing.roundRight });
-          else cells.delete(i);
-          continue;
-        }
-        cells.delete(i);
-      }
-    }
-  }
-
-  return cells;
+  return { plan: { a: planStart, b: planEnd }, fact, forecast, factComplete: pct != null && pct >= 100 };
 }
 
 // ---------------------------------------------------------------------------
@@ -514,7 +464,8 @@ const s = {
   // обычный размер не помещается в колонку и обрезается многоточием.
   finplanNum: { fontSize: 10, padding: "2px 1px", lineHeight: "20px" },
   ganttBarWrap: { position: "relative", height: 18 },
-  ganttBar: { background: PLAN_COLOR, height: 18 },
+  ganttBar: { position: "absolute", top: 0, background: PLAN_COLOR, height: 18 },
+  ganttMonthDivider: { boxShadow: "inset 1px 0 0 rgba(11, 13, 18, 0.75)" },
   // Полоса факта — снизу поверх плановой, потоньше, другим цветом, чтобы
   // план оставался виден целиком, а не перекрывался фактом.
   ganttFactBar: { position: "absolute", left: 0, bottom: 0, height: 7, background: FACT_COLOR },
@@ -679,6 +630,12 @@ function GanttToggles({ layers }) {
   );
 }
 
+function barRadius(roundLeft, roundRight) {
+  const l = roundLeft ? 9 : 0;
+  const r = roundRight ? 9 : 0;
+  return `${l}px ${r}px ${r}px ${l}px`;
+}
+
 function GanttTable({ sections, timeline, showPlan, showFact, showForecast }) {
   const dated = sections.filter((sec) => sec.start && sec.end);
   const today = todayIndex(timeline);
@@ -700,9 +657,7 @@ function GanttTable({ sections, timeline, showPlan, showFact, showForecast }) {
           ))}
 
           {dated.map((sec) => {
-            const startIdx = monthIndexOf(timeline, sec.start);
-            const endIdx = monthIndexOf(timeline, sec.end);
-            const forecastCells = showForecast ? computeForecastOverlay(sec, timeline) : new Map();
+            const spans = sectionSpans(sec, timeline);
 
             return (
               <React.Fragment key={sec.name}>
@@ -710,45 +665,51 @@ function GanttTable({ sections, timeline, showPlan, showFact, showForecast }) {
                   {sec.name}
                 </div>
                 {timeline.map((_, i) => {
-                  const active = i >= startIdx && i <= endIdx;
-                  const isRunStart = active && i === startIdx;
-                  const isRunEnd = active && i === endIdx;
-                  const radius = `${isRunStart ? 9 : 0}px ${isRunEnd ? 9 : 0}px ${isRunEnd ? 9 : 0}px ${
-                    isRunStart ? 9 : 0
-                  }px`;
-                  const fillFrac = showFact ? factFillFraction(startIdx, endIdx, sec.fact_percent, i) : 0;
-                  const factReachesEnd = sec.fact_percent >= 100 && i === endIdx;
-                  const factRadius = `${isRunStart ? 9 : 0}px ${factReachesEnd ? 9 : 0}px ${
-                    factReachesEnd ? 9 : 0
-                  }px ${isRunStart ? 9 : 0}px`;
-
-                  const forecastCell = forecastCells.get(i);
-                  const forecastRadius = forecastCell
-                    ? `${forecastCell.roundLeft ? 9 : 0}px ${forecastCell.roundRight ? 9 : 0}px ${
-                        forecastCell.roundRight ? 9 : 0
-                      }px ${forecastCell.roundLeft ? 9 : 0}px`
-                    : "0";
+                  const plan = spans && showPlan ? cellPiece(spans.plan.a, spans.plan.b, i) : null;
+                  const fact = spans && showFact && spans.fact ? cellPiece(spans.fact.a, spans.fact.b, i) : null;
+                  const forecast =
+                    spans && showForecast
+                      ? spans.forecast.map((f) => ({ f, piece: cellPiece(f.a, f.b, i) })).filter((x) => x.piece)
+                      : [];
 
                   return (
                     <div key={i} style={{ ...s.ganttTd, ...(i === today ? s.todayCol : {}) }}>
-                      {(active || forecastCell) && (
+                      {(plan || fact || forecast.length > 0) && (
                         <div style={s.ganttBarWrap}>
-                          {active && showPlan && <div style={{ ...s.ganttBar, borderRadius: radius }} />}
-                          {active && fillFrac > 0 && (
-                            <div
-                              style={{ ...s.ganttFactBar, width: `${fillFrac * 100}%`, borderRadius: factRadius }}
-                            />
-                          )}
-                          {forecastCell && (
+                          {plan && (
                             <div
                               style={{
-                                ...s.ganttForecastBar,
-                                left: `${forecastCell.left * 100}%`,
-                                width: `${forecastCell.width * 100}%`,
-                                borderRadius: forecastRadius,
+                                ...s.ganttBar,
+                                left: `${plan.left * 100}%`,
+                                width: `${plan.width * 100}%`,
+                                borderRadius: barRadius(plan.startsHere, plan.endsHere),
+                                // Тонкая тёмная черта на границе месяцев — по сегментам
+                                // плановой полосы считается её длительность в месяцах.
+                                ...(plan.startsHere ? {} : s.ganttMonthDivider),
                               }}
                             />
                           )}
+                          {fact && (
+                            <div
+                              style={{
+                                ...s.ganttFactBar,
+                                left: `${fact.left * 100}%`,
+                                width: `${fact.width * 100}%`,
+                                borderRadius: barRadius(fact.startsHere, fact.endsHere && spans.factComplete),
+                              }}
+                            />
+                          )}
+                          {forecast.map(({ f, piece }, k) => (
+                            <div
+                              key={k}
+                              style={{
+                                ...s.ganttForecastBar,
+                                left: `${piece.left * 100}%`,
+                                width: `${piece.width * 100}%`,
+                                borderRadius: barRadius(piece.startsHere && !f.seamLeft, piece.endsHere),
+                              }}
+                            />
+                          ))}
                         </div>
                       )}
                     </div>
