@@ -46,15 +46,37 @@ forecast_start — дата последнего отчёта (as_of): на да
 (а не размазывается по зиме) и доделывается уже после. Добавленные дни
 становятся частью delay_days этого раздела и дальше расходятся на все
 последующие ещё не начатые разделы через обычный carry_forward_days.
+
+Технологические ограничения на старт (START_CONSTRAINTS) — поверх общего
+сдвига, только для ещё не начатых разделов (уже начатую работу переносить
+некуда): кладка может идти параллельно с каркасом, но не раньше чем за
+месяц до его прогнозного окончания; покрытие кровли — только после
+окончания наружной отделки. Вынужденный этим сдвиг — тоже отставание и
+переходит на последующие разделы.
 """
 import calendar
 from datetime import date, timedelta
 
 WINTER_PAUSE_START_MONTH_DAY = (11, 15)  # 15 ноября
 
+# раздел -> (раздел-предшественник, за сколько месяцев до ЕГО прогнозного
+# окончания раздел может начаться; 0 — только после окончания). Названия —
+# как в ГПР/смете (в т.ч. "Наружняя"), сравниваются без учёта регистра.
+START_CONSTRAINTS = {
+    "каменная кладка": ("монолитный каркас", 1),
+    "кровля (покрытие)": ("наружняя отделка", 0),
+}
+
 
 def _parse(d: str) -> date:
     return date.fromisoformat(d)
+
+
+def _minus_months(d: date, months: int) -> date:
+    year_shift, month0 = divmod(d.month - 1 - months, 12)
+    year = d.year + year_shift
+    month = month0 + 1
+    return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
 
 
 def _feb_end(year: int) -> date:
@@ -111,6 +133,7 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
     carry_forward_days = 0
     has_signal = False  # True после первого раздела, давшего сдвиг (факт или вынужденная задержка)
     today = date.today()
+    forecast_end_by_name: dict[str, date] = {}
     result = []
 
     for sec in sections:
@@ -155,9 +178,18 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
             # минус — опережение), но не раньше даты последнего отчёта.
             last_report = min(_parse(fact_as_of_str), today) if fact_as_of_str else today
             forecast_start = max(plan_start + timedelta(days=carry_forward_days), last_report)
+            # Предшественник идёт раньше по плановой хронологии, значит уже
+            # посчитан; если его нет в позиции — ограничение не действует.
+            constraint = START_CONSTRAINTS.get(sec["name"].lower())
+            if constraint:
+                pred_name, months_before = constraint
+                pred_end = forecast_end_by_name.get(pred_name)
+                if pred_end:
+                    forecast_start = max(forecast_start, _minus_months(pred_end, months_before))
             forecast_end = forecast_start + timedelta(days=plan_days)
             forecast_end, pause_start, pause_end = _apply_winter_pause(sec["name"], forecast_start, forecast_end)
 
+        forecast_end_by_name[sec["name"].lower()] = forecast_end
         delay_days = (forecast_end - plan_end).days
         if has_own_fact:
             carry_forward_days = delay_days if not has_signal else max(carry_forward_days, delay_days)
