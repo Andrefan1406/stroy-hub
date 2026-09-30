@@ -45,7 +45,6 @@ router.get('/me', loadRideUser, (req, res) => {
 router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
   const db = getWriteDb();
   const isSiteAdmin = req.firebaseEmail?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-  const localByEmail = new Map(db.prepare('SELECT * FROM users').all().map((r) => [r.email.toLowerCase(), r]));
 
   let firebaseUsers;
   try {
@@ -59,45 +58,63 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
     return res.status(502).json({ error: 'Не удалось получить список пользователей Firebase' });
   }
 
-  const merged = [];
-  for (const fu of firebaseUsers) {
-    if (!fu.email) continue;
-    const key = fu.email.toLowerCase();
-    const local = localByEmail.get(key);
-    localByEmail.delete(key);
-    merged.push({
-      id: local?.id || null,
-      email: fu.email,
-      displayName: fu.displayName || null,
-      name: local?.name || '',
-      phone: local?.phone || '',
-      role: local?.role || null,
-      fullSiteAccess: local ? !!local.full_site_access : false,
-    });
-  }
-  // Локальные записи без соответствующего Firebase-аккаунта (удалён/переименован)
-  // всё равно показываем, чтобы главный админ мог их убрать вручную.
-  for (const leftover of localByEmail.values()) {
-    merged.push({
-      id: leftover.id,
-      email: leftover.email,
-      displayName: null,
-      name: leftover.name,
-      phone: leftover.phone,
-      role: leftover.role,
-      fullSiteAccess: !!leftover.full_site_access,
-    });
-  }
-  merged.sort((a, b) => a.email.localeCompare(b.email));
+  // Весь остальной путь — тоже под try/catch (не только listUsers()): без
+  // этого любая неожиданная строка/данные (например, задание с БД до
+  // текущей NOT NULL-схемы) роняют запрос без JSON-тела — клиент видит
+  // голый "Ошибка сервера (500)" вместо понятного сообщения, а причина
+  // видна только тут, в логе бэкенда.
+  try {
+    // .filter(r => r.email) — на случай строки без email, оставшейся с более
+    // ранней версии схемы (до NOT NULL на этой колонке, см. db.js): такая
+    // строка не даст восстановить исходный email обратно, но не должна
+    // обрушивать весь список остальных пользователей.
+    const localByEmail = new Map(
+      db.prepare('SELECT * FROM users').all().filter((r) => r.email).map((r) => [r.email.toLowerCase(), r])
+    );
 
-  if (isSiteAdmin) {
-    return res.json({ users: merged });
-  }
+    const merged = [];
+    for (const fu of firebaseUsers) {
+      if (!fu.email) continue;
+      const key = fu.email.toLowerCase();
+      const local = localByEmail.get(key);
+      localByEmail.delete(key);
+      merged.push({
+        id: local?.id || null,
+        email: fu.email,
+        displayName: fu.displayName || null,
+        name: local?.name || '',
+        phone: local?.phone || '',
+        role: local?.role || null,
+        fullSiteAccess: local ? !!local.full_site_access : false,
+      });
+    }
+    // Локальные записи без соответствующего Firebase-аккаунта (удалён/переименован)
+    // всё равно показываем, чтобы главный админ мог их убрать вручную.
+    for (const leftover of localByEmail.values()) {
+      merged.push({
+        id: leftover.id,
+        email: leftover.email,
+        displayName: null,
+        name: leftover.name,
+        phone: leftover.phone,
+        role: leftover.role,
+        fullSiteAccess: !!leftover.full_site_access,
+      });
+    }
+    merged.sort((a, b) => a.email.localeCompare(b.email));
 
-  // Диспетчер: только тем, кому роль уже назначена, без full_site_access
-  // (это не его рычаг) — заполняет карточку (имя/телефон) уже готовым записям.
-  const result = merged.filter((u) => u.role).map(({ fullSiteAccess, ...rest }) => rest);
-  res.json({ users: result });
+    if (isSiteAdmin) {
+      return res.json({ users: merged });
+    }
+
+    // Диспетчер: только тем, кому роль уже назначена, без full_site_access
+    // (это не его рычаг) — заполняет карточку (имя/телефон) уже готовым записям.
+    const result = merged.filter((u) => u.role).map(({ fullSiteAccess, ...rest }) => rest);
+    res.json({ users: result });
+  } catch (err) {
+    console.error('GET /api/v1/users не сработал:', err);
+    res.status(500).json({ error: 'Не удалось собрать список пользователей' });
+  }
 });
 
 const roleAssignmentSchema = z.object({
