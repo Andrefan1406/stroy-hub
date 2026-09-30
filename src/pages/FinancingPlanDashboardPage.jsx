@@ -324,7 +324,7 @@ const s = {
     background: "#0b0d12",
     color: "#e8eaf0",
     fontFamily: "'Segoe UI', Roboto, -apple-system, sans-serif",
-    padding: "16px 20px 24px",
+    padding: "16px 20px 12px",
   },
   topBar: {
     display: "flex",
@@ -456,11 +456,12 @@ const s = {
   // Подпись месяца повёрнута на 90° — при большом числе месяцев в строке
   // это единственный способ показать полное название без горизонтального
   // скролла (см. th выше — там подпись не помещалась и обрезалась "…").
+  // Высота не фиксирована — строка шапки растягивается под самую длинную
+  // подпись ("Янв 27"), иначе при другой ширине шрифта обрезается год.
   thMonth: {
     writingMode: "vertical-rl",
     transform: "rotate(180deg)",
-    height: 56,
-    padding: "4px 2px",
+    padding: "6px 2px",
     whiteSpace: "nowrap",
   },
   thFirst: {
@@ -504,7 +505,10 @@ const s = {
   // Без горизонтального паддинга у ячейки (в отличие от обычного s.td) —
   // чтобы полоса работы у соседних активных месяцев стыковалась вплотную,
   // без разрыва, и читалась одной сплошной полосой, а не отдельными кубиками.
-  ganttTd: { padding: "3px 0", textAlign: "center", borderBottom: "1px solid #1e222b", whiteSpace: "nowrap" },
+  // Строки графика чуть выше строк финплана (30px против 25px) — между
+  // полосами больше воздуха; финплан с таким шагом перестал бы влезать в экран.
+  tdFirstGantt: { padding: "4.5px 8px" },
+  ganttTd: { padding: "5.5px 0", textAlign: "center", borderBottom: "1px solid #1e222b", whiteSpace: "nowrap" },
   // Меньше шрифт и паддинг, чем у обычного s.td — суммы по объекту целиком
   // (агрегат по 9 позициям) четырёхзначные, при 20+ месяцах в строке
   // обычный размер не помещается в колонку и обрезается многоточием.
@@ -691,7 +695,7 @@ function GanttTable({ sections, timeline, showPlan, showFact, showForecast }) {
           {timeline.map((m, i) => (
             <div key={i} style={{ ...s.th, ...s.thMonth, ...(i === today ? s.todayCol : {}) }}>
               {m.label}
-              {m.monthIndex === 0 ? ` ${String(m.year).slice(2)}` : ""}
+              {m.monthIndex === 0 || i === 0 ? ` ${String(m.year).slice(2)}` : ""}
             </div>
           ))}
 
@@ -702,7 +706,7 @@ function GanttTable({ sections, timeline, showPlan, showFact, showForecast }) {
 
             return (
               <React.Fragment key={sec.name}>
-                <div style={s.tdFirstCompact} title={sec.name}>
+                <div style={{ ...s.tdFirstCompact, ...s.tdFirstGantt }} title={sec.name}>
                   {sec.name}
                 </div>
                 {timeline.map((_, i) => {
@@ -934,7 +938,7 @@ function FinPlanTable({ sections, timeline, mode }) {
           {timeline.map((m, i) => (
             <div key={i} style={{ ...s.th, ...s.thMonth, ...(i === today ? s.todayCol : {}) }}>
               {m.label}
-              {m.monthIndex === 0 ? ` ${String(m.year).slice(2)}` : ""}
+              {m.monthIndex === 0 || i === 0 ? ` ${String(m.year).slice(2)}` : ""}
             </div>
           ))}
 
