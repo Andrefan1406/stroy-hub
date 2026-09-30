@@ -33,3 +33,6 @@ yarn-error.log*
 
 # Firebase service account ключ (см. server/rides/README.md) — секрет, никогда не коммитить
 /firebase-key.json
+/serviceAccountKey.json
+
+/passwords.xlsx

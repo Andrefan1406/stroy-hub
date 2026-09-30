@@ -36,8 +36,8 @@ function RoleAssignmentTab() {
   const [error, setError] = useState("");
   const [savingEmail, setSavingEmail] = useState(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const { users: rows } = await ridesApiFetch("/api/v1/users");
@@ -50,7 +50,7 @@ function RoleAssignmentTab() {
     } catch (err) {
       setError(err.message || "Не удалось загрузить список пользователей");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -68,7 +68,9 @@ function RoleAssignmentTab() {
       } else {
         await ridesApiPut(`/api/v1/users/${encodeURIComponent(email)}`, draft);
       }
-      await load();
+      // silent — чтобы список не пропадал во время перезагрузки и страница
+      // не прыгала к началу (не показываем "Загрузка..." вместо таблицы)
+      await load(true);
     } catch (err) {
       setError(err.message || "Не удалось сохранить пользователя");
     } finally {
@@ -134,8 +136,8 @@ function UserCardsTab() {
   const [error, setError] = useState("");
   const [savingEmail, setSavingEmail] = useState(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const { users: rows } = await ridesApiFetch("/api/v1/users");
@@ -148,7 +150,7 @@ function UserCardsTab() {
     } catch (err) {
       setError(err.message || "Не удалось загрузить список пользователей");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -166,7 +168,9 @@ function UserCardsTab() {
     setError("");
     try {
       await ridesApiPatch(`/api/v1/users/${encodeURIComponent(email)}`, draft);
-      await load();
+      // silent — чтобы список не пропадал во время перезагрузки и страница
+      // не прыгала к началу (не показываем "Загрузка..." вместо таблицы)
+      await load(true);
     } catch (err) {
       setError(err.message || "Не удалось сохранить карточку");
     } finally {

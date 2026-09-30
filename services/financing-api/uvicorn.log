@@ -1,0 +1,39 @@
+INFO:     Started server process [10812]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:50923 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51093 - "OPTIONS /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51092 - "OPTIONS /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51093 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51092 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51112 - "OPTIONS /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51112 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51164 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51244 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51246 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51246 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52402 - "OPTIONS /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52401 - "OPTIONS /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52401 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52402 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52403 - "OPTIONS /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52403 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52490 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52552 - "OPTIONS /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52552 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52574 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52837 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52837 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52839 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53406 - "OPTIONS /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53406 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53745 - "OPTIONS /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53744 - "OPTIONS /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53744 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53745 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53746 - "OPTIONS /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53746 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53907 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54152 - "OPTIONS /financing-plan/nz4 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54152 - "GET /financing-plan/nz4 HTTP/1.1" 200 OK
