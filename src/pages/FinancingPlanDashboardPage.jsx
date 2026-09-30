@@ -265,6 +265,13 @@ function computeForecastOverlay(sec, timeline) {
           continue;
         }
         if (i === pauseStartIdx) {
+          // Раздел стартует прямо в паузу (не успел начаться до зимы) — куска
+          // "до паузы" нет; без этой проверки полоса неначатого раздела,
+          // которая рисуется с начала месяца, показала бы работу до старта.
+          if (sec.forecast_start && sec.forecast_pause_start <= sec.forecast_start) {
+            cells.delete(i);
+            continue;
+          }
           const width = Math.max(pauseStartFrac - existing.left, 0);
           if (width > 0) cells.set(i, { ...existing, width, roundRight: true });
           else cells.delete(i);
