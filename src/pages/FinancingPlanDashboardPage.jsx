@@ -119,6 +119,7 @@ function aggregateSectionsByName(positions) {
           fact_as_of: null,
           weightedFactSum: 0,
           factWeight: 0,
+          anyFact: false,
           anyStarted: false,
           allCompleted: true,
         });
@@ -146,17 +147,21 @@ function aggregateSectionsByName(positions) {
       if (sec.fact_start && (!agg.fact_start || sec.fact_start < agg.fact_start)) agg.fact_start = sec.fact_start;
       if (sec.fact_end && (!agg.fact_end || sec.fact_end > agg.fact_end)) agg.fact_end = sec.fact_end;
       if (sec.fact_as_of && (!agg.fact_as_of || sec.fact_as_of > agg.fact_as_of)) agg.fact_as_of = sec.fact_as_of;
-      if (sec.fact_percent != null && sec.cost != null) {
-        agg.weightedFactSum += sec.cost * sec.fact_percent;
+      // Нет данных о факте по позиции = работы не начаты (0%), как и в
+      // forecast.py, — а не "пропустить позицию": иначе средний % начатых
+      // позиций размазывался бы и на неначатые, завышая факт по разделу.
+      if (sec.cost != null) {
+        agg.weightedFactSum += sec.cost * (sec.fact_percent || 0);
         agg.factWeight += sec.cost;
-        if (sec.fact_percent > 0) agg.anyStarted = true;
       }
+      if (sec.fact_percent != null) agg.anyFact = true;
+      if (sec.fact_percent > 0) agg.anyStarted = true;
       if (!sec.fact_completed) agg.allCompleted = false;
     }
   }
 
   return Array.from(byName.values()).map((agg) => {
-    const factPercent = agg.factWeight > 0 ? agg.weightedFactSum / agg.factWeight : null;
+    const factPercent = agg.anyFact && agg.factWeight > 0 ? agg.weightedFactSum / agg.factWeight : null;
     return {
       name: agg.name,
       cost: agg.cost,
@@ -973,6 +978,10 @@ const FinancingPlanDashboardPage = () => {
   const [summaryByObject, setSummaryByObject] = useState({});
   const setObjectSummary = (key, checked) => setSummaryByObject((prev) => ({ ...prev, [key]: checked }));
   const summaryOnly = !!summaryByObject[objectKey];
+  // Общая сводка по нескольким отмеченным объектам сразу (карточка появляется,
+  // когда галочка стоит у 2+ объектов категории).
+  const [combinedView, setCombinedView] = useState(false);
+  const [combinedPlans, setCombinedPlans] = useState(null);
 
   // Верхние уровни (категория/объект) — лёгкий эндпоинт, грузится сразу.
   useEffect(() => {
@@ -1000,6 +1009,50 @@ const FinancingPlanDashboardPage = () => {
     [category, objectKey]
   );
 
+  const selectedObjects = useMemo(
+    () => (category ? category.objects.filter((o) => summaryByObject[o.key]) : []),
+    [category, summaryByObject]
+  );
+  const selectedAgg = useMemo(
+    () => ({
+      buildings_count: selectedObjects.reduce((sum, o) => sum + o.buildings_count, 0),
+      apartments_count: selectedObjects.reduce((sum, o) => sum + o.apartments_count, 0),
+      apartments_area_m2: selectedObjects.reduce((sum, o) => sum + o.apartments_area_m2, 0),
+      commercial_area_m2: selectedObjects.reduce((sum, o) => sum + o.commercial_area_m2, 0),
+    }),
+    [selectedObjects]
+  );
+  const combinedTitle = selectedObjects.map((o) => o.name).join(" + ");
+
+  // Финпланы всех отмеченных объектов — только когда открыли общую сводку
+  // (каждый запрос дорогой: смета + пересинк ГПР).
+  const combinedKeys = combinedView ? selectedObjects.map((o) => o.key).join(",") : "";
+  useEffect(() => {
+    if (!combinedKeys) return;
+    setCombinedPlans(null);
+    Promise.all(combinedKeys.split(",").map(fetchFinancingPlan))
+      .then(setCombinedPlans)
+      .catch((err) => setLoadError(err.message || "Не удалось загрузить финплан"));
+  }, [combinedKeys]);
+
+  // Разделы всех позиций всех отмеченных объектов, сведённые по названию —
+  // так же, как сводная по одному объекту, только позиций больше. Ключи
+  // позиций с префиксом объекта, чтобы одинаковые номера не склеились.
+  const combined = useMemo(() => {
+    if (!combinedPlans) return null;
+    const positions = {};
+    for (const p of combinedPlans) {
+      for (const [key, pos] of Object.entries(p.positions)) positions[`${p.object}:${key}`] = pos;
+    }
+    const sections = aggregateSectionsByName(positions);
+    return {
+      total: combinedPlans.reduce((sum, p) => sum + p.total, 0),
+      sections,
+      timeline: buildTimeline(sections),
+      finish: computeFinishSummary(sections),
+    };
+  }, [combinedPlans]);
+
   const position = useMemo(
     () => (plan && positionKey ? plan.positions[positionKey] : null),
     [plan, positionKey]
@@ -1022,10 +1075,17 @@ const FinancingPlanDashboardPage = () => {
     setObjectKey(null);
     setPlan(null);
     setPositionKey(null);
+    setCombinedView(false);
   };
   const selectObject = (key) => {
     setObjectKey(key);
     setPositionKey(null);
+    setCombinedView(false);
+  };
+  const openCombined = () => {
+    setObjectKey(null);
+    setPositionKey(null);
+    setCombinedView(true);
   };
   const selectPosition = (key) => {
     setPositionKey(key);
@@ -1036,10 +1096,28 @@ const FinancingPlanDashboardPage = () => {
     setObjectSummary(objectKey, true);
   };
 
-  // Экран деталей — общий для сводной по объекту и для позиции: заголовок с
-  // цифрами, полоса переключения позиций (вкладка и галочки при переключении
-  // сохраняются — в отличие от входа с карточки, см. selectPosition), вкладки.
-  const renderDetail = ({ title, total, finish, sections, timeline: tl, apartmentsArea, commercialArea }) => (
+  // Полоса переключения: у объекта — "Сводная" + его позиции; у общей
+  // сводки по нескольким объектам — "Сводная" + сами объекты (клик ведёт в
+  // сводную этого объекта, его галочка уже стоит).
+  const objectStrip = () => [
+    { key: "summary", label: "Сводная", active: !positionKey, onClick: openObjectSummary },
+    ...Object.keys(plan.positions).map((key) => ({
+      key,
+      label: key,
+      active: key === positionKey,
+      onClick: () => setPositionKey(key),
+    })),
+  ];
+  const combinedStrip = () => [
+    { key: "summary", label: "Сводная", active: true, onClick: () => {} },
+    ...selectedObjects.map((o) => ({ key: o.key, label: o.name, active: false, onClick: () => selectObject(o.key) })),
+  ];
+
+  // Экран деталей — общий для сводной по объекту, для позиции и для общей
+  // сводки по нескольким объектам: заголовок с цифрами, полоса переключения
+  // (вкладка и галочки при переключении сохраняются — в отличие от входа с
+  // карточки, см. selectPosition), вкладки.
+  const renderDetail = ({ title, total, finish, sections, timeline: tl, apartmentsArea, commercialArea, strip }) => (
     <>
       <div style={s.detailHeader}>
         <div style={s.detailTitle}>{title}</div>
@@ -1047,12 +1125,9 @@ const FinancingPlanDashboardPage = () => {
       </div>
 
       <div style={s.posStrip}>
-        <button style={s.posChip(!positionKey)} onClick={openObjectSummary}>
-          Сводная
-        </button>
-        {Object.keys(plan.positions).map((key) => (
-          <button key={key} style={s.posChip(key === positionKey)} onClick={() => setPositionKey(key)}>
-            {key}
+        {strip.map((item) => (
+          <button key={item.key} style={s.posChip(item.active)} onClick={item.onClick}>
+            {item.label}
           </button>
         ))}
       </div>
@@ -1123,11 +1198,17 @@ const FinancingPlanDashboardPage = () => {
                 <>
                   <span>/</span>
                   <button
-                    style={objectKey ? s.crumbBtn : { ...s.crumbBtn, ...s.crumbCurrent }}
+                    style={objectKey || combinedView ? s.crumbBtn : { ...s.crumbBtn, ...s.crumbCurrent }}
                     onClick={() => selectObject(null)}
                   >
                     {category.name}
                   </button>
+                </>
+              )}
+              {combinedView && (
+                <>
+                  <span>/</span>
+                  <span style={s.crumbCurrent}>Сводная: {combinedTitle}</span>
                 </>
               )}
               {objectSummary && (
@@ -1157,7 +1238,7 @@ const FinancingPlanDashboardPage = () => {
               </div>
             )}
 
-            {category && !objectSummary && (
+            {category && !objectSummary && !combinedView && (
               <div style={s.grid}>
                 {category.objects.map((obj) => (
                   <AggregateCard
@@ -1171,8 +1252,30 @@ const FinancingPlanDashboardPage = () => {
                     }}
                   />
                 ))}
+                {selectedObjects.length >= 2 && (
+                  <AggregateCard title={`Сводная: ${combinedTitle}`} agg={selectedAgg} onClick={openCombined} />
+                )}
               </div>
             )}
+
+            {category && combinedView && selectedObjects.length >= 2 && !combined && !loadError && (
+              <div style={s.centerNote}>Загрузка данных из сметы и ГПР…</div>
+            )}
+
+            {category &&
+              combinedView &&
+              selectedObjects.length >= 2 &&
+              combined &&
+              renderDetail({
+                title: `Сводная: ${combinedTitle}`,
+                total: combined.total,
+                finish: combined.finish,
+                sections: combined.sections,
+                timeline: combined.timeline,
+                apartmentsArea: selectedAgg.apartments_area_m2,
+                commercialArea: selectedAgg.commercial_area_m2,
+                strip: combinedStrip(),
+              })}
 
             {objectSummary && !plan && !loadError && (
               <div style={s.centerNote}>Загрузка данных из сметы и ГПР…</div>
@@ -1189,6 +1292,7 @@ const FinancingPlanDashboardPage = () => {
                     timeline: objectTimeline,
                     apartmentsArea: objectSummary.apartments_area_m2,
                     commercialArea: objectSummary.commercial_area_m2,
+                    strip: objectStrip(),
                   })
                 ) : (
                   <div style={s.grid}>
@@ -1216,6 +1320,7 @@ const FinancingPlanDashboardPage = () => {
                 timeline,
                 apartmentsArea: position.apartments_area_m2,
                 commercialArea: (position.commercial_floor1_area_m2 || 0) + (position.commercial_basement_area_m2 || 0),
+                strip: objectStrip(),
               })}
           </>
         )}
