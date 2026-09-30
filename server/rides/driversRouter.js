@@ -104,7 +104,20 @@ router.delete('/:id', requireRideRole('dispatcher'), (req, res) => {
   const db = getWriteDb();
   const inUse = db.prepare(`SELECT 1 FROM requests WHERE driver_id = ? AND status IN ('assigned', 'in_progress')`).get(req.params.id);
   if (inUse) return res.status(409).json({ error: 'У водителя есть активный заказ — сначала закройте его' });
-  db.prepare('DELETE FROM drivers WHERE id = ?').run(req.params.id);
+  try {
+    db.prepare('DELETE FROM drivers WHERE id = ?').run(req.params.id);
+  } catch (err) {
+    // requests.driver_id хранит водителя для ЛЮБОГО статуса, не только
+    // активного (иначе завершённая поездка потеряла бы, кто её вёз) —
+    // проверка выше ловит только "активный заказ", а водитель с ЗАВЕРШЁННОЙ
+    // историей (или записью в request_merges) всё равно валит DELETE
+    // ограничением внешнего ключа. Это ожидаемое ограничение схемы (историю
+    // поездок не теряем), но раньше падало без ответа клиенту вовсе.
+    if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
+      return res.status(409).json({ error: 'У водителя есть история заказов — карточку нельзя удалить' });
+    }
+    throw err;
+  }
   res.json({ ok: true });
 });
 
