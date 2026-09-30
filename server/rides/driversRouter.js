@@ -29,6 +29,9 @@ const driverSchema = z.object({
 const driverUpdateSchema = z.object({
   vehicleId: z.coerce.number().int().positive().nullable().optional(),
   status: z.enum(['available', 'busy', 'offline']).optional(),
+  // Уволить/восстановить — см. комментарий у колонки active в db.js. Отдельно
+  // от status: "офлайн" — временное "не на смене", "неактивен" — ушёл совсем.
+  active: z.boolean().optional(),
 });
 
 const selfStatusSchema = z.object({
@@ -44,6 +47,7 @@ function serialize(row) {
     vehicleId: row.vehicle_id,
     vehiclePlate: row.plate_number || null,
     status: row.status,
+    active: !!row.active,
   };
 }
 
@@ -59,9 +63,12 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), (req, res) => {
   res.json({ drivers: rows.map(serialize) });
 });
 
-// Диспетчеру нужен именно список свободных — для формы принудительного назначения.
+// Диспетчеру нужен именно список свободных — для формы принудительного
+// назначения; уволенных (active=0) сюда не пускаем, даже если статус в базе
+// остался "available" (не должно случаться — архивирование сбрасывает его в
+// offline, см. PATCH ниже, но фильтр не помешает на случай рассинхрона).
 router.get('/available', requireRideRole('dispatcher'), (req, res) => {
-  const rows = getWriteDb().prepare(`${FULL_SELECT} WHERE d.status = 'available' ORDER BY u.name`).all();
+  const rows = getWriteDb().prepare(`${FULL_SELECT} WHERE d.status = 'available' AND d.active = 1 ORDER BY u.name`).all();
   res.json({ drivers: rows.map(serialize) });
 });
 
@@ -92,11 +99,22 @@ router.patch('/:id', requireRideRole('dispatcher'), validate(driverUpdateSchema)
   const existing = db.prepare('SELECT * FROM drivers WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Водитель не найден' });
 
+  const archiving = req.body.active === false && existing.active;
+  if (archiving) {
+    // Тот же кейс, что и у DELETE: нельзя убрать из работы того, кто прямо
+    // сейчас в рейсе — водитель освободится с активным заказом на руках.
+    const inUse = db.prepare(`SELECT 1 FROM requests WHERE driver_id = ? AND status IN ('assigned', 'in_progress')`).get(req.params.id);
+    if (inUse) return res.status(409).json({ error: 'У водителя есть активный заказ — сначала закройте его' });
+  }
+
   const next = {
     vehicle_id: req.body.vehicleId !== undefined ? req.body.vehicleId : existing.vehicle_id,
-    status: req.body.status ?? existing.status,
+    // Уволенный не может остаться "доступен"/"занят" — archiving форсирует offline.
+    status: archiving ? 'offline' : req.body.status ?? existing.status,
+    active: req.body.active !== undefined ? (req.body.active ? 1 : 0) : existing.active,
   };
-  db.prepare('UPDATE drivers SET vehicle_id = ?, status = ? WHERE id = ?').run(next.vehicle_id, next.status, req.params.id);
+  db.prepare('UPDATE drivers SET vehicle_id = ?, status = ?, active = ? WHERE id = ?')
+    .run(next.vehicle_id, next.status, next.active, req.params.id);
   res.json({ driver: serialize(db.prepare(`${FULL_SELECT} WHERE d.id = ?`).get(req.params.id)) });
 });
 

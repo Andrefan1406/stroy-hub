@@ -324,6 +324,10 @@ function DriversTab({ readOnly }) {
   const [driverUsers, setDriverUsers] = useState([]);
   const [error, setError] = useState("");
   const [form, setForm] = useState({ userId: "", vehicleId: "" });
+  // Уволенных водителей (active=false) не удаляем — сервер не даст, если у
+  // них есть история заказов (см. driversRouter.js) — а прячем из списка по
+  // умолчанию, чтобы не мешались среди работающих; полный список — по галочке.
+  const [showArchived, setShowArchived] = useState(false);
 
   const load = useCallback(async () => {
     setError("");
@@ -381,6 +385,18 @@ function DriversTab({ readOnly }) {
     }
   };
 
+  const setArchived = async (id, active) => {
+    try {
+      await ridesApiPatch(`/api/v1/drivers/${id}`, { active });
+      load();
+    } catch (err) {
+      setError(err.message || "Не удалось изменить статус водителя");
+    }
+  };
+
+  const visibleDrivers = drivers.filter((d) => showArchived || d.active);
+  const archivedCount = drivers.filter((d) => !d.active).length;
+
   return (
     <div>
       {error && <div style={s.error}>{error}</div>}
@@ -400,6 +416,12 @@ function DriversTab({ readOnly }) {
       {!readOnly && unassigned.length === 0 && driverUsers.length === 0 && (
         <p style={s.muted}>Сначала назначьте кому-нибудь роль «Водитель» на вкладке «Пользователи и роли».</p>
       )}
+      {archivedCount > 0 && (
+        <label style={{ ...s.muted, display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+          Показать уволенных ({archivedCount})
+        </label>
+      )}
       <div style={s.tableWrap}>
         <table style={s.table}>
           <thead>
@@ -412,21 +434,28 @@ function DriversTab({ readOnly }) {
             </tr>
           </thead>
           <tbody>
-            {drivers.map((d) => (
-              <tr key={d.id}>
+            {visibleDrivers.map((d) => (
+              <tr key={d.id} style={d.active ? undefined : { opacity: 0.55 }}>
                 <td style={s.td}>{d.name}</td>
                 <td style={s.td}>{d.phone}</td>
                 <td style={s.td}>
-                  {readOnly ? (d.vehiclePlate || "— не закреплена —") : (
+                  {readOnly || !d.active ? (d.vehiclePlate || "— не закреплена —") : (
                     <select style={s.inputSmall} value={d.vehicleId || ""} onChange={(e) => updateVehicle(d.id, e.target.value ? Number(e.target.value) : "")}>
                       <option value="">— не закреплена —</option>
                       {vehicles.map((v) => <option key={v.id} value={v.id}>{v.plateNumber}</option>)}
                     </select>
                   )}
                 </td>
-                <td style={s.td}>{d.status}</td>
+                <td style={s.td}>{d.active ? d.status : "уволен"}</td>
                 {!readOnly && (
-                  <td style={s.td}><button style={s.dangerButton} onClick={() => remove(d.id)}>Удалить</button></td>
+                  <td style={{ ...s.td, display: "flex", gap: "8px" }}>
+                    {d.active ? (
+                      <button style={s.secondaryButton} onClick={() => setArchived(d.id, false)}>Уволить</button>
+                    ) : (
+                      <button style={s.secondaryButton} onClick={() => setArchived(d.id, true)}>Восстановить</button>
+                    )}
+                    <button style={s.dangerButton} onClick={() => remove(d.id)}>Удалить</button>
+                  </td>
                 )}
               </tr>
             ))}

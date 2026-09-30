@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS drivers (
   user_id     INTEGER NOT NULL UNIQUE REFERENCES users(id),
   vehicle_id  INTEGER REFERENCES vehicles(id),
   status      TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('available','busy','offline')),
+  -- 0 = уволен/ушёл — скрыт из рабочих списков (см. migrateSchema про active).
+  active      INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -274,6 +276,16 @@ function migrateSchema(db) {
   if (!stopColumns.includes('lng')) db.exec('ALTER TABLE request_stops ADD COLUMN lng REAL');
   if (!stopColumns.includes('merged_from_request_id')) {
     db.exec('ALTER TABLE request_stops ADD COLUMN merged_from_request_id INTEGER');
+  }
+
+  // active — уволенного/ушедшего водителя нельзя удалить (requests.driver_id
+  // хранит его для ВСЕЙ истории заказов, не только активных, см.
+  // driversRouter.js DELETE), но и держать его в рабочих списках (выбор при
+  // принудительном назначении) не нужно — active=0 прячет карточку оттуда,
+  // не трогая историю. Карточка и её заказы остаются на месте.
+  const driverColumns = db.prepare("PRAGMA table_info(drivers)").all().map((c) => c.name);
+  if (!driverColumns.includes('active')) {
+    db.exec('ALTER TABLE drivers ADD COLUMN active INTEGER NOT NULL DEFAULT 1');
   }
 }
 
