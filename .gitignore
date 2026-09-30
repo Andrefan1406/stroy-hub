@@ -27,3 +27,7 @@ yarn-error.log*
 
 # локальный SQLite-кэш concrete_orders — пересоздаётся синком при старте сервера
 /server/data/
+
+add_firebase_users.py
+serviceAccountKey.json
+passwords.xlsx
