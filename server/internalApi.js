@@ -21,16 +21,25 @@ router.get('/gpr-values', (req, res) => {
     return res.status(400).json({ error: 'Параметр source_key обязателен' });
   }
 
-  const rows = getWriteDb()
-    .prepare(
-      `SELECT position, block, work_name, report_date, percent
-       FROM gpr_report_values
-       WHERE source_key = ?
-       ORDER BY position, work_name, report_date`
-    )
-    .all(sourceKey);
+  try {
+    const rows = getWriteDb()
+      .prepare(
+        `SELECT position, block, work_name, report_date, percent
+         FROM gpr_report_values
+         WHERE source_key = ?
+         ORDER BY position, work_name, report_date`
+      )
+      .all(sourceKey);
 
-  res.json({ source_key: sourceKey, rows });
+    res.json({ source_key: sourceKey, rows });
+  } catch (err) {
+    // Например, таблица ещё не создана на этом инстансе (миграция не
+    // прошла/БД на эфемерном диске не проинициализирована) — без этого
+    // клиент (FastAPI) видел голый 500 без тела ответа, причина была
+    // видна только в этом логе.
+    console.error(`[internal-api] GET /gpr-values?source_key=${sourceKey} не сработал:`, err);
+    res.status(500).json({ error: 'Не удалось получить данные ГПР' });
+  }
 });
 
 // Плановые начало/конец раздела (см. gpr_report_plan_dates в db.js) — из
@@ -42,16 +51,21 @@ router.get('/gpr-plan-dates', (req, res) => {
     return res.status(400).json({ error: 'Параметр source_key обязателен' });
   }
 
-  const rows = getWriteDb()
-    .prepare(
-      `SELECT position, block, work_name, plan_start, plan_end
-       FROM gpr_report_plan_dates
-       WHERE source_key = ?
-       ORDER BY position, work_name`
-    )
-    .all(sourceKey);
+  try {
+    const rows = getWriteDb()
+      .prepare(
+        `SELECT position, block, work_name, plan_start, plan_end
+         FROM gpr_report_plan_dates
+         WHERE source_key = ?
+         ORDER BY position, work_name`
+      )
+      .all(sourceKey);
 
-  res.json({ source_key: sourceKey, rows });
+    res.json({ source_key: sourceKey, rows });
+  } catch (err) {
+    console.error(`[internal-api] GET /gpr-plan-dates?source_key=${sourceKey} не сработал:`, err);
+    res.status(500).json({ error: 'Не удалось получить плановые сроки ГПР' });
+  }
 });
 
 // Точечный пересинк ОДНОГО источника ГПР (см. resyncSource в
