@@ -25,6 +25,7 @@ import SmartRequestPage from './SmartRequestPage';
 import LoginPage from './LoginPage';
 import PrivateRoute from './components/PrivateRoute';
 import AdminRoute from './components/AdminRoute';
+import FinancingRoute from './components/FinancingRoute';
 import PeopleGapsGuard from './components/PeopleGapsGuard';
 import GprReportGuard from './components/GprReportGuard';
 import ManualBlockGuard from './components/ManualBlockGuard';
@@ -43,6 +44,7 @@ import DriverDashboardPage from "./pages/rides/DriverDashboardPage";
 import EmployeeRidesPage from "./pages/rides/EmployeeRidesPage";
 import DispatcherRidesPage from "./pages/rides/DispatcherRidesPage";
 import RidesAdminPage from "./pages/rides/RidesAdminPage";
+import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 
 
 const Protected = ({ children }) => (
@@ -247,6 +249,15 @@ const App = () => {
             <Protected>
               <ConcreteDashboardPage />
             </Protected>
+          }
+        />
+
+        <Route
+          path="/financing-plan"
+          element={
+            <FinancingRoute>
+              <FinancingPlanDashboardPage />
+            </FinancingRoute>
           }
         />
 

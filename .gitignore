@@ -36,3 +36,4 @@ yarn-error.log*
 /serviceAccountKey.json
 
 /passwords.xlsx
+add_firebase_users.py

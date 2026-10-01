@@ -167,6 +167,27 @@ const SOURCES = [
     excludeWorkNames: new Set(),
   },
   {
+    key: 'nz5_fact',
+    label: 'ГПР Нурлы Жол 5 (факт, для финплана)',
+    // Тот же spreadsheetId, что у 'nz5', НО лист "факт", а не "план" —
+    // отдельный source, а не просто добавленный лист в 'nz5', потому что
+    // 'nz5' используется ещё и для проверки пропусков отчётности на
+    // /admin/users, и трогать его поведение не нужно. Разница между
+    // листами: у "план" % каждого раздела плавно доходит до 100 ровно к
+    // плановой дате окончания и дальше остаётся 100 (похоже на проекцию,
+    // а не на реальные еженедельные отметки от людей на площадке); у
+    // "факт" недельные значения — настоящие отчёты (см. историю задачи:
+    // "Финплан объекта" показывал полосу факта 1:1 с планом для Нурлы Жол
+    // 5, хотя по факту готовность значительно отставала). Структура листа
+    // идентична "план" (те же колонки "Начало"/"Окончание"/"Категория",
+    // недельные даты в одной строке — offset [2] по умолчанию).
+    sheets: [
+      { spreadsheetId: '1hbfMRSH7wsP5KhSDk5Tuk79pirvftOC_tFXHHWryPIg', sheetName: 'факт' },
+    ],
+    includePosition: () => true,
+    excludeWorkNames: new Set(),
+  },
+  {
     key: 'razvyazka',
     label: 'ГПР Развязка',
     sheets: [
@@ -372,6 +393,11 @@ async function fetchAndParseSheet(source, sheet) {
   const labelsRow = raw[labelsRowIndex];
   const firstDateCol = endColIndex + 1;
 
+  // Плановые начало/конец раздела (см. gpr_report_plan_dates в db.js) —
+  // необязательная колонка: если на каком-то листе её нет, просто не будет
+  // плановых дат для этого источника, синк остальных данных не ломаем.
+  const startColIndex = labelsRow.findIndex((v) => typeof v === 'string' && /начал/i.test(v));
+
   // На "ГПР факт" (Развязка) колонки "Конструктивы" вообще нет — само
   // название работы там без подписи в строке заголовков (соседняя ячейка
   // "Объем работы" — это подпись для КОЛИЧЕСТВА, не имени работы), поэтому
@@ -464,6 +490,7 @@ async function fetchAndParseSheet(source, sheet) {
   }
 
   const rows = [];
+  const planRows = [];
   // Одна и та же работа изредка встречается ДВАЖДЫ под одной позицией на
   // отдельных строках с непересекающимися интервалами дат (см. "ГПР
   // Экополис поз. 103,104,105": "Монолитный каркас"/"Каменная кладка" —
@@ -617,6 +644,22 @@ async function fetchAndParseSheet(source, sheet) {
     workNameOccurrences.set(occurrenceKey, occurrence);
     const storedWorkName = occurrence > 1 ? `${workName} (${occurrence})` : workName;
 
+    // Начало/конец — одно значение на весь раздел (не по неделям, в
+    // отличие от dateColumns ниже), поэтому читаются один раз здесь.
+    if (startColIndex !== -1) {
+      const startCell = row[startColIndex];
+      const endCell = row[endColIndex];
+      const isDateSerial = (v) => typeof v === 'number' && Number.isFinite(v) && v >= MIN_DATE_SERIAL && v <= MAX_DATE_SERIAL;
+      planRows.push({
+        source_key: source.key,
+        position,
+        block: currentBlock,
+        work_name: storedWorkName,
+        plan_start: isDateSerial(startCell) ? excelSerialToISODate(startCell) : null,
+        plan_end: isDateSerial(endCell) ? excelSerialToISODate(endCell) : null,
+      });
+    }
+
     for (const { colIndex, reportDate } of dateColumns) {
       const cell = row[colIndex];
       let percent = null;
@@ -639,21 +682,27 @@ async function fetchAndParseSheet(source, sheet) {
     }
   }
 
-  return rows;
+  return { rows, planRows };
 }
 
 async function fetchAndParse() {
-  const all = [];
+  const allRows = [];
+  const allPlanRows = [];
   for (const source of SOURCES) {
     for (const sheet of source.sheets) {
-      const rows = await fetchAndParseSheet(source, sheet);
-      all.push(...rows);
+      const { rows, planRows } = await fetchAndParseSheet(source, sheet);
+      allRows.push(...rows);
+      allPlanRows.push(...planRows);
     }
   }
-  return all;
+  return { rows: allRows, planRows: allPlanRows };
 }
 
-function storeValues(rows) {
+// sourceKeys — null для полного пересинка (все источники, старое
+// поведение: удаляем всю таблицу и вставляем всё заново); массив ключей —
+// для точечного пересинка (resyncSource ниже): удаляем только строки ЭТИХ
+// источников, остальные (даже не пересинканные сейчас) не трогаем.
+function storeValues(rows, sourceKeys = null) {
   const db = getWriteDb();
   const insert = db.prepare(`
     INSERT INTO gpr_report_values (source_key, source_label, position, block, work_name, report_date, percent)
@@ -663,16 +712,67 @@ function storeValues(rows) {
     INSERT INTO sync_meta (key, value) VALUES (@key, @value)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `);
+  const deleteBySource = db.prepare(`DELETE FROM gpr_report_values WHERE source_key = ?`);
+  const countAll = db.prepare(`SELECT COUNT(*) as c FROM gpr_report_values`);
 
-  const replaceAll = db.transaction((allRows) => {
-    db.prepare(`DELETE FROM gpr_report_values`).run();
-    for (const row of allRows) insert.run(row);
+  const replace = db.transaction((someRows) => {
+    if (sourceKeys) {
+      for (const key of sourceKeys) deleteBySource.run(key);
+    } else {
+      db.prepare(`DELETE FROM gpr_report_values`).run();
+    }
+    for (const row of someRows) insert.run(row);
     upsertMeta.run({ key: 'gpr_report_last_synced_at', value: new Date().toISOString() });
-    upsertMeta.run({ key: 'gpr_report_row_count', value: String(allRows.length) });
+    upsertMeta.run({ key: 'gpr_report_row_count', value: String(countAll.get().c) });
   });
 
-  replaceAll(rows);
+  replace(rows);
   return rows.length;
+}
+
+function storePlanDates(planRows, sourceKeys = null) {
+  const db = getWriteDb();
+  const insert = db.prepare(`
+    INSERT INTO gpr_report_plan_dates (source_key, position, block, work_name, plan_start, plan_end)
+    VALUES (@source_key, @position, @block, @work_name, @plan_start, @plan_end)
+  `);
+  const deleteBySource = db.prepare(`DELETE FROM gpr_report_plan_dates WHERE source_key = ?`);
+
+  const replaceAll = db.transaction((allRows) => {
+    if (sourceKeys) {
+      for (const key of sourceKeys) deleteBySource.run(key);
+    } else {
+      db.prepare(`DELETE FROM gpr_report_plan_dates`).run();
+    }
+    for (const row of allRows) insert.run(row);
+  });
+
+  replaceAll(planRows);
+  return planRows.length;
+}
+
+// Точечный пересинк ОДНОГО источника (а не всех SOURCES, как runSyncOnce)
+// — вызывается синхронно перед открытием финплана (services/financing-api,
+// см. build_financing_plan.py:build_object_plan), чтобы данные не ждали
+// следующего планового кронового прогона (раз в CRON_SCHEDULE, по
+// умолчанию 6 часов). Один источник — обычно один-два листа, занимает
+// секунды, а не полный обход всех источников.
+async function resyncSource(sourceKey) {
+  const source = SOURCES.find((s) => s.key === sourceKey);
+  if (!source) throw new Error(`Неизвестный источник ГПР: ${sourceKey}`);
+
+  const rows = [];
+  const planRows = [];
+  for (const sheet of source.sheets) {
+    const { rows: sheetRows, planRows: sheetPlanRows } = await fetchAndParseSheet(source, sheet);
+    rows.push(...sheetRows);
+    planRows.push(...sheetPlanRows);
+  }
+
+  const count = storeValues(rows, [sourceKey]);
+  const planCount = storePlanDates(planRows, [sourceKey]);
+  console.log(`[gpr-report-sync] точечный пересинк '${sourceKey}': ${count} значений, ${planCount} плановых сроков`);
+  return { count, planCount };
 }
 
 // Контрольный рубеж — пятница, за которую уже наступил срок отчитаться.
@@ -761,9 +861,12 @@ function computeGprReportGaps({ asOf } = {}) {
 }
 
 async function runSyncOnce() {
-  const rows = await fetchAndParse();
+  const { rows, planRows } = await fetchAndParse();
   const count = storeValues(rows);
-  console.log(`[gpr-report-sync] загружено ${count} значений (${SOURCES.map((s) => s.key).join(', ')})`);
+  const planCount = storePlanDates(planRows);
+  console.log(
+    `[gpr-report-sync] загружено ${count} значений, ${planCount} плановых сроков (${SOURCES.map((s) => s.key).join(', ')})`
+  );
   return count;
 }
 
@@ -777,6 +880,7 @@ function startGprReportSync() {
 module.exports = {
   startGprReportSync,
   runSyncOnce,
+  resyncSource,
   computeGprReportGaps,
   lastFridayOnOrBefore,
   SOURCES,

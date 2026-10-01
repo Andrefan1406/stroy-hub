@@ -40,6 +40,7 @@ const ridesFleetRouter = require('./rides/fleetRouter');
 const { initSocket } = require('./rides/socket');
 const { startProposalTimeoutJob } = require('./rides/proposalTimeout');
 const { runGeocodeRegionBugFix } = require('./rides/fixGeocodeRegionBug');
+const internalApiRouter = require('./internalApi');
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -98,6 +99,7 @@ app.use('/api/v1/requests', ridesStopProposalsRouter);
 app.use('/api/v1/requests', ridesMergeRouter);
 app.use('/api/v1/events', ridesEventsRouter);
 app.use('/api/v1/fleet-status', ridesFleetRouter);
+app.use('/api/internal', internalApiRouter);
 
 initSchema();
 initRidesSchema();

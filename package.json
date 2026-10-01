@@ -43,6 +43,7 @@
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "server": "node server/index.js",
+    "financing-api": "cd services/financing-api && .venv\\Scripts\\python.exe -m uvicorn main:app --port 8000",
     "rides:seed": "node server/rides/seed.js",
     "rides:create-test-users": "node server/rides/create-test-users.js",
     "rascenki:seed": "node server/rascenkiSeedXlsx.js"

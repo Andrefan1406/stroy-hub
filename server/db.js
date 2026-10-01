@@ -295,6 +295,24 @@ CREATE TABLE gpr_report_values (
 CREATE INDEX IF NOT EXISTS idx_gpr_values_source_position ON gpr_report_values(source_key, position, block, work_name);
 CREATE INDEX IF NOT EXISTS idx_gpr_values_date ON gpr_report_values(report_date);
 
+-- Плановые начало/конец раздела (колонки "Начало"/"Окончание" рядом с
+-- "Конструктивы" в исходнике) — ОДНО значение на весь раздел, не по неделям,
+-- поэтому отдельная таблица, а не колонки в gpr_report_values (там UNIQUE
+-- по report_date, значение задваивалось бы на каждую неделю). Нужны для
+-- финплана (services/financing-api/) — план по срокам, а не факт прогресса.
+DROP TABLE IF EXISTS gpr_report_plan_dates;
+CREATE TABLE gpr_report_plan_dates (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_key   TEXT,
+  position     TEXT,
+  block        TEXT NOT NULL DEFAULT '',
+  work_name    TEXT,
+  plan_start   TEXT,    -- 'YYYY-MM-DD'; NULL, если ячейка "Начало" пустая/не дата
+  plan_end     TEXT,    -- 'YYYY-MM-DD'; NULL, если ячейка "Окончание" пустая/не дата
+  synced_at    TEXT DEFAULT (datetime('now')),
+  UNIQUE(source_key, position, block, work_name)
+);
+
 -- gpr_report_check_rules — email'ы, для которых подача заявок блокируется,
 -- пока в ГПР есть незакрытый пропуск — тот же принцип, что и
 -- people_gap_check_rules, только "источник" (source_key, см. SOURCES в

@@ -94,4 +94,20 @@ function requireEmails(allowedEmails) {
   };
 }
 
-module.exports = { requireAdmin, requireEmails, ADMIN_EMAIL };
+// Для вызовов сервер-сервер (например, от Python-сервиса финплана) —
+// Firebase ID-токен тут неприменим (нет живого пользователя, который бы
+// логинился), поэтому просто общий секрет в заголовке, известный обеим
+// сторонам через переменную окружения INTERNAL_API_KEY.
+function requireInternalApiKey(req, res, next) {
+  const expected = process.env.INTERNAL_API_KEY;
+  if (!expected) {
+    return res.status(500).json({ error: 'INTERNAL_API_KEY не задана на сервере' });
+  }
+  const provided = req.headers['x-internal-api-key'];
+  if (provided !== expected) {
+    return res.status(401).json({ error: 'Неверный или отсутствующий X-Internal-Api-Key' });
+  }
+  next();
+}
+
+module.exports = { requireAdmin, requireEmails, requireInternalApiKey, ADMIN_EMAIL };

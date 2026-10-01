@@ -1,5 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { auth } from './firebase';
+import { canSeeFinancingPlan } from './components/FinancingRoute';
 
 const ReportsDashboardPage = () => {
   const navigate = useNavigate();
@@ -43,6 +45,14 @@ const ReportsDashboardPage = () => {
       >
         Дашборд по бетону и раствору
       </button>
+      {canSeeFinancingPlan(auth.currentUser?.email) && (
+        <button
+          onClick={() => navigate('/financing-plan')}
+          style={{ ...styles.button, background: 'linear-gradient(135deg, #7c5cff, #33d6c0)' }}
+        >
+          Финплан
+        </button>
+      )}
     </div>
 
   );
