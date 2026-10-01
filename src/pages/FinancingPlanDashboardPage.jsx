@@ -1177,7 +1177,7 @@ const FinancingPlanDashboardPage = () => {
     <div style={s.page}>
       <div style={s.topBar}>
         <button style={s.back} onClick={() => navigate("/reports-dashboard")}>← На главный экран</button>
-        <h2 style={s.title}>Финплан объекта</h2>
+        <h2 style={s.title}>Финплан</h2>
         <div style={{ width: 90 }} />
       </div>
 

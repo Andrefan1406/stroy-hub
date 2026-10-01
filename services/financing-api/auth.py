@@ -26,6 +26,7 @@ logger = logging.getLogger("uvicorn.error")
 
 FIREBASE_PROJECT_ID = "my-first-site-16a0c"
 ADMIN_EMAIL = "admin@vkdev.kz"
+ALLOWED_EMAILS = {ADMIN_EMAIL, "v.titarenko@vkdevgroup.kz"}
 
 if not firebase_admin._apps:
     raw = os.environ.get("GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON")
@@ -47,6 +48,6 @@ def require_admin(authorization: str = Header(default=None)) -> str:
         raise HTTPException(status_code=401, detail="Недействительный или просроченный токен авторизации")
 
     email = decoded.get("email")
-    if email != ADMIN_EMAIL:
-        raise HTTPException(status_code=403, detail="Доступ только для администратора")
+    if not email or email.lower() not in ALLOWED_EMAILS:
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
     return email

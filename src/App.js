@@ -29,6 +29,7 @@ import SmartRequestPage from './SmartRequestPage';
 import LoginPage from './LoginPage';
 import PrivateRoute from './components/PrivateRoute';
 import AdminRoute from './components/AdminRoute';
+import FinancingRoute from './components/FinancingRoute';
 import PeopleGapsGuard from './components/PeopleGapsGuard';
 import GprReportGuard from './components/GprReportGuard';
 import PageTracker from './components/PageTracker';
@@ -215,9 +216,9 @@ const App = () => {
         <Route
           path="/financing-plan"
           element={
-            <Protected>
+            <FinancingRoute>
               <FinancingPlanDashboardPage />
-            </Protected>
+            </FinancingRoute>
           }
         />
 
