@@ -11,6 +11,11 @@ import { fetchCategories, fetchFinancingPlan } from "./financingPlanApi";
 
 const MONTHS_RU = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
 
+// Годы раньше этого — одной колонкой на год, а не помесячно: графики Нурлы
+// Жол 3 начались в 2023, и 24 месячные колонки за 2023-2024 сжимали бы
+// актуальную часть шкалы.
+const MONTHLY_FROM_YEAR = 2025;
+
 // ---------------------------------------------------------------------------
 // Работа с реальными датами разделов (вместо фиксированного окна в макете)
 // ---------------------------------------------------------------------------
@@ -18,6 +23,18 @@ const MONTHS_RU = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "
 function parseISO(dateStr) {
   const [y, m] = dateStr.split("-").map(Number);
   return { year: y, month: m - 1 };
+}
+
+// Сквозной номер месяца (год * 12 + месяц) — единица распределения денег в
+// финплане, независимо от того, месячная колонка или годовая.
+function absMonth(dateStr) {
+  const { year, month } = parseISO(dateStr);
+  return year * 12 + month;
+}
+
+function nowAbsMonth() {
+  const now = new Date();
+  return now.getFullYear() * 12 + now.getMonth();
 }
 
 // Диапазон месяцев, покрывающий все разделы позиции, у которых вообще есть
@@ -49,37 +66,69 @@ function buildTimeline(sections) {
     }
   }
 
-  const months = [];
+  // Колонка — месяц ({monthIndex: 0..11}) или, до MONTHLY_FROM_YEAR, целый
+  // год ({monthIndex: null}, всегда январь-декабрь целиком, даже если
+  // разделы начались не с января — так позиция даты внутри колонки
+  // календарно честная). months — сквозные номера месяцев колонки (absMonth).
+  const columns = [];
   let { year, month } = min;
   while (year < max.year || (year === max.year && month <= max.month)) {
-    months.push({ year, monthIndex: month, label: MONTHS_RU[month] });
+    if (year < MONTHLY_FROM_YEAR) {
+      columns.push({
+        year,
+        monthIndex: null,
+        label: String(year),
+        months: Array.from({ length: 12 }, (_, k) => year * 12 + k),
+      });
+      year++;
+      month = 0;
+      continue;
+    }
+    columns.push({ year, monthIndex: month, label: MONTHS_RU[month], months: [year * 12 + month] });
     month++;
     if (month > 11) {
       month = 0;
       year++;
     }
   }
-  return months;
+  return columns;
+}
+
+// Подпись колонки в шапке: у годовой — сам год; у месячной — месяц, а у
+// января, первой колонки и первой месячной после годовых — ещё и год.
+function columnLabel(timeline, i) {
+  const col = timeline[i];
+  if (col.monthIndex === null) return col.label;
+  const showYear = col.monthIndex === 0 || i === 0 || timeline[i - 1].monthIndex === null;
+  return showYear ? `${col.label} ${String(col.year).slice(2)}` : col.label;
 }
 
 function monthIndexOf(timeline, dateStr) {
   if (!dateStr) return -1;
   const { year, month } = parseISO(dateStr);
-  return timeline.findIndex((t) => t.year === year && t.monthIndex === month);
+  return timeline.findIndex((t) => t.year === year && (t.monthIndex === null || t.monthIndex === month));
 }
 
 function todayIndex(timeline) {
   const now = new Date();
-  return timeline.findIndex((t) => t.year === now.getFullYear() && t.monthIndex === now.getMonth());
+  return timeline.findIndex(
+    (t) => t.year === now.getFullYear() && (t.monthIndex === null || t.monthIndex === now.getMonth())
+  );
 }
 
-// Позиция даты на шкале графика в "месяцах": индекс месяца + доля дня
-// внутри него. atEnd — дата включительно (конец дня): 31.08 -> конец
-// августа, 01.07 без atEnd -> начало июля. null, если дата вне шкалы.
+// Позиция даты на шкале графика в "колонках": индекс колонки + доля дня
+// внутри неё (месяца или, у годовой колонки, года). atEnd — дата
+// включительно (конец дня): 31.08 -> конец августа, 01.07 без atEnd ->
+// начало июля. null, если дата вне шкалы.
 function datePos(timeline, dateStr, atEnd) {
   const idx = monthIndexOf(timeline, dateStr);
   if (idx === -1) return null;
   const [y, m, d] = dateStr.split("-").map(Number);
+  if (timeline[idx].monthIndex === null) {
+    const dayOfYear = Math.round((Date.UTC(y, m - 1, d) - Date.UTC(y, 0, 1)) / 86400000);
+    const daysInYear = Math.round((Date.UTC(y + 1, 0, 1) - Date.UTC(y, 0, 1)) / 86400000);
+    return idx + (atEnd ? dayOfYear + 1 : dayOfYear) / daysInYear;
+  }
   const daysInMonth = new Date(y, m, 0).getDate();
   return idx + (atEnd ? d : d - 1) / daysInMonth;
 }
@@ -351,6 +400,7 @@ const s = {
     marginBottom: 10,
   },
   detailTitle: { fontSize: 20, fontWeight: 700 },
+  builtAt: { fontSize: 12, color: "#7d8499", marginTop: 4 },
   detailStats: { display: "flex", gap: 32, flexWrap: "wrap" },
   statLabel: { fontSize: 12, color: "#9aa0b4" },
   statValue: { fontSize: 18, fontWeight: 700, marginTop: 2 },
@@ -654,10 +704,9 @@ function GanttTable({ sections, timeline, showPlan, showFact, showForecast }) {
       <div style={s.tableWrap}>
         <div style={{ display: "grid", gridTemplateColumns }}>
           <div style={{ ...s.th, ...s.thFirst }}>Раздел работ</div>
-          {timeline.map((m, i) => (
+          {timeline.map((_, i) => (
             <div key={i} style={{ ...s.th, ...s.thMonth, ...(i === today ? s.todayCol : {}) }}>
-              {m.label}
-              {m.monthIndex === 0 || i === 0 ? ` ${String(m.year).slice(2)}` : ""}
+              {columnLabel(timeline, i)}
             </div>
           ))}
 
@@ -779,33 +828,38 @@ function EstimateView({ sections, total, apartmentsArea, commercialArea }) {
 // Три режима финплана, одно и то же по смыслу распределение (сумма поровну
 // на месяцы диапазона), но разные диапазон и сумма для раздела:
 // - "plan"     — весь план целиком, как и раньше (sec.start..sec.end, sec.cost).
-// - "fact"     — план с учётом факта, но только прошедшее: сколько реально
-//                освоено (cost * fact% / 100), размазано по факт.старту..сегодня
-//                (или факт.концу, если завершён раньше сегодня). Разделы, где
-//                работы ещё не начинались — не участвуют, показывать нечего.
-// - "forecast" — разница план/факт, но только будущее: остаток (cost * (1 -
-//                fact%/100)), размазан от "сейчас" (as_of для начатых, сдвинутый
-//                план для ещё не начатых) до forecast_end. Завершённые разделы
-//                не участвуют — остатка нет. Месяцы зимнего простоя пропускаются
-//                (см. monthsFullyInPause в FinPlanTable).
-function sectionMonthlyRange(mode, sec, timeline, todayIdx) {
+// - "fact"     — план с учётом факта, но только прошедшие месяцы (текущий,
+//                ещё не закрытый, не показывается): сколько реально освоено
+//                (cost * fact% / 100), размазано по факт.старту..прошлому
+//                месяцу (или факт.концу, если завершён раньше). Разделы, где
+//                работы ещё не начинались или начались только в этом месяце
+//                — не участвуют, показывать нечего.
+// - "forecast" — разница план/факт, но только текущий месяц и будущее:
+//                остаток (cost * (1 - fact%/100)), размазан от "сейчас" (as_of
+//                для начатых, сдвинутый план для ещё не начатых) до
+//                forecast_end. Завершённые разделы не участвуют — остатка нет.
+//                Месяцы зимнего простоя пропускаются (см. monthsFullyInPause в
+//                FinPlanTable).
+// Диапазон — в сквозных месяцах (absMonth), а не в колонках: годовая
+// колонка (см. MONTHLY_FROM_YEAR) получает сумму всех своих месяцев
+// диапазона, а не одну месячную долю.
+function sectionMonthlyRange(mode, sec, todayAbs) {
   if (mode === "plan") {
-    const startIdx = monthIndexOf(timeline, sec.start);
-    const endIdx = monthIndexOf(timeline, sec.end);
-    if (startIdx === -1 || endIdx === -1) return null;
-    return { startIdx, endIdx, amount: sec.cost };
+    if (!sec.start || !sec.end || sec.cost == null) return null;
+    return { startAbs: absMonth(sec.start), endAbs: absMonth(sec.end), amount: sec.cost };
   }
 
   if (mode === "fact") {
     if (!sec.fact_percent || sec.fact_percent <= 0 || !sec.fact_start) return null;
     const earned = sec.cost * (sec.fact_percent / 100);
-    const startIdx = monthIndexOf(timeline, sec.fact_start);
-    if (startIdx === -1) return null;
-    let endIdx =
-      sec.fact_completed && sec.fact_end ? monthIndexOf(timeline, sec.fact_end) : todayIdx !== -1 ? todayIdx : startIdx;
-    if (todayIdx !== -1) endIdx = Math.min(endIdx, todayIdx); // в будущее "факт" не заходит
-    if (endIdx === -1 || endIdx < startIdx) endIdx = startIdx;
-    return { startIdx, endIdx, amount: earned };
+    const startAbs = absMonth(sec.fact_start);
+    let endAbs = sec.fact_completed && sec.fact_end ? absMonth(sec.fact_end) : todayAbs;
+    endAbs = Math.min(endAbs, todayAbs - 1); // "факт" — только закрытые месяцы
+    if (startAbs > endAbs) {
+      if (startAbs <= todayAbs - 1) return { startAbs, endAbs: startAbs, amount: earned };
+      return null; // начат только в текущем месяце — прошлого ещё нет
+    }
+    return { startAbs, endAbs, amount: earned };
   }
 
   if (mode === "forecast") {
@@ -816,12 +870,11 @@ function sectionMonthlyRange(mode, sec, timeline, todayIdx) {
     if (remaining <= 0) return null;
     const rawStart = percent != null && percent > 0 ? sec.fact_as_of : sec.forecast_start;
     if (!rawStart) return null;
-    let startIdx = monthIndexOf(timeline, rawStart);
-    const endIdx = monthIndexOf(timeline, sec.forecast_end);
-    if (startIdx === -1 || endIdx === -1) return null;
-    if (todayIdx !== -1 && startIdx <= todayIdx) startIdx = todayIdx + 1; // в прошлое "прогноз" не заходит
-    if (startIdx > endIdx) return null;
-    return { startIdx, endIdx, amount: remaining };
+    let startAbs = absMonth(rawStart);
+    const endAbs = absMonth(sec.forecast_end);
+    if (startAbs < todayAbs) startAbs = todayAbs; // в прошлое "прогноз" не заходит, текущий месяц — да
+    if (startAbs > endAbs) return null;
+    return { startAbs, endAbs, amount: remaining };
   }
 
   return null;
@@ -839,17 +892,20 @@ const FINPLAN_MODES = [
 
 // Месяцы, целиком попадающие в зимний простой раздела (forecast.py) — в
 // режиме "Прогноз" работы в них не идут, значит и денег на них нет.
-// Граничные месяцы (ноябрь с 15-го) остаются рабочими.
-function monthsFullyInPause(sec, timeline) {
+// Граничные месяцы (ноябрь с 15-го) остаются рабочими. Возвращает сквозные
+// номера месяцев (absMonth).
+function monthsFullyInPause(sec, range) {
   const skip = new Set();
   if (!sec.forecast_pause_start || !sec.forecast_pause_end) return skip;
-  timeline.forEach((t, i) => {
-    const mm = String(t.monthIndex + 1).padStart(2, "0");
-    const lastDay = String(new Date(t.year, t.monthIndex + 1, 0).getDate()).padStart(2, "0");
-    if (sec.forecast_pause_start <= `${t.year}-${mm}-01` && sec.forecast_pause_end >= `${t.year}-${mm}-${lastDay}`) {
-      skip.add(i);
+  for (let abs = range.startAbs; abs <= range.endAbs; abs++) {
+    const year = Math.floor(abs / 12);
+    const monthIndex = abs % 12;
+    const mm = String(monthIndex + 1).padStart(2, "0");
+    const lastDay = String(new Date(year, monthIndex + 1, 0).getDate()).padStart(2, "0");
+    if (sec.forecast_pause_start <= `${year}-${mm}-01` && sec.forecast_pause_end >= `${year}-${mm}-${lastDay}`) {
+      skip.add(abs);
     }
-  });
+  }
   return skip;
 }
 
@@ -872,26 +928,51 @@ function FinPlanModeToggles({ mode, onModeChange }) {
   );
 }
 
-function FinPlanTable({ sections, timeline, mode }) {
+function FinPlanTable({ sections, timeline: fullTimeline, mode }) {
+  // Колонки — только те, в которые этот режим вообще может что-то положить:
+  // "Факт" — прошедшие месяцы (до текущего), "Прогноз" — текущий месяц и
+  // дальше, "План" — вся шкала.
+  const todayAbs = nowAbsMonth();
+  const timeline = fullTimeline.filter((col) => {
+    if (mode === "fact") return col.months[0] < todayAbs;
+    if (mode === "forecast") return col.months[col.months.length - 1] >= todayAbs;
+    return true;
+  });
   const today = todayIndex(timeline);
+  if (!timeline.length) {
+    return <div style={s.footnote}>{mode === "fact" ? "Прошедших месяцев на шкале нет." : "Будущих месяцев на шкале нет."}</div>;
+  }
+  // Деньги за пределами шкалы (например, факт начался раньше самого раннего
+  // планового старта) — в крайнюю колонку, а не теряются из итога.
+  const firstAbs = timeline[0].months[0];
+  const lastCol = timeline[timeline.length - 1];
+  const lastAbs = lastCol.months[lastCol.months.length - 1];
+  const clamp = (abs) => Math.min(Math.max(abs, firstAbs), lastAbs);
+
   const rows = sections
-    .map((sec) => ({ sec, range: sectionMonthlyRange(mode, sec, timeline, today) }))
+    .map((sec) => ({ sec, range: sectionMonthlyRange(mode, sec, todayAbs) }))
     .filter((r) => r.range)
-    .map(({ sec, range }) => {
-      let skip = mode === "forecast" ? monthsFullyInPause(sec, timeline) : new Set();
+    .map(({ sec, range: raw }) => {
+      const range = { ...raw, startAbs: clamp(raw.startAbs), endAbs: clamp(raw.endAbs) };
+      let skip = mode === "forecast" ? monthsFullyInPause(sec, range) : new Set();
       let activeMonths = 0;
-      for (let i = range.startIdx; i <= range.endIdx; i++) if (!skip.has(i)) activeMonths++;
+      for (let abs = range.startAbs; abs <= range.endAbs; abs++) if (!skip.has(abs)) activeMonths++;
       if (activeMonths === 0) {
         skip = new Set();
-        activeMonths = range.endIdx - range.startIdx + 1;
+        activeMonths = range.endAbs - range.startAbs + 1;
       }
-      return { sec, range: { ...range, skip, perMonth: range.amount / activeMonths } };
+      const perMonth = range.amount / activeMonths;
+      const isActiveMonth = (abs) => abs >= range.startAbs && abs <= range.endAbs && !skip.has(abs);
+      // Сумма по колонке: у месячной — доля одного месяца, у годовой — всех
+      // активных месяцев этого года.
+      const cells = timeline.map((col) => {
+        const n = col.months.filter(isActiveMonth).length;
+        return n ? perMonth * n : null;
+      });
+      return { sec, cells };
     });
-  const isActive = (range, i) => i >= range.startIdx && i <= range.endIdx && !range.skip.has(i);
 
-  const monthly = timeline.map((_, i) =>
-    rows.reduce((sum, { range }) => (isActive(range, i) ? sum + range.perMonth : sum), 0)
-  );
+  const monthly = timeline.map((_, i) => rows.reduce((sum, { cells }) => sum + (cells[i] || 0), 0));
   const grandTotal = monthly.reduce((a, b) => a + b, 0);
   const gridTemplateColumns = `${NAME_COL_WIDTH}px repeat(${timeline.length}, minmax(0, 1fr))`;
   const activeColor = FINPLAN_MODES.find((m) => m.id === mode).color;
@@ -901,29 +982,30 @@ function FinPlanTable({ sections, timeline, mode }) {
       <div style={s.tableWrap}>
         <div style={{ display: "grid", gridTemplateColumns }}>
           <div style={{ ...s.th, ...s.thFirst }}>Раздел работ</div>
-          {timeline.map((m, i) => (
+          {timeline.map((_, i) => (
             <div key={i} style={{ ...s.th, ...s.thMonth, ...(i === today ? s.todayCol : {}) }}>
-              {m.label}
-              {m.monthIndex === 0 || i === 0 ? ` ${String(m.year).slice(2)}` : ""}
+              {columnLabel(timeline, i)}
             </div>
           ))}
 
-          {rows.map(({ sec, range }) => (
+          {rows.map(({ sec, cells }) => (
             <React.Fragment key={sec.name}>
               <div style={s.tdFirstCompact} title={sec.name}>
                 {sec.name}
               </div>
-              {timeline.map((_, i) => (
+              {cells.map((v, i) => (
                 <div key={i} style={{ ...s.td, ...s.finplanNum, ...(i === today ? s.todayCol : {}) }}>
-                  {isActive(range, i)
-                    ? (range.perMonth / 1_000_000).toLocaleString("ru-RU", { maximumFractionDigits: 0, useGrouping: false })
+                  {v != null
+                    ? (v / 1_000_000).toLocaleString("ru-RU", { maximumFractionDigits: 0, useGrouping: false })
                     : "—"}
                 </div>
               ))}
             </React.Fragment>
           ))}
 
-          <div style={{ ...s.tdFirstCompact, fontWeight: 700, background: "#1c2029" }}>Итого за месяц, млн ₸</div>
+          <div style={{ ...s.tdFirstCompact, fontWeight: 700, background: "#1c2029" }}>
+            {timeline.some((col) => col.monthIndex === null) ? "Итого за период, млн ₸" : "Итого за месяц, млн ₸"}
+          </div>
           {monthly.map((v, i) => (
             <div
               key={i}
@@ -1050,6 +1132,8 @@ const FinancingPlanDashboardPage = () => {
       sections,
       timeline: buildTimeline(sections),
       finish: computeFinishSummary(sections),
+      // Самые старые из данных объектов — сводная не свежее их.
+      builtAt: combinedPlans.map((p) => p.built_at).filter(Boolean).sort()[0] || null,
     };
   }, [combinedPlans]);
 
@@ -1117,10 +1201,19 @@ const FinancingPlanDashboardPage = () => {
   // сводки по нескольким объектам: заголовок с цифрами, полоса переключения
   // (вкладка и галочки при переключении сохраняются — в отличие от входа с
   // карточки, см. selectPosition), вкладки.
-  const renderDetail = ({ title, total, finish, sections, timeline: tl, apartmentsArea, commercialArea, strip }) => (
+  const renderDetail = ({ title, total, finish, sections, timeline: tl, apartmentsArea, commercialArea, strip, builtAt }) => (
     <>
       <div style={s.detailHeader}>
-        <div style={s.detailTitle}>{title}</div>
+        <div>
+          <div style={s.detailTitle}>{title}</div>
+          {/* Данные не живые — пересчитываются ночью или кнопкой в админ-панели
+              (services/financing-api/plan_cache.py). */}
+          {builtAt && (
+            <div style={s.builtAt}>
+              Данные на {new Date(builtAt).toLocaleString("ru-RU", { timeZone: "Asia/Almaty", dateStyle: "short", timeStyle: "short" })}
+            </div>
+          )}
+        </div>
         <FinishStats total={total} finish={finish} />
       </div>
 
@@ -1275,6 +1368,7 @@ const FinancingPlanDashboardPage = () => {
                 apartmentsArea: selectedAgg.apartments_area_m2,
                 commercialArea: selectedAgg.commercial_area_m2,
                 strip: combinedStrip(),
+                builtAt: combined.builtAt,
               })}
 
             {objectSummary && !plan && !loadError && (
@@ -1293,6 +1387,7 @@ const FinancingPlanDashboardPage = () => {
                     apartmentsArea: objectSummary.apartments_area_m2,
                     commercialArea: objectSummary.commercial_area_m2,
                     strip: objectStrip(),
+                    builtAt: plan.built_at,
                   })
                 ) : (
                   <div style={s.grid}>
@@ -1321,6 +1416,7 @@ const FinancingPlanDashboardPage = () => {
                 apartmentsArea: position.apartments_area_m2,
                 commercialArea: (position.commercial_floor1_area_m2 || 0) + (position.commercial_basement_area_m2 || 0),
                 strip: objectStrip(),
+                builtAt: plan.built_at,
               })}
           </>
         )}

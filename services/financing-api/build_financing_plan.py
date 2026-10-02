@@ -24,17 +24,51 @@ from gpr_timeline import (
     plan_dates_by_key,
     resync_source,
 )
+from plateau_split import split_rows
 from smeta_reader import aggregate_by_section, read_smeta_rows
+from smeta_sections import totals_by_key
 
 # Разделы сметы, у которых по своей природе нет соответствия в графике работ.
 NON_SCHEDULE_SECTIONS = {"техника"}
 
 
-def load_smeta_totals(smeta_key: str) -> dict[str, float]:
+def load_smeta_totals(smeta_key: str, rows_cache: dict) -> dict[str, float]:
     smeta = SMETAS[smeta_key]
+    if smeta.get("konstruktiv_column") or smeta.get("split_sections"):
+        return totals_by_key(smeta_key, SMETAS, rows_cache)  # сметы НЖ3, см. smeta_sections.py
     rows = read_smeta_rows(smeta["spreadsheet_id"], smeta["gid"])
     totals, _, _ = aggregate_by_section(rows)
     return totals
+
+
+def map_section_costs(costs: dict[str, float], section_map: dict) -> dict[str, float]:
+    """Суммы сметы -> общие разделы объекта (config.py: section_map); долевой
+    раздел (словарь) делится между несколькими."""
+    result: dict[str, float] = {}
+    for name, amount in costs.items():
+        target = section_map.get(name, name)
+        shares = target if isinstance(target, dict) else {target: 1.0}
+        for mapped, share in shares.items():
+            result[mapped] = result.get(mapped, 0.0) + amount * share
+    return result
+
+
+def map_gpr_sections(by_work: dict[str, dict], section_map: dict, exclude: set) -> dict[str, dict]:
+    """Строки ГПР одной позиции -> общие разделы объекта. У долевого раздела
+    все части получают одни и те же сроки и % готовности."""
+    result: dict[str, dict] = {}
+    for work_name, value in by_work.items():
+        if work_name in exclude:
+            continue
+        target = section_map.get(work_name, work_name)
+        for mapped in target if isinstance(target, dict) else [target]:
+            if mapped in result:
+                # Две строки ГПР в один раздел — сроки/% не сложить
+                # осмысленно; сейчас такого нет, предупреждаем, если появится.
+                print(f"[financing-plan] раздел '{mapped}' уже есть в ГПР позиции, строка '{work_name}' пропущена")
+                continue
+            result[mapped] = value
+    return result
 
 
 def gpr_position_key(position: str) -> str:
@@ -43,7 +77,8 @@ def gpr_position_key(position: str) -> str:
 
 
 def is_markup_section(name: str) -> bool:
-    return name.lower().startswith("непредвиденные") or name.lower().startswith("накладные")
+    # "Накл.расх." — так накладные подписаны в сметах НЖ3.
+    return name.lower().startswith("непредвиденные") or name.lower().startswith("накл")
 
 
 def chronological_sort(sections: list[dict]) -> list[dict]:
@@ -83,18 +118,24 @@ def redistribute_overhead(sections: list[dict]) -> list[dict]:
     return chronological_sort(result)
 
 
-def build_object_plan(object_key: str) -> dict:
+def build_object_plan(object_key: str, resync: bool = True) -> dict:
+    """resync — сначала пересинкать ГПР объекта (таблицы правят вживую).
+    Расчёт дорогой (сметы из Google Sheets), поэтому страница финплана
+    получает его готовым из plan_cache.py, а не считает на каждое открытие."""
     obj = OBJECTS[object_key]
+    section_map = obj.get("section_map", {})
+    gpr_exclude = obj.get("gpr_exclude", set())
+    plateau = obj.get("plateau_split")
     smeta_cache: dict[str, dict[str, float]] = {}
+    smeta_rows_cache: dict = {}
 
-    # Точечный пересинк перед КАЖДЫМ открытием финплана — таблицы ГПР правят
-    # вживую (см. историю: без этого факт мог отставать от планового
-    # 6-часового крона на часы). Fail-open — если Sheets недоступен, работаем
-    # на последних засинканных данных, а не роняем страницу финплана.
-    try:
-        resync_source(obj["gpr_source"])
-    except Exception as exc:
-        print(f"[financing-plan] пересинк ГПР '{obj['gpr_source']}' не удался, используем последние данные: {exc}")
+    # Fail-open — если Sheets недоступен, считаем на последних засинканных
+    # данных, а не роняем расчёт.
+    if resync:
+        try:
+            resync_source(obj["gpr_source"])
+        except Exception as exc:
+            print(f"[financing-plan] пересинк ГПР '{obj['gpr_source']}' не удался, используем последние данные: {exc}")
 
     # Все позиции этого объекта — из одного источника ГПР (obj["gpr_source"],
     # см. config.py); сам источник может объединять несколько листов
@@ -102,18 +143,39 @@ def build_object_plan(object_key: str) -> dict:
     plan_rows = fetch_gpr_plan_dates(obj["gpr_source"])
     plan_all = plan_dates_by_key(plan_rows)
     fact_rows = fetch_gpr_values(obj["gpr_source"])
+    plateau_shares: dict[str, float] = {}  # позиция ГПР -> % на плато (см. plateau_split.py)
+    if plateau:
+        fact_rows, plateau_shares = split_rows(fact_rows, plateau["work"], plateau["before"], plateau["after"])
     fact_all = compute_section_timeline(fact_rows)
 
     positions = {}
     object_total = 0.0
     for position, smeta_key in obj["positions"].items():
         if smeta_key not in smeta_cache:
-            smeta_cache[smeta_key] = load_smeta_totals(smeta_key)
+            smeta_cache[smeta_key] = map_section_costs(load_smeta_totals(smeta_key, smeta_rows_cache), section_map)
         section_costs = smeta_cache[smeta_key]
 
         gpr_key = gpr_position_key(position)
-        position_plan = {work_name: dates for (pos, work_name), dates in plan_all.items() if pos == gpr_key}
-        position_fact = {work_name: fact for (pos, work_name), fact in fact_all.items() if pos == gpr_key}
+        raw_plan = {work_name: dates for (pos, work_name), dates in plan_all.items() if pos == gpr_key}
+        share = plateau_shares.get(gpr_key)
+        if share is not None:
+            # Строка поделена по плато — у частей своих плановых дат в ГПР
+            # нет (у исходной строки их тоже нет или они не про эти работы),
+            # сроки возьмутся из факта, см. plan_from_fact ниже. Стоимость
+            # делится в той же пропорции, что и %.
+            raw_plan.pop(plateau["work"], None)
+            raw_plan[plateau["before"]] = {"start": None, "end": None}
+            raw_plan[plateau["after"]] = {"start": None, "end": None}
+            section_costs = dict(section_costs)
+            earthworks = section_costs.pop(plateau["before"], 0.0)
+            section_costs[plateau["before"]] = earthworks * share / 100
+            section_costs[plateau["after"]] = earthworks * (100 - share) / 100
+        position_plan = map_gpr_sections(raw_plan, section_map, gpr_exclude)
+        position_fact = map_gpr_sections(
+            {work_name: fact for (pos, work_name), fact in fact_all.items() if pos == gpr_key},
+            section_map,
+            gpr_exclude,
+        )
 
         section_names = set(section_costs) | set(position_plan)
         sections = []
@@ -122,19 +184,30 @@ def build_object_plan(object_key: str) -> dict:
             dates = position_plan.get(name)  # None -> раздела нет в ГПР вообще
             fact = position_fact.get(name)
             expected_no_schedule = name.lower() in NON_SCHEDULE_SECTIONS or is_markup_section(name)
+            start = dates["start"] if dates else None
+            end = dates["end"] if dates else None
+            # Раздел уже завершён, а плановые даты в ГПР не заполнены (так у
+            # части давно сделанных работ НЖ3) — без дат он выпал бы и из
+            # графика, и из финплана, поэтому вместо плана — фактические
+            # сроки выполнения.
+            plan_from_fact = bool(dates and not (start and end) and fact and fact["completed"] and fact["start"])
+            if plan_from_fact:
+                start, end = fact["start"], fact["end"]
             sections.append(
                 {
                     "name": name,
                     "cost": cost,
                     "in_schedule": dates is not None,
-                    "start": dates["start"] if dates else None,
-                    "end": dates["end"] if dates else None,
+                    "start": start,
+                    "end": end,
+                    "plan_from_fact": plan_from_fact,
                     "expected_no_schedule": expected_no_schedule,
                     "fact_percent": fact["percent"] if fact else None,
                     "fact_started": fact["started"] if fact else False,
                     "fact_completed": fact["completed"] if fact else False,
                     "fact_start": fact["start"] if fact else None,
                     "fact_end": fact["end"] if fact else None,
+                    "fact_end_earliest": fact["end_earliest"] if fact else None,
                     "fact_as_of": fact["as_of"] if fact else None,
                 }
             )

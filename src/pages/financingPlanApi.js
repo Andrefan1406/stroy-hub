@@ -23,6 +23,30 @@ export async function fetchFinancingPlan(objectKey) {
   return res.json();
 }
 
+// Принудительный пересчёт всех финпланов (сметы + пересинк ГПР) — обычно он
+// идёт сам ночью, см. services/financing-api/plan_cache.py. Запускается в
+// фоне, ход — через fetchResyncStatus.
+export async function startFinancingResync() {
+  const token = await getIdToken();
+  const res = await fetch(`${FINANCING_API_URL}/admin/resync`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `Не удалось запустить пересинк (HTTP ${res.status})`);
+  return body;
+}
+
+export async function fetchResyncStatus() {
+  const token = await getIdToken();
+  const res = await fetch(`${FINANCING_API_URL}/admin/resync-status`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `Не удалось получить статус пересинка (HTTP ${res.status})`);
+  return body;
+}
+
 // Лёгкий эндпоинт (только config.py, без Google Sheets/ГПР) — категории и
 // объекты с агрегатами, для верхних уровней навигации, открывается мгновенно.
 export async function fetchCategories() {

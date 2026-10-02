@@ -29,16 +29,30 @@ load_dotenv()
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 # Канонические поля, которые нам нужны -> варианты их подписи в таблице
-# (уже в нормализованном виде, см. normalize_header_cell).
+# (уже в нормализованном виде, см. normalize_header_cell). Варианты — в
+# порядке приоритета: у смет Нурлы Жол 3 колонка суммы подписана просто
+# "Сумма" (НДС уже в цене — соседняя колонка "Цена (с НДС)"), но если в
+# таблице есть явная "Сумма с НДС", берётся она.
 CANONICAL_FIELDS = {
     "rm": ["р/м"],
     "section": ["раздел"],
     "name": ["наименование"],
     "unit": ["ед.изм"],
     "qty": ["кол-во"],
-    "sum_vat": ["сумма с ндс"],
+    "sum_vat": ["сумма с ндс", "сумма"],
+    # Есть только у части смет НЖ3 (поз.59, 65) — к какой строке ГПР
+    # относится строка сметы, см. smeta_sections.py.
+    "konstruktiv": ["конструктивы (как в гпр)"],
 }
+REQUIRED_FIELDS = ("section", "name", "sum_vat")  # то, что точно есть в каждой смете
 HEADER_SEARCH_ROWS = 20
+
+# Строка общего итога сметы. У смет НЖ3 ниже неё идут служебные расчёты
+# (площади, стоимость м², расход техники) со своими суммами — их нельзя
+# считать строками сметы, поэтому там чтение на итоге обрывается (см.
+# stop_at_total в read_smeta_rows).
+TOTAL_ROW_PREFIXES = ("итого", "всего по объекту")
+TOTAL_ROW_SEARCH_COLS = 8
 
 
 def get_client() -> gspread.Client:
@@ -62,31 +76,37 @@ def normalize_header_cell(cell: str) -> str:
 
 
 def find_header_row(rows: list[list[str]]) -> int:
-    required = set(CANONICAL_FIELDS) - {"rm", "unit", "qty"}  # то, что точно есть в каждой смете
-    required_labels = {CANONICAL_FIELDS[f][0] for f in required}
     for i, row in enumerate(rows[:HEADER_SEARCH_ROWS]):
         normalized = {normalize_header_cell(c) for c in row if c.strip()}
-        if required_labels.issubset(normalized):
+        if all(normalized & set(CANONICAL_FIELDS[f]) for f in REQUIRED_FIELDS):
             return i
+    required_labels = [" / ".join(CANONICAL_FIELDS[f]) for f in REQUIRED_FIELDS]
     raise ValueError(
         "Не нашёл строку заголовков в первых "
-        f"{HEADER_SEARCH_ROWS} строках (ищу столбцы: {', '.join(sorted(required_labels))})"
+        f"{HEADER_SEARCH_ROWS} строках (ищу столбцы: {', '.join(required_labels)})"
     )
 
 
 def build_field_map(header: list[str]) -> dict[str, int]:
-    """Индекс столбца для каждого канонического поля."""
+    """Индекс столбца для каждого канонического поля (варианты подписи — по
+    приоритету, см. CANONICAL_FIELDS)."""
     normalized = [normalize_header_cell(h) for h in header]
     field_map = {}
     for field, variants in CANONICAL_FIELDS.items():
-        for i, cell in enumerate(normalized):
-            if cell in variants:
-                field_map[field] = i
+        for variant in variants:
+            if variant in normalized:
+                field_map[field] = normalized.index(variant)
                 break
     return field_map
 
 
-def read_smeta_rows(spreadsheet_id: str, gid: int) -> list[dict]:
+def is_total_row(row: list[str]) -> bool:
+    return any(
+        normalize_header_cell(c).startswith(TOTAL_ROW_PREFIXES) for c in row[:TOTAL_ROW_SEARCH_COLS]
+    )
+
+
+def read_smeta_rows(spreadsheet_id: str, gid: int, stop_at_total: bool = False) -> list[dict]:
     client = get_client()
     spreadsheet = client.open_by_key(spreadsheet_id)
     worksheet = spreadsheet.get_worksheet_by_id(gid)
@@ -106,6 +126,8 @@ def read_smeta_rows(spreadsheet_id: str, gid: int) -> list[dict]:
     for row in data_rows:
         if not any(c.strip() for c in row):
             continue  # пустая строка-разделитель
+        if stop_at_total and is_total_row(row):
+            break
         records.append({field: cell(row, field) for field in CANONICAL_FIELDS})
     return records
 

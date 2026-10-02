@@ -48,6 +48,12 @@ const SECTIONS = [
     path: "/admin/rascenki",
     color: "#10a37f",
   },
+  {
+    title: "Пересинк финплана",
+    description: "Пересчитать финпланы объектов из смет и ГПР сейчас (обычно — автоматически ночью)",
+    path: "/admin/financing-resync",
+    color: "#7c5cff",
+  },
 ];
 
 const AdminDashboardPage = () => {

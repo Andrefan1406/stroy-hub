@@ -20,6 +20,8 @@ from collections import defaultdict
 import requests
 from dotenv import load_dotenv
 
+from plateau_split import normalize_percent
+
 load_dotenv()
 
 NODE_API_URL = os.environ.get("NODE_API_URL", "http://localhost:4000")
@@ -94,7 +96,7 @@ def compute_section_timeline(rows: list[dict]) -> dict[tuple[str, str], dict]:
     """
     grouped: dict[tuple[str, str], list[tuple[str, float | None]]] = defaultdict(list)
     for row in rows:
-        grouped[(row["position"], row["work_name"])].append((row["report_date"], row["percent"]))
+        grouped[(row["position"], row["work_name"])].append((row["report_date"], normalize_percent(row["percent"])))
 
     timeline = {}
     for key, points in grouped.items():
@@ -106,11 +108,29 @@ def compute_section_timeline(rows: list[dict]) -> dict[tuple[str, str], dict]:
             "started": bool(started),
             "start": started[0] if started else None,
             "end": finished[0] if finished else None,
+            # Самая ранняя дата, когда раздел МОГ быть завершён: если перед
+            # первой отметкой 100% неделя не заполнена (пропуск в отчётах —
+            # на листе "59,63,65,69" нет ни одного отчёта с 18.04 по
+            # 07.11.2025) или отметок раньше нет вовсе (лист "64,72" начат
+            # только с 07.11.2025), реальное окончание где-то между последней
+            # отметкой меньше 100% и первой 100%, а не именно в день этой
+            # первой отметки. Совпадает с end, если дата окончания точная.
+            "end_earliest": _end_earliest(points, finished[0]) if finished else None,
             "completed": bool(finished),
             "percent": known[-1][1] if known else None,
             "as_of": known[-1][0] if known else None,
         }
     return timeline
+
+
+def _end_earliest(points: list[tuple[str, float | None]], end: str) -> str | None:
+    """См. end_earliest в compute_section_timeline. None — раньше вообще
+    нет отметок, нижней границы нет."""
+    before = [(report_date, percent) for report_date, percent in points if report_date < end]
+    if before and before[-1][1] is not None:
+        return end  # предыдущая неделя заполнена — окончание точное
+    known_before = [report_date for report_date, percent in before if percent is not None]
+    return known_before[-1] if known_before else None
 
 
 def main():

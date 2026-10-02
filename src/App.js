@@ -45,6 +45,7 @@ import EmployeeRidesPage from "./pages/rides/EmployeeRidesPage";
 import DispatcherRidesPage from "./pages/rides/DispatcherRidesPage";
 import RidesAdminPage from "./pages/rides/RidesAdminPage";
 import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
+import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
 
 
 const Protected = ({ children }) => (
@@ -350,6 +351,16 @@ const App = () => {
             <Protected>
               <AdminRoute>
                 <RascenkiReindexAdminPage />
+              </AdminRoute>
+            </Protected>
+          }
+        />
+        <Route
+          path="/admin/financing-resync"
+          element={
+            <Protected>
+              <AdminRoute>
+                <FinancingResyncAdminPage />
               </AdminRoute>
             </Protected>
           }

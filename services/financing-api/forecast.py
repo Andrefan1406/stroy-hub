@@ -29,6 +29,9 @@ forecast_start — дата последнего отчёта (as_of): на да
 
 Для завершённого раздела — прогноз не нужен, берём фактические даты как есть
 (фронтенд вообще не рисует по ним полосу прогноза — предсказывать нечего).
+Если первой отметке 100% предшествует пропуск в отчётах, точная дата
+окончания неизвестна (см. fact_end_earliest, gpr_timeline.py) — тогда
+отставание считается только то, что было наверняка.
 
 Для ещё не начатого — плановая длительность целиком, со стартом в
 ПланДата_начала + накопленный сдвиг, но не раньше даты последнего отчёта:
@@ -159,10 +162,22 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
         pause_start = None
         pause_end = None
 
+        end_uncertain = False
         if fact_completed and fact_end_str:
             # Уже завершён — прогнозировать нечего, берём реальные даты.
             forecast_start = _parse(fact_start_str) if fact_start_str else plan_start
             forecast_end = _parse(fact_end_str)
+            # Перед первой отметкой 100% был пропуск в отчётах — точная дата
+            # окончания неизвестна, известно только окно [end_earliest, end].
+            # Считаем, что закончили по плану, если плановая дата в это окно
+            # попадает (иначе — ближайшая граница окна), и такой раздел не
+            # передаёт отставание дальше: иначе один пропуск в отчётах
+            # сдвигал весь прогноз позиции на длину пропуска.
+            earliest_str = sec.get("fact_end_earliest")
+            if earliest_str != fact_end_str:
+                end_uncertain = True
+                lower = _parse(earliest_str) if earliest_str else date.min
+                forecast_end = min(max(plan_end, lower), forecast_end)
         elif has_own_fact:
             # В процессе — остаток доделываем с плановой скоростью, начиная
             # с даты последнего отчёта.
@@ -191,7 +206,13 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
 
         forecast_end_by_name[sec["name"].lower()] = forecast_end
         delay_days = (forecast_end - plan_end).days
-        if has_own_fact:
+        if end_uncertain and delay_days <= 0:
+            # Мог закончить по плану — сигнала ни об отставании, ни об
+            # опережении нет. (Если даже самое раннее возможное окончание
+            # позже плана — отставание точно было, и дальше передаётся
+            # именно это, минимальное, ниже как обычно.)
+            pass
+        elif has_own_fact:
             carry_forward_days = delay_days if not has_signal else max(carry_forward_days, delay_days)
             has_signal = True
         elif delay_days > carry_forward_days:
