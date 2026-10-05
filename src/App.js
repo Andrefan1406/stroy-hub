@@ -30,6 +30,7 @@ import PeopleGapsGuard from './components/PeopleGapsGuard';
 import GprReportGuard from './components/GprReportGuard';
 import ManualBlockGuard from './components/ManualBlockGuard';
 import PageTracker from './components/PageTracker';
+import AccountBar from './components/AccountBar';
 import AdminStatistics from "./pages/AdminStatistics";
 import PeopleGapsAdminPage from "./pages/PeopleGapsAdminPage";
 import GprReportGapsAdminPage from "./pages/GprReportGapsAdminPage";
@@ -58,6 +59,7 @@ const App = () => {
   return (
     <Router>
       <PageTracker />
+      <AccountBar />
       <RideAccessGate>
       <Routes>
 

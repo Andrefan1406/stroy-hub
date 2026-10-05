@@ -1,20 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { signOut, getAuth } from "firebase/auth";
-import { auth } from "./firebase";
+import { getAuth } from "firebase/auth";
 import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
 import { fetchGprReportBlock, gprBlockMessage } from './gprReportGate';
 import { ridesApiFetch } from './rides/api';
 import { ROLE_HOME_PATH } from './rides/constants';
 import { fetchManualBlock, manualBlockMessage } from './manualBlockGate';
 
-const ADMIN_EMAIL = "admin@vkdev.kz";
 
 const HomePage = () => {
   const navigate = useNavigate();
 
   const currentEmail = getAuth().currentUser?.email?.toLowerCase() || "";
-  const isAdmin = currentEmail === ADMIN_EMAIL;
 
   // Показываем предупреждение сразу на главной (а не только в момент
   // отправки заявки на бетон/раствор — см. ConcreteRequestPage.js), чтобы
@@ -79,42 +76,8 @@ const HomePage = () => {
         ? gprBlockMessage(gprGaps)
         : undefined;
 
-  const handleLogout = async () => {
-    if (!window.confirm('Вы уверены, что хотите выйти?')) return;
-    await signOut(auth);
-    navigate("/login");
-  };
-
   return (
     <div style={styles.container}>
-      {/* Обычный поток (не absolute), одна короткая строка над логотипом —
-          так блок с email/выходом физически не может наложиться на логотип
-          ни на какой ширине экрана и не тянет за собой вертикальный скролл
-          (в отличие от прежнего варианта с absolute-позиционированием). */}
-      <div style={styles.accountBar}>
-        {isAdmin ? (
-          <button
-            type="button"
-            onClick={() => navigate('/admin')}
-            style={styles.adminLink}
-            title="Личный кабинет"
-          >
-            {currentEmail.split('@')[0]}
-          </button>
-        ) : (
-          <span style={styles.accountEmail}>{currentEmail.split('@')[0]}</span>
-        )}
-        <button
-          type="button"
-          onClick={handleLogout}
-          style={styles.logoutIconBtn}
-          title="Выход"
-          aria-label="Выход"
-        >
-          ➤
-        </button>
-      </div>
-
       <img src="/Логотип.png" alt="Логотип" style={styles.logo} />
 
       <h1>Добро пожаловать!</h1>
@@ -213,42 +176,9 @@ const styles = {
     maxWidth: '80%'
   },
 
-  accountBar: {
-    width: '100%',
-    display: 'flex',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '0 20px',
-    boxSizing: 'border-box'
-  },
 
-  accountEmail: {
-    color: '#666',
-    fontSize: '12px',
-    fontWeight: '500'
-  },
 
-  adminLink: {
-    background: 'none',
-    border: 'none',
-    color: '#6610f2',
-    cursor: 'pointer',
-    fontSize: '11px',
-    fontWeight: '600',
-    padding: '0',
-    textDecoration: 'underline',
-  },
 
-  logoutIconBtn: {
-    background: 'none',
-    border: 'none',
-    color: '#007bff',
-    cursor: 'pointer',
-    fontSize: '14px',
-    lineHeight: '1',
-    padding: '2px'
-  },
 
   gapWarning: {
     background: '#fff0f0',
