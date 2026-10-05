@@ -56,6 +56,24 @@ forecast_start — дата последнего отчёта (as_of): на да
 месяц до его прогнозного окончания; покрытие кровли — только после
 окончания наружной отделки. Вынужденный этим сдвиг — тоже отставание и
 переходит на последующие разделы.
+
+Окончание вместе с внутренней отделкой (FINISH_WITH_INTERIOR): сантехники
+и электрики сначала монтируют трубы и кабели (сети — ВК, электромонтаж,
+обычный прогноз), а в конце отделки те же бригады ставят сантехприборы и
+розетки/выключатели — поэтому прогноз чистового монтажа заканчивается
+одновременно с прогнозом внутренней отделки, а не по собственному
+темпу/накопленному сдвигу. Не начатый чистовой монтаж идёт в конце отделки
+параллельно со своей сетью: старт — за плановую длительность до окончания
+отделки, но не раньше старта прогноза своей сети и не раньше даты
+последнего отчёта. У Нурлы Жол 3 к отделке выравниваются и сами сети
+(networks_finish_with_interior в config.py, NETWORKS_FINISH_WITH_INTERIOR):
+старт сети — обычный прогноз, она растягивается до конца отделки. Отделка по плану идёт позже сетей, т.е. к моменту
+их обработки её прогноз ещё не посчитан — поэтому два прохода: первый
+находит окончание отделки, второй выравнивает по нему. Сдвиг выровненного
+раздела от его плана — следствие выравнивания, а не отставание, поэтому
+на последующие разделы он не переходит. Не применяется к уже
+завершённым разделам (их даты — факт) и если сама отделка уже завершена
+(закончить "одновременно" с прошлой датой нельзя — обычная логика).
 """
 import calendar
 from datetime import date, timedelta
@@ -70,12 +88,25 @@ START_CONSTRAINTS = {
     "кровля (покрытие)": ("наружняя отделка", 0),
 }
 
+INTERIOR_FINISH = "внутренняя отделка"
+# раздел -> сеть, параллельно с которой он идёт (None — это сама сеть).
+FINISH_WITH_INTERIOR = {
+    "монтаж сантех.оборудования": "водоснабжение и канализация",
+    "чистовой монтаж эл.оборудования": "электромонтажные работы",
+}
+# Сети тоже заканчиваются с отделкой — только у объектов с
+# networks_finish_with_interior (config.py); None — сама сеть.
+NETWORKS_FINISH_WITH_INTERIOR = {
+    "водоснабжение и канализация": None,
+    "электромонтажные работы": None,
+}
+
 
 def _parse(d: str) -> date:
     return date.fromisoformat(d)
 
 
-def _minus_months(d: date, months: int) -> date:
+def minus_months(d: date, months: int) -> date:
     year_shift, month0 = divmod(d.month - 1 - months, 12)
     year = d.year + year_shift
     month = month0 + 1
@@ -128,14 +159,34 @@ def _apply_winter_pause(
     return new_end, gap_start_effective, gap_end
 
 
-def compute_forecast(sections: list[dict]) -> list[dict]:
+def compute_forecast(sections: list[dict], networks_finish_with_interior: bool = False) -> list[dict]:
     """Добавляет forecast_start/forecast_end/delay_days к каждому разделу с
     известными плановыми сроками (start/end уже в секции); для остальных —
     forecast_start=forecast_end=delay_days=None. Ожидает sections в плановой
     хронологии (как их уже возвращает redistribute_overhead)."""
+    finish_with = dict(FINISH_WITH_INTERIOR)
+    if networks_finish_with_interior:
+        finish_with.update(NETWORKS_FINISH_WITH_INTERIOR)
+    first_pass = _forecast_pass(sections, None, finish_with)
+    interior = next(
+        (s for s in first_pass if s["name"].lower() == INTERIOR_FINISH and s["forecast_end"]),
+        None,
+    )
+    if interior is None or (interior.get("fact_completed") and interior.get("fact_end")):
+        return first_pass
+    return _forecast_pass(sections, interior, finish_with)
+
+
+def _forecast_pass(sections: list[dict], interior: dict | None, finish_with: dict[str, str | None]) -> list[dict]:
+    """Один проход прогноза. interior — раздел "Внутренняя отделка" из
+    первого прохода (его прогноз во втором проходе берётся как есть) или
+    None — без выравнивания по finish_with (раздел -> его сеть, см.
+    FINISH_WITH_INTERIOR)."""
+    interior_end = _parse(interior["forecast_end"]) if interior else None
     carry_forward_days = 0
     has_signal = False  # True после первого раздела, давшего сдвиг (факт или вынужденная задержка)
     today = date.today()
+    forecast_start_by_name: dict[str, date] = {}
     forecast_end_by_name: dict[str, date] = {}
     result = []
 
@@ -200,17 +251,47 @@ def compute_forecast(sections: list[dict]) -> list[dict]:
                 pred_name, months_before = constraint
                 pred_end = forecast_end_by_name.get(pred_name)
                 if pred_end:
-                    forecast_start = max(forecast_start, _minus_months(pred_end, months_before))
+                    forecast_start = max(forecast_start, minus_months(pred_end, months_before))
             forecast_end = forecast_start + timedelta(days=plan_days)
             forecast_end, pause_start, pause_end = _apply_winter_pause(sec["name"], forecast_start, forecast_end)
 
-        forecast_end_by_name[sec["name"].lower()] = forecast_end
+        name = sec["name"].lower()
+        aligned = False
+        if interior and not (fact_completed and fact_end_str):
+            if name == INTERIOR_FINISH:
+                # Прогноз отделки — тот, по которому выравнивались сети
+                # выше; пересчёт во втором проходе мог бы его сдвинуть
+                # (если отделка не начата — через изменившийся сдвиг).
+                forecast_start = _parse(interior["forecast_start"])
+                forecast_end = interior_end
+            elif name in finish_with:
+                aligned = True
+                network = finish_with[name]
+                if network and not has_own_fact:
+                    # Не начатый чистовой монтаж — в конце отделки, за
+                    # плановую длительность до её окончания, но не раньше
+                    # старта своей сети (параллельно с ней). Сеть же
+                    # стартует по обычному прогнозу и тянется до конца
+                    # отделки (только окончание общее).
+                    forecast_start = max(interior_end - timedelta(days=plan_days), last_report)
+                    network_start = forecast_start_by_name.get(network)
+                    if network_start:
+                        forecast_start = max(forecast_start, network_start)
+                forecast_end = max(interior_end, forecast_start)
+
+        forecast_start_by_name[name] = forecast_start
+        forecast_end_by_name[name] = forecast_end
         delay_days = (forecast_end - plan_end).days
         if end_uncertain and delay_days <= 0:
             # Мог закончить по плану — сигнала ни об отставании, ни об
             # опережении нет. (Если даже самое раннее возможное окончание
             # позже плана — отставание точно было, и дальше передаётся
             # именно это, минимальное, ниже как обычно.)
+            pass
+        elif aligned:
+            # Окончание задано отделкой, а не отставанием этого раздела —
+            # сдвиг от плана (сеть растянута до конца отделки) не bottleneck
+            # и на последующие разделы не переходит.
             pass
         elif has_own_fact:
             carry_forward_days = delay_days if not has_signal else max(carry_forward_days, delay_days)

@@ -14,9 +14,10 @@
     python build_financing_plan.py <object_key>   # например nz4
 """
 import sys
+from datetime import date, timedelta
 
 from config import OBJECTS, SMETAS
-from forecast import compute_forecast
+from forecast import compute_forecast, minus_months
 from gpr_timeline import (
     compute_section_timeline,
     fetch_gpr_plan_dates,
@@ -69,6 +70,28 @@ def map_gpr_sections(by_work: dict[str, dict], section_map: dict, exclude: set) 
                 continue
             result[mapped] = value
     return result
+
+
+def plan_around(position_plan: dict[str, dict], plateau: dict) -> dict[str, dict]:
+    """Плановые сроки котлована и засыпки от плана монолита (config.py:
+    plateau_split): котлован заканчивается к его началу, засыпка начинается
+    с его окончания. Без плановых дат монолита — как было."""
+    frame = position_plan.get(plateau["plan_around"])
+    if not frame or not (frame["start"] and frame["end"]):
+        return position_plan
+    frame_start = date.fromisoformat(frame["start"])
+    frame_end = date.fromisoformat(frame["end"])
+    return {
+        **position_plan,
+        plateau["before"]: {
+            "start": minus_months(frame_start, plateau["before_months"]).isoformat(),
+            "end": frame_start.isoformat(),
+        },
+        plateau["after"]: {
+            "start": frame_end.isoformat(),
+            "end": (frame_end + timedelta(days=plateau["after_days"])).isoformat(),
+        },
+    }
 
 
 def gpr_position_key(position: str) -> str:
@@ -157,20 +180,16 @@ def build_object_plan(object_key: str, resync: bool = True) -> dict:
 
         gpr_key = gpr_position_key(position)
         raw_plan = {work_name: dates for (pos, work_name), dates in plan_all.items() if pos == gpr_key}
-        share = plateau_shares.get(gpr_key)
-        if share is not None:
+        if gpr_key in plateau_shares:
             # Строка поделена по плато — у частей своих плановых дат в ГПР
-            # нет (у исходной строки их тоже нет или они не про эти работы),
-            # сроки возьмутся из факта, см. plan_from_fact ниже. Стоимость
-            # делится в той же пропорции, что и %.
+            # нет, их задаёт plan_around ниже (или, без него, факт — см.
+            # plan_from_fact). Стоимость делит section_map, не плато.
             raw_plan.pop(plateau["work"], None)
             raw_plan[plateau["before"]] = {"start": None, "end": None}
             raw_plan[plateau["after"]] = {"start": None, "end": None}
-            section_costs = dict(section_costs)
-            earthworks = section_costs.pop(plateau["before"], 0.0)
-            section_costs[plateau["before"]] = earthworks * share / 100
-            section_costs[plateau["after"]] = earthworks * (100 - share) / 100
         position_plan = map_gpr_sections(raw_plan, section_map, gpr_exclude)
+        if plateau and plateau.get("plan_around"):
+            position_plan = plan_around(position_plan, plateau)
         position_fact = map_gpr_sections(
             {work_name: fact for (pos, work_name), fact in fact_all.items() if pos == gpr_key},
             section_map,
@@ -213,7 +232,7 @@ def build_object_plan(object_key: str, resync: bool = True) -> dict:
             )
 
         sections = redistribute_overhead(sections)
-        sections = compute_forecast(sections)
+        sections = compute_forecast(sections, obj.get("networks_finish_with_interior", False))
         position_total = sum(s["cost"] for s in sections if s["cost"] is not None)
         smeta_info = SMETAS[smeta_key]
         positions[position] = {
