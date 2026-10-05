@@ -19,6 +19,7 @@ SPREADSHEET_ID и GID берутся из ссылки на таблицу:
 import json
 import os
 import sys
+import time
 
 import gspread
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ from google.oauth2.service_account import Credentials
 load_dotenv()
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+QUOTA_RETRY_DELAYS = (15, 30, 60)  # секунды, см. _fetch_values
 
 # Канонические поля, которые нам нужны -> варианты их подписи в таблице
 # (уже в нормализованном виде, см. normalize_header_cell). Варианты — в
@@ -106,11 +108,24 @@ def is_total_row(row: list[str]) -> bool:
     )
 
 
+def _fetch_values(spreadsheet_id: str, gid: int) -> list[list[str]]:
+    """Значения листа с повтором при 429: лимит Sheets API — 60 чтений в
+    минуту на сервис-аккаунт, а пересчёт всех объектов читает десятки смет
+    подряд (и рядом может идти синк ГПР Node-сервера). Паузы в сумме больше
+    минуты — окно лимита успевает смениться."""
+    for delay in (*QUOTA_RETRY_DELAYS, None):
+        try:
+            spreadsheet = get_client().open_by_key(spreadsheet_id)
+            return spreadsheet.get_worksheet_by_id(gid).get_all_values()
+        except gspread.exceptions.APIError as exc:
+            if delay is None or exc.response.status_code != 429:
+                raise
+            print(f"[smeta-reader] лимит Sheets API (429), повтор через {delay} с")
+            time.sleep(delay)
+
+
 def read_smeta_rows(spreadsheet_id: str, gid: int, stop_at_total: bool = False) -> list[dict]:
-    client = get_client()
-    spreadsheet = client.open_by_key(spreadsheet_id)
-    worksheet = spreadsheet.get_worksheet_by_id(gid)
-    raw_rows = worksheet.get_all_values()
+    raw_rows = _fetch_values(spreadsheet_id, gid)
 
     header_idx = find_header_row(raw_rows)
     field_map = build_field_map(raw_rows[header_idx])
