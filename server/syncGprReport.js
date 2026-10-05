@@ -121,6 +121,13 @@ const SOURCES = [
         dateRowOffsets: [1, 2],
       },
     ],
+    // Плановые сроки — не колонки "Начало"/"Окончание" листа "факт", а
+    // перепланировка (базовый план 2 на 05.10.2026), см. fetchPlanSheet.
+    // При следующей перепланировке — поменять sheetName здесь.
+    planSheet: {
+      spreadsheetId: '102E0nzIE4gyp_t4HNozvy4w-dZAa8rZ_oqx_L5IAPjQ',
+      sheetName: 'базовый план 2 (05.10.2026)',
+    },
     // Вся вкладка целиком — 9 позиций (1.1..1.9). У листа есть колонка
     // "Категория" (последняя), размечающая каждую строку данных как
     // "Работа" (реальная работа, отслеживаем % готовности) или "Материал"
@@ -685,15 +692,74 @@ async function fetchAndParseSheet(source, sheet) {
   return { rows, planRows };
 }
 
+// Отдельная вкладка с плановыми сроками (source.planSheet) — плоская
+// таблица "Объект | Позиция | Раздел работ | Дата начала | Дата окончания",
+// позиция ("Поз.1.1") заполнена только в первой строке своего блока.
+// Названия разделов — те же, что в колонке "Конструктивы" листа с % (по
+// ним финплан сопоставляет план и факт).
+async function fetchPlanSheet(source) {
+  const { spreadsheetId, sheetName } = source.planSheet;
+  const raw = await getUnformattedValues(spreadsheetId, sheetName, DATA_RANGE);
+
+  const headerIndex = raw
+    .slice(0, LABELS_SEARCH_ROWS)
+    .findIndex((row) => (row || []).some((v) => typeof v === 'string' && v.trim() === 'Раздел работ'));
+  if (headerIndex === -1) {
+    throw new Error(`[${source.key}] не найдена колонка "Раздел работ" на листе плана "${sheetName}"`);
+  }
+  const header = raw[headerIndex].map((v) => (typeof v === 'string' ? v.trim() : v));
+  const positionCol = header.indexOf('Позиция');
+  const workCol = header.indexOf('Раздел работ');
+  const startCol = header.findIndex((v) => typeof v === 'string' && /начал/i.test(v));
+  const endCol = header.findIndex((v) => typeof v === 'string' && /оконч/i.test(v));
+  if ([positionCol, startCol, endCol].includes(-1)) {
+    throw new Error(`[${source.key}] на листе плана "${sheetName}" нет колонок "Позиция"/"Дата начала"/"Дата окончания"`);
+  }
+
+  const isDateSerial = (v) => typeof v === 'number' && Number.isFinite(v) && v >= MIN_DATE_SERIAL && v <= MAX_DATE_SERIAL;
+  const planRows = [];
+  let position = null;
+  for (const row of raw.slice(headerIndex + 1)) {
+    const positionCell = (row[positionCol] || '').toString().trim().toLowerCase(); // "Поз.1.1" -> "поз.1.1", как на листе "факт"
+    if (positionCell) position = POSITION_MARKER_RE.test(positionCell) ? positionCell : null;
+    const workName = (row[workCol] || '').toString().trim();
+    if (!position || !workName) continue; // пустые строки и пояснение под таблицей
+    planRows.push({
+      source_key: source.key,
+      position,
+      block: '', // как у строк без блока в fetchAndParseSheet
+      work_name: workName,
+      plan_start: isDateSerial(row[startCol]) ? excelSerialToISODate(row[startCol]) : null,
+      plan_end: isDateSerial(row[endCol]) ? excelSerialToISODate(row[endCol]) : null,
+    });
+  }
+  if (!planRows.length) {
+    throw new Error(`[${source.key}] на листе плана "${sheetName}" не найдено ни одной строки`);
+  }
+  return planRows;
+}
+
+// Все листы одного источника; плановые сроки — с source.planSheet, если он
+// задан (тогда "Начало"/"Окончание" листов с % игнорируются).
+async function fetchAndParseSource(source) {
+  const rows = [];
+  let planRows = [];
+  for (const sheet of source.sheets) {
+    const { rows: sheetRows, planRows: sheetPlanRows } = await fetchAndParseSheet(source, sheet);
+    rows.push(...sheetRows);
+    planRows.push(...sheetPlanRows);
+  }
+  if (source.planSheet) planRows = await fetchPlanSheet(source);
+  return { rows, planRows };
+}
+
 async function fetchAndParse() {
   const allRows = [];
   const allPlanRows = [];
   for (const source of SOURCES) {
-    for (const sheet of source.sheets) {
-      const { rows, planRows } = await fetchAndParseSheet(source, sheet);
-      allRows.push(...rows);
-      allPlanRows.push(...planRows);
-    }
+    const { rows, planRows } = await fetchAndParseSource(source);
+    allRows.push(...rows);
+    allPlanRows.push(...planRows);
   }
   return { rows: allRows, planRows: allPlanRows };
 }
@@ -761,13 +827,7 @@ async function resyncSource(sourceKey) {
   const source = SOURCES.find((s) => s.key === sourceKey);
   if (!source) throw new Error(`Неизвестный источник ГПР: ${sourceKey}`);
 
-  const rows = [];
-  const planRows = [];
-  for (const sheet of source.sheets) {
-    const { rows: sheetRows, planRows: sheetPlanRows } = await fetchAndParseSheet(source, sheet);
-    rows.push(...sheetRows);
-    planRows.push(...sheetPlanRows);
-  }
+  const { rows, planRows } = await fetchAndParseSource(source);
 
   const count = storeValues(rows, [sourceKey]);
   const planCount = storePlanDates(planRows, [sourceKey]);
