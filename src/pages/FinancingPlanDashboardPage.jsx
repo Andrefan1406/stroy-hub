@@ -74,11 +74,12 @@ function buildTimeline(sections) {
   let { year, month } = min;
   while (year < max.year || (year === max.year && month <= max.month)) {
     if (year < MONTHLY_FROM_YEAR) {
+      const firstMonth = year * 12;
       columns.push({
         year,
         monthIndex: null,
         label: String(year),
-        months: Array.from({ length: 12 }, (_, k) => year * 12 + k),
+        months: Array.from({ length: 12 }, (_, k) => firstMonth + k),
       });
       year++;
       month = 0;
