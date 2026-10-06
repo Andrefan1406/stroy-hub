@@ -4,6 +4,7 @@
 // клиенту заявку в одном и том же формате и одинаково подтягивают к ней
 // доп. пункты и открытые предложения по маршруту.
 const { z } = require('zod');
+const { requestedAtMs } = require('./slots');
 
 const FULL_SELECT = `
   SELECT
@@ -32,6 +33,8 @@ function validate(schema) {
   };
 }
 
+// За сколько минут до времени подачи заявка без водителя подсвечивается
+// диспетчеру (и после этого времени — тем более).
 function staleThreshold() {
   return Number(process.env.RIDE_STALE_THRESHOLD_MINUTES || 15);
 }
@@ -169,13 +172,15 @@ function serializeForEmployee(row) {
 }
 
 function serializeForDispatcher(row, staleThresholdMinutes = staleThreshold()) {
-  const ageMinutes = (Date.now() - new Date(row.created_at + 'Z').getTime()) / 60000;
+  const minutesToPickup = (requestedAtMs(row.requested_at) - Date.now()) / 60000;
   return {
     ...baseFields(row),
     employeeName: row.employee_name,
     driverPhone: row.driver_phone || null,
     stopsDetailed: row.stopsFull || [], // [{ id, address }] — для управления точками у диспетчера
-    isStale: row.status === 'pending_assignment' && !row.on_hold && ageMinutes >= staleThresholdMinutes,
+    // Подсветка — по близости ко времени подачи, а не по возрасту заявки:
+    // заказ на завтра, поданный сегодня, ждать водителя может спокойно.
+    isStale: row.status === 'pending_assignment' && !row.on_hold && !row.merged_into && minutesToPickup <= staleThresholdMinutes,
   };
 }
 

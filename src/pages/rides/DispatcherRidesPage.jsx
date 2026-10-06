@@ -1,14 +1,18 @@
 // Панель диспетчера — минимальное участие: диспетчер наблюдает за пулом
-// (заявки водители разбирают сами), подсвечивает "зависшие", может назначить
+// (заявки водители разбирают сами), подсвечивает заявки без водителя, у
+// которых подходит время подачи, может назначить
 // водителя вручную или отменить заявку. Плюс (доработка П.1/П.5) —
 // модерация предложений по маршруту: водитель/заказчик предлагают точку,
 // диспетчер одобряет или отклоняет; сам диспетчер добавляет/убирает точки
-// без согласования.
+// без согласования. Две вкладки: «Текущие» — только активные заявки,
+// ближайшие по времени подачи сверху; «Журнал» — завершённые/отменённые
+// за период (грузится с сервера по запросу, см. HistoryJournal).
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ridesApiFetch, ridesApiPost } from "../../rides/api";
 import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
+import AdminPanelLinks, { isSiteAdmin } from "../../rides/AdminPanelLinks";
 import MapPicker from "../../rides/MapPicker";
 import { formatRoute, formatEstimate, formatDelta, formatClock, minutesSince } from "../../rides/format";
 
@@ -29,6 +33,28 @@ const STATUS_LABEL = {
 
 const ROLE_LABEL = { employee: "заказчик", driver: "водитель", dispatcher: "диспетчер" };
 
+const ACTIVE_STATUSES = ["pending_assignment", "assigned", "in_progress"];
+
+// requestedAt — местное время подачи "YYYY-MM-DDTHH:MM" без зоны.
+function requestedAtMs(value) {
+  return value ? new Date(value.replace(" ", "T")).getTime() : NaN;
+}
+
+function localDateStr(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Без водителя, а до подачи меньше порога (или время уже прошло). Считается
+// на клиенте и пересчитывается по таймеру: время идёт, а событий по заявке
+// может и не быть — серверный isStale устарел бы.
+function staleInfo(r, thresholdMin, now) {
+  if (r.status !== "pending_assignment" || r.onHold || r.mergedInto) return null;
+  const minutesLeft = (requestedAtMs(r.requestedAt) - now) / 60000;
+  if (!(minutesLeft <= thresholdMin)) return null;
+  return minutesLeft < 0 ? "время подачи прошло" : `до подачи < ${thresholdMin} мин`;
+}
+
 export default function DispatcherRidesPage() {
   const [requests, setRequests] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -45,6 +71,13 @@ export default function DispatcherRidesPage() {
   const [pullTarget, setPullTarget] = useState(null); // requestId, с которого снимаем машину
   const [pullForm, setPullForm] = useState({ reason: "", targetRequestId: "" });
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState("current"); // "current" | "journal"
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -73,11 +106,16 @@ export default function DispatcherRidesPage() {
   useEffect(() => {
     const socket = createRidesSocket();
     const refreshFleet = () => ridesApiFetch("/api/v1/fleet-status").then(setFleet).catch(() => {});
+    // Итоги дня (завершено/отменено) считает сервер — перезапрашиваем
+    // сводку, когда заявка уходит из текущих.
+    const refreshSummary = () => ridesApiFetch("/api/v1/requests").then(({ summary: sum }) => setSummary(sum)).catch(() => {});
     const upsert = (req) => {
+      const active = ACTIVE_STATUSES.includes(req.status);
       setRequests((prev) => {
-        const exists = prev.some((r) => r.id === req.id);
-        return exists ? prev.map((r) => (r.id === req.id ? req : r)) : [req, ...prev];
+        const rest = prev.filter((r) => r.id !== req.id);
+        return active ? [...rest, req] : rest;
       });
+      if (!active) refreshSummary();
       refreshFleet();
     };
     socket.on("request:new", upsert);
@@ -225,19 +263,41 @@ export default function DispatcherRidesPage() {
   if (loading) return <div style={{ padding: 30 }}>Загрузка...</div>;
 
   const canEditRoute = (r) => ["pending_assignment", "assigned", "in_progress"].includes(r.status);
+  const staleThresholdMin = summary?.staleThresholdMinutes ?? 15;
+  // Ближайшие по времени подачи — сверху (сокет добавляет обновлённые
+  // заявки в конец списка, поэтому порядок задаётся здесь).
+  const sortedRequests = [...requests].sort(
+    (a, b) => (a.requestedAt || "").localeCompare(b.requestedAt || "") || a.id - b.id
+  );
 
   return (
     <div style={s.page}>
       <div style={s.header}>
         <h1 style={s.title}>Мониторинг заявок</h1>
         <div style={s.headerRight}>
-          <Link to="/rides-admin" style={s.link}>Водители и машины</Link>
-          <Link to="/employee" style={s.link}>Заказать машину себе</Link>
+          {isSiteAdmin() ? (
+            <AdminPanelLinks style={s.link} />
+          ) : (
+            <>
+              <Link to="/rides-admin" style={s.link}>Водители и машины</Link>
+              <Link to="/employee" style={s.link}>Заказать машину себе</Link>
+            </>
+          )}
           <LogoutButton />
         </div>
       </div>
       {error && <div style={s.error}>{error}</div>}
 
+      <div style={s.tabs}>
+        <button style={tab === "current" ? s.tabActive : s.tab} onClick={() => setTab("current")}>
+          Текущие{requests.length ? ` (${requests.length})` : ""}
+        </button>
+        <button style={tab === "journal" ? s.tabActive : s.tab} onClick={() => setTab("journal")}>Журнал</button>
+      </div>
+
+      {tab === "journal" && <HistoryJournal />}
+
+      {tab === "current" && (<>
       <div style={s.cards}>
         <div style={s.card}><div style={s.cardLabel}>В пуле без водителя</div><div style={s.cardValue}>{summary?.pending ?? 0}</div></div>
         <div style={s.card}><div style={s.cardLabel}>Назначено</div><div style={s.cardValue}>{summary?.assigned ?? 0}</div></div>
@@ -264,6 +324,12 @@ export default function DispatcherRidesPage() {
             </div>
           )}
         </div>
+      </div>
+
+      <div style={s.todayLine}>
+        Сегодня: завершено {summary?.completedToday ?? 0}, отменено {summary?.cancelledToday ?? 0}
+        {" · "}
+        <button style={s.linkButton} onClick={() => setTab("journal")}>открыть журнал</button>
       </div>
 
       {proposals.length > 0 && (
@@ -340,9 +406,14 @@ export default function DispatcherRidesPage() {
             </tr>
           </thead>
           <tbody>
-            {requests.map((r) => (
+            {!loading && sortedRequests.length === 0 && (
+              <tr><td style={s.td} colSpan={8}>Активных заявок нет</td></tr>
+            )}
+            {sortedRequests.map((r) => {
+              const stale = staleInfo(r, staleThresholdMin, now);
+              return (
               <React.Fragment key={r.id}>
-                <tr style={r.isStale ? s.staleRow : undefined}>
+                <tr style={stale ? s.staleRow : undefined}>
                   <td style={s.td}>{formatDateTime(r.requestedAt)}</td>
                   <td style={s.td}>
                     {formatRoute(r)}{r.withReturn && <span style={s.returnBadge}> (туда-обратно)</span>}
@@ -360,7 +431,7 @@ export default function DispatcherRidesPage() {
                   <td style={s.td}>{r.employeeName}</td>
                   <td style={s.td}>
                     {r.onHold ? "Снята с машины" : (STATUS_LABEL[r.status] || r.status)}
-                    {r.isStale && <span style={s.staleBadge}>висит &gt; {summary?.staleThresholdMinutes ?? 15} мин</span>}
+                    {stale && <span style={s.staleBadge}>{stale}</span>}
                     {r.onHold && <div style={s.holdNote}>ждёт решения заказчика · причина: {r.pullReason}</div>}
                   </td>
                   <td style={s.td}>{r.driverName ? `${r.driverName}${r.vehiclePlate ? ` (${r.vehiclePlate})` : ""}` : "—"}</td>
@@ -408,10 +479,12 @@ export default function DispatcherRidesPage() {
                   </tr>
                 )}
               </React.Fragment>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
+      </>)}
 
       {assignTarget && (
         <div style={s.modalOverlay} onClick={() => setAssignTarget(null)}>
@@ -480,7 +553,120 @@ export default function DispatcherRidesPage() {
   );
 }
 
+// Журнал завершённых и отменённых заявок за период по дате подачи. Грузится
+// с сервера по запросу (а не вместе с текущими), чтобы рабочий экран не
+// тянул за собой всю историю.
+function HistoryJournal() {
+  const today = localDateStr();
+  const [from, setFrom] = useState(today);
+  const [to, setTo] = useState(today);
+  const [status, setStatus] = useState("all");
+  const [query, setQuery] = useState("");
+  const [rows, setRows] = useState([]);
+  const [truncated, setTruncated] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!from || !to) return;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    ridesApiFetch(`/api/v1/requests/history?from=${from}&to=${to}&status=${status}`)
+      .then((data) => {
+        if (cancelled) return;
+        setRows(data.requests);
+        setTruncated(data.truncated);
+      })
+      .catch((err) => { if (!cancelled) setError(err.message || "Не удалось загрузить журнал"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [from, to, status]);
+
+  const setLastDays = (days) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (days - 1));
+    setFrom(localDateStr(d));
+    setTo(today);
+  };
+
+  const q = query.trim().toLowerCase();
+  const visible = q
+    ? rows.filter((r) => [formatRoute(r), r.employeeName, r.driverName, r.vehiclePlate, r.cancelReason, String(r.id)]
+      .some((v) => v && v.toLowerCase().includes(q)))
+    : rows;
+
+  return (
+    <section>
+      <div style={s.journalFilters}>
+        <label style={s.filterLabel}>с <input type="date" style={s.filterInput} value={from} max={to} onChange={(e) => setFrom(e.target.value)} /></label>
+        <label style={s.filterLabel}>по <input type="date" style={s.filterInput} value={to} min={from} onChange={(e) => setTo(e.target.value)} /></label>
+        <button style={s.secondaryButton} onClick={() => setLastDays(1)}>Сегодня</button>
+        <button style={s.secondaryButton} onClick={() => setLastDays(7)}>7 дней</button>
+        <button style={s.secondaryButton} onClick={() => setLastDays(30)}>30 дней</button>
+        <select style={s.filterInput} value={status} onChange={(e) => setStatus(e.target.value)}>
+          <option value="all">Все</option>
+          <option value="completed">Завершённые</option>
+          <option value="cancelled">Отменённые</option>
+        </select>
+        <input
+          style={{ ...s.filterInput, flex: "1 1 180px" }}
+          placeholder="Поиск: адрес, заказчик, водитель, №"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+      {error && <div style={s.error}>{error}</div>}
+      {truncated && <div style={s.muted}>Показаны последние 1000 заявок периода — сузьте период.</div>}
+      <div style={s.tableWrap}>
+        <table style={s.table}>
+          <thead>
+            <tr>
+              <th style={s.th}>№</th>
+              <th style={s.th}>Время</th>
+              <th style={s.th}>Маршрут</th>
+              <th style={s.th}>≈ км / мин</th>
+              <th style={s.th}>Заказчик</th>
+              <th style={s.th}>Водитель</th>
+              <th style={s.th}>Статус</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading && <tr><td style={s.td} colSpan={7}>Загрузка...</td></tr>}
+            {!loading && visible.length === 0 && <tr><td style={s.td} colSpan={7}>За период заявок нет</td></tr>}
+            {!loading && visible.map((r) => (
+              <tr key={r.id}>
+                <td style={s.td}>{r.id}</td>
+                <td style={s.td}>{formatDateTime(r.requestedAt)}</td>
+                <td style={s.td}>
+                  {formatRoute(r)}{r.withReturn && <span style={s.returnBadge}> (туда-обратно)</span>}
+                  {r.mergedInto && <span style={s.mergeBadge}>🔗 в составе поездки #{r.mergedInto}</span>}
+                </td>
+                <td style={s.td}>{formatEstimate(r) || "—"}</td>
+                <td style={s.td}>{r.employeeName}</td>
+                <td style={s.td}>{r.driverName ? `${r.driverName}${r.vehiclePlate ? ` (${r.vehiclePlate})` : ""}` : "—"}</td>
+                <td style={s.td}>
+                  <span style={{ color: r.status === "cancelled" ? "#c00" : "#1a7f37" }}>{STATUS_LABEL[r.status] || r.status}</span>
+                  {r.cancelReason && <div style={s.holdNote}>{r.cancelReason}</div>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 const s = {
+  tabs: { display: "flex", gap: "6px", marginBottom: "16px", borderBottom: "1px solid #ddd" },
+  tab: { background: "none", border: "none", borderBottom: "2px solid transparent", padding: "8px 14px", cursor: "pointer", fontSize: "14px", color: "#555", marginBottom: "-1px" },
+  tabActive: { background: "none", border: "none", borderBottom: "2px solid #1976d2", padding: "8px 14px", cursor: "pointer", fontSize: "14px", color: "#1976d2", fontWeight: 600, marginBottom: "-1px" },
+  todayLine: { fontSize: "13px", color: "#555", margin: "-8px 0 16px" },
+  linkButton: { background: "none", border: "none", padding: 0, color: "#1976d2", textDecoration: "underline", cursor: "pointer", fontSize: "13px" },
+  journalFilters: { display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center", marginBottom: "12px" },
+  filterLabel: { fontSize: "13px", color: "#555", display: "flex", alignItems: "center", gap: "4px" },
+  filterInput: { padding: "6px 8px", border: "1px solid #ccc", borderRadius: "6px", fontSize: "13px" },
   page: { padding: "16px", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxWidth: "1100px", margin: "0 auto", boxSizing: "border-box" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "16px" },
   headerRight: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "12px" },

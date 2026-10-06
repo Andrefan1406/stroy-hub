@@ -14,6 +14,7 @@ import { getAuth } from "firebase/auth";
 import * as XLSX from "xlsx";
 import { ridesApiDelete, ridesApiFetch, ridesApiPatch, ridesApiPost, ridesApiPut } from "../../rides/api";
 import LogoutButton from "../../rides/LogoutButton";
+import AdminPanelLinks from "../../rides/AdminPanelLinks";
 import { SITE_ADMIN_EMAIL } from "../../rides/constants";
 
 const ROLE_OPTIONS = [
@@ -625,6 +626,7 @@ export default function RidesAdminPage() {
         <h1 style={s.title}>Администрирование системы поездок</h1>
         <div style={s.headerRight}>
           {isDispatcher && <Link to="/dispatcher" style={s.link}>← Панель диспетчера</Link>}
+          <AdminPanelLinks style={s.link} />
           <LogoutButton />
         </div>
       </div>

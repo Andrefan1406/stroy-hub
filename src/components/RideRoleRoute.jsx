@@ -4,10 +4,9 @@
 // проверка — requireRideRole/requireRoleOrSiteAdmin на бэкенде на каждом
 // /api/v1/* эндпоинте.
 //
-// allowSiteAdmin: главный админ сайта (SITE_ADMIN_EMAIL) не имеет своей
-// роли в rides.users вообще (см. server/rides/usersRouter.js) — на
-// /rides-admin его пускает не совпадение роли, а email, поэтому для этого
-// роута нужен отдельный флаг, а не просто "admin" в списке roles.
+// Главный админ сайта (SITE_ADMIN_EMAIL) роли в системе поездок не имеет,
+// но пускается на любую её страницу по email (сервер так же пропускает его
+// через любую проверку роли — см. server/rides/auth.js).
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { onAuthStateChanged } from "firebase/auth";
@@ -15,14 +14,14 @@ import { auth } from "../firebase";
 import { ridesApiFetch } from "../rides/api";
 import { SITE_ADMIN_EMAIL } from "../rides/constants";
 
-export default function RideRoleRoute({ roles, allowSiteAdmin, children }) {
+export default function RideRoleRoute({ roles, children }) {
   const navigate = useNavigate();
   const [status, setStatus] = useState("checking"); // checking | ok | denied
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!user) { setStatus("denied"); return; }
-      const isSiteAdmin = allowSiteAdmin && user.email?.toLowerCase() === SITE_ADMIN_EMAIL;
+      const isSiteAdmin = user.email?.toLowerCase() === SITE_ADMIN_EMAIL;
       if (isSiteAdmin) { setStatus("ok"); return; }
       ridesApiFetch("/api/v1/users/me")
         .then(({ user: rideUser }) => setStatus(rideUser && roles.includes(rideUser.role) ? "ok" : "denied"))
@@ -37,7 +36,7 @@ export default function RideRoleRoute({ roles, allowSiteAdmin, children }) {
         });
     });
     return () => unsubscribe();
-  }, [roles, allowSiteAdmin]);
+  }, [roles]);
 
   if (status === "checking") return <div style={{ padding: 30 }}>Проверка доступа...</div>;
 

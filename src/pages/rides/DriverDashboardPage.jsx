@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ridesApiFetch, ridesApiPatch, ridesApiPost } from "../../rides/api";
 import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
+import AdminPanelLinks, { isSiteAdmin } from "../../rides/AdminPanelLinks";
 import MapPicker from "../../rides/MapPicker";
 import { formatRoute, formatEstimate, formatClock } from "../../rides/format";
 
@@ -232,14 +233,21 @@ export default function DriverDashboardPage() {
         <h1 style={s.title}>Кабинет водителя</h1>
         <div style={s.headerRight}>
           {statusBadge}
-          {driver?.status !== "busy" && (
+          {driver && driver.status !== "busy" && (
             <button style={s.secondaryButton} onClick={toggleOnline}>
-              {driver?.status === "offline" ? "Выйти на линию" : "Уйти с линии"}
+              {driver.status === "offline" ? "Выйти на линию" : "Уйти с линии"}
             </button>
           )}
+          <AdminPanelLinks style={s.adminLink} />
           <LogoutButton />
         </div>
       </div>
+
+      {!driver && isSiteAdmin() && (
+        <div style={s.notice}>
+          Вы смотрите панель водителя как администратор: пул заявок виден, но брать заказы может только водитель.
+        </div>
+      )}
 
       {error && <div style={s.error}>{error}</div>}
       {notice && <div style={s.notice} onClick={() => setNotice("")}>{notice}</div>}
@@ -393,6 +401,7 @@ const s = {
   page: { padding: "16px", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", maxWidth: "900px", margin: "0 auto", boxSizing: "border-box" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "10px" },
   headerRight: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "10px" },
+  adminLink: { color: "#1976d2", fontSize: "13px", textDecoration: "none" },
   title: { margin: 0, fontSize: "clamp(18px, 5vw, 22px)" },
   badge: { padding: "4px 10px", borderRadius: "999px", border: "1px solid", fontSize: "13px", fontWeight: 600 },
 

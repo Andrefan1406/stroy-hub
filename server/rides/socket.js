@@ -10,7 +10,7 @@
 // чужие заявки (там телефон заказчика).
 const { Server } = require('socket.io');
 const { getAuth } = require('firebase-admin/auth');
-const { findRideUserByEmail } = require('./auth');
+const { rideUserForEmail } = require('./auth');
 const { getWriteDb } = require('./db');
 
 let io = null;
@@ -25,7 +25,7 @@ function initSocket(httpServer) {
     if (!token) return next(new Error('Не передан токен авторизации'));
     try {
       const decoded = await getAuth().verifyIdToken(token);
-      const rideUser = findRideUserByEmail(decoded.email);
+      const rideUser = rideUserForEmail(decoded.email);
       if (!rideUser) return next(new Error('Вы не добавлены как пользователь системы служебного транспорта'));
       socket.rideUser = rideUser;
       next();
@@ -42,9 +42,15 @@ function initSocket(httpServer) {
       if (driver) socket.join(`driver:${driver.id}`);
     }
     if (role === 'dispatcher') socket.join('dispatcher');
-    // Диспетчер иногда сам подаёт заявку (как сотрудник) — ему тоже нужны
-    // уведомления по комнате employee:{id} о своих же заявках.
-    if (role === 'employee' || role === 'dispatcher') socket.join(`employee:${id}`);
+    // Главный админ (служебная запись, см. auth.js) смотрит все три панели —
+    // ему нужны события и диспетчера, и пула водителей.
+    if (role === 'admin') {
+      socket.join('dispatcher');
+      socket.join('drivers');
+    }
+    // Диспетчер (и админ) иногда сам подаёт заявку (как сотрудник) — ему
+    // тоже нужны уведомления по комнате employee:{id} о своих же заявках.
+    if (role === 'employee' || role === 'dispatcher' || role === 'admin') socket.join(`employee:${id}`);
   });
 
   return io;

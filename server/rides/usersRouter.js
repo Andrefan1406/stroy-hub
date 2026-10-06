@@ -7,9 +7,10 @@
 // Разделение обязанностей на остальных эндпоинтах:
 // - Главный админ сайта (ADMIN_EMAIL, server/adminAuth.js) — ТОЛЬКО
 //   назначает роль и full_site_access. Имя/телефон он не трогает и не
-//   видит их в своей форме — это не его забота. У него самого записи в
-//   этой таблице нет: он не сотрудник/диспетчер/водитель, а отдельная
-//   функция сверху, определяется по email, а не по роли.
+//   видит их в своей форме — это не его забота. Ему самому роль не
+//   назначают: он проходит любую проверку роли по email (см. auth.js), а
+//   его служебная запись (role 'admin') в списке не показывается и через
+//   эти эндпоинты не меняется (rejectSiteAdminTarget).
 // - Диспетчер (он же ведёт справочники водителей/машин, см.
 //   driversRouter.js/vehiclesRouter.js) заполняет "карточку" — имя и
 //   телефон — тем, кому роль уже назначил главный админ. Роль и
@@ -18,10 +19,20 @@ const express = require('express');
 const { z } = require('zod');
 const { getAuth } = require('firebase-admin/auth');
 const { getWriteDb } = require('./db');
-const { loadRideUser, requireSiteAdmin, requireRoleOrSiteAdmin } = require('./auth');
+const { loadRideUser, requireSiteAdmin, requireRoleOrSiteAdmin, isSiteAdminEmail } = require('./auth');
 const { ADMIN_EMAIL } = require('../adminAuth');
 
 const router = express.Router();
+
+// Служебную запись главного админа не трогаем: смена роли лишила бы его
+// доступа к панелям по role 'admin' (сокет-комнаты), удаление — сломало бы
+// ссылки его заявок на users.id.
+function rejectSiteAdminTarget(req, res, next) {
+  if (isSiteAdminEmail(req.params.email)) {
+    return res.status(400).json({ error: 'Главному администратору роль не назначается — у него доступ ко всем панелям' });
+  }
+  next();
+}
 
 function serializeUser(row) {
   return {
@@ -74,7 +85,7 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
 
     const merged = [];
     for (const fu of firebaseUsers) {
-      if (!fu.email) continue;
+      if (!fu.email || isSiteAdminEmail(fu.email)) continue;
       const key = fu.email.toLowerCase();
       const local = localByEmail.get(key);
       localByEmail.delete(key);
@@ -91,6 +102,7 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
     // Локальные записи без соответствующего Firebase-аккаунта (удалён/переименован)
     // всё равно показываем, чтобы главный админ мог их убрать вручную.
     for (const leftover of localByEmail.values()) {
+      if (isSiteAdminEmail(leftover.email)) continue;
       merged.push({
         id: leftover.id,
         email: leftover.email,
@@ -130,7 +142,7 @@ const cardSchema = z.object({
 // Главный админ: назначить/сменить роль и full_site_access. Имя/телефон
 // он не присылает — при первом назначении роли новому email они остаются
 // пустыми, пока диспетчер не заполнит карточку (см. PATCH ниже).
-router.put('/:email', requireSiteAdmin, (req, res) => {
+router.put('/:email', requireSiteAdmin, rejectSiteAdminTarget, (req, res) => {
   const result = roleAssignmentSchema.safeParse(req.body);
   if (!result.success) {
     return res.status(400).json({ error: result.error.issues[0]?.message || 'Некорректные данные запроса' });
@@ -155,7 +167,7 @@ router.put('/:email', requireSiteAdmin, (req, res) => {
 // Диспетчер: заполнить карточку (имя/телефон) уже существующей записи —
 // роль он не назначает и создать новую запись не может, только дополняет то,
 // что до него сделал главный админ.
-router.patch('/:email', requireRoleOrSiteAdmin('dispatcher'), (req, res) => {
+router.patch('/:email', requireRoleOrSiteAdmin('dispatcher'), rejectSiteAdminTarget, (req, res) => {
   const isSiteAdmin = req.firebaseEmail?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
   if (isSiteAdmin) {
     return res.status(403).json({ error: 'Имя и телефон заполняет диспетчер, не главный админ' });
@@ -175,7 +187,7 @@ router.patch('/:email', requireRoleOrSiteAdmin('dispatcher'), (req, res) => {
   res.json({ user: serializeUser(db.prepare('SELECT * FROM users WHERE email = ?').get(email)) });
 });
 
-router.delete('/:email', requireSiteAdmin, (req, res) => {
+router.delete('/:email', requireSiteAdmin, rejectSiteAdminTarget, (req, res) => {
   const db = getWriteDb();
   const email = req.params.email.toLowerCase();
   const existing = db.prepare('SELECT * FROM users WHERE email = ?').get(email);

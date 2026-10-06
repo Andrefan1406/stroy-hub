@@ -8,12 +8,18 @@
 const { initializeApp, getApps, cert } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getWriteDb } = require('./db');
-// Главный админ сайта (server/adminAuth.js) — в системе поездок у него
-// осознанно нет собственной роли/записи: он только назначает роли другим
-// на /rides-admin и смотрит (без права правки) справочники водителей и
-// машин. requireSiteAdmin/requireRoleOrSiteAdmin ниже проверяют это по
-// email из Firebase-токена, а не по rides.users — записи там может не быть.
+// Главный админ сайта (server/adminAuth.js) — в системе поездок ему не
+// назначают роль: он проходит ЛЮБУЮ проверку роли (панели диспетчера,
+// пассажира, водителя, справочники) по email из Firebase-токена. Запись в
+// rides.users у него всё же есть — служебная, с ролью 'admin', создаётся
+// сама при первом обращении (ensureSiteAdminRideUser): его собственные
+// заказы машины ссылаются на users.id. В списке пользователей на
+// /rides-admin эта запись не показывается (см. usersRouter.js).
 const { ADMIN_EMAIL } = require('../adminAuth');
+
+function isSiteAdminEmail(email) {
+  return !!email && email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+}
 
 const FIREBASE_PROJECT_ID = 'my-first-site-16a0c';
 
@@ -52,6 +58,31 @@ function findRideUserByEmail(email) {
     .get(email.toLowerCase());
 }
 
+// Запись могла остаться с тех пор, когда админу назначали роль вручную
+// (например, employee без full_site_access — тогда RideAccessGate запирал
+// его на /employee), поэтому существующая приводится к служебной: роль
+// 'admin' и доступ ко всему сайту. Имя/телефон, если заполнены, не трогаем.
+function ensureSiteAdminRideUser() {
+  const email = ADMIN_EMAIL.toLowerCase();
+  getWriteDb()
+    .prepare(
+      `INSERT INTO users (email, name, phone, role, full_site_access)
+       VALUES (?, 'Администратор', '', 'admin', 1)
+       ON CONFLICT(email) DO UPDATE SET
+         role = 'admin',
+         full_site_access = 1,
+         name = CASE WHEN users.name = '' THEN excluded.name ELSE users.name END
+       WHERE users.role != 'admin' OR users.full_site_access != 1 OR users.name = ''`
+    )
+    .run(email);
+  return findRideUserByEmail(email);
+}
+
+// rides.users-запись по email из токена; главному админу — служебная.
+function rideUserForEmail(email) {
+  return isSiteAdminEmail(email) ? ensureSiteAdminRideUser() : findRideUserByEmail(email) || null;
+}
+
 // Верифицирует токен и подгружает запись из rides.users в req.rideUser
 // (null, если человек не добавлен в систему поездок) — общий первый шаг
 // для requireRideRole/requireAnyRideUser и для GET /users/me.
@@ -59,13 +90,15 @@ async function loadRideUser(req, res, next) {
   const decoded = await verifyToken(req, res);
   if (!decoded || !decoded.email) return;
   req.firebaseEmail = decoded.email;
-  req.rideUser = findRideUserByEmail(decoded.email) || null;
+  req.isSiteAdmin = isSiteAdminEmail(decoded.email);
+  req.rideUser = rideUserForEmail(decoded.email);
   next();
 }
 
 // Требует, чтобы пользователь был добавлен в систему поездок (любая роль).
 function requireAnyRideUser(req, res, next) {
   loadRideUser(req, res, () => {
+    if (req.isSiteAdmin) return next();
     if (!req.rideUser) {
       return res.status(403).json({ error: 'Вы не добавлены как пользователь системы служебного транспорта' });
     }
@@ -73,10 +106,12 @@ function requireAnyRideUser(req, res, next) {
   });
 }
 
-// Требует конкретную роль (или одну из нескольких).
+// Требует конкретную роль (или одну из нескольких). Главный админ сайта
+// проходит всегда.
 function requireRideRole(...roles) {
   return (req, res, next) => {
     loadRideUser(req, res, () => {
+      if (req.isSiteAdmin) return next();
       if (!req.rideUser) {
         return res.status(403).json({ error: 'Вы не добавлены как пользователь системы служебного транспорта' });
       }
@@ -93,22 +128,19 @@ function requireSiteAdmin(req, res, next) {
   verifyToken(req, res).then((decoded) => {
     if (!decoded) return; // verifyToken уже отправил 401
     req.firebaseEmail = decoded.email;
-    if (decoded.email?.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    if (!isSiteAdminEmail(decoded.email)) {
       return res.status(403).json({ error: 'Доступ только для главного администратора сайта' });
     }
     next();
   });
 }
 
-// Нужная роль ИЛИ главный админ — для эндпоинтов, которые главному
-// админу можно только читать (справочники водителей/машин): диспетчер
-// правит их полноценно, главный админ видит то же самое, но пишущие
-// роуты этим хелпером не защищают — там отдельно requireRideRole(role).
+// Нужная роль ИЛИ главный админ. Сейчас то же, что requireRideRole (админ
+// проходит и там) — оставлен для роутов, где это явно часть контракта.
 function requireRoleOrSiteAdmin(...roles) {
   return (req, res, next) => {
     loadRideUser(req, res, () => {
-      const isSiteAdmin = req.firebaseEmail?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-      if (isSiteAdmin) return next();
+      if (req.isSiteAdmin) return next();
       if (!req.rideUser || !roles.includes(req.rideUser.role)) {
         return res.status(403).json({ error: 'Недостаточно прав для этого действия' });
       }
@@ -119,5 +151,5 @@ function requireRoleOrSiteAdmin(...roles) {
 
 module.exports = {
   loadRideUser, requireAnyRideUser, requireRideRole, requireSiteAdmin, requireRoleOrSiteAdmin,
-  findRideUserByEmail, verifyToken,
+  findRideUserByEmail, rideUserForEmail, isSiteAdminEmail, verifyToken,
 };

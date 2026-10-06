@@ -75,6 +75,8 @@ router.get('/available', requireRideRole('dispatcher'), (req, res) => {
 // Собственный профиль водителя (статус online/offline/busy, закреплённая машина).
 router.get('/me', requireRideRole('driver'), (req, res) => {
   const row = getWriteDb().prepare(`${FULL_SELECT} WHERE d.user_id = ?`).get(req.rideUser.id);
+  // Главный админ смотрит панель водителя, не будучи водителем.
+  if (!row && req.isSiteAdmin) return res.json({ driver: null });
   if (!row) return res.status(404).json({ error: 'Вы не зарегистрированы как водитель' });
   res.json({ driver: serialize(row) });
 });

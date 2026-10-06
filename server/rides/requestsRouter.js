@@ -14,13 +14,23 @@ const {
   FULL_SELECT, validate, staleThreshold, hydrateRows, getRow,
   serializeForDriver, serializeForEmployee, serializeForDispatcher, z,
 } = require('./requestView');
+const {
+  ACTIVE_STATUSES, PICKUP_FROM, PICKUP_TO, isWithinPickupHours, requestedAtMs, todayKz, slotKey, slotCapacity, slotCounts,
+  nextFreeSlot,
+} = require('./slots');
 
 const router = express.Router();
 
 const createRequestSchema = z.object({
   fromAddress: z.string().trim().min(1, 'Укажите адрес подачи'),
   toAddress: z.string().trim().min(1, 'Укажите адрес назначения'),
-  requestedAt: z.string().trim().min(1, 'Укажите дату и время'),
+  requestedAt: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, 'Укажите дату и время')
+    .refine(isWithinPickupHours, `Время подачи — с ${PICKUP_FROM} до ${PICKUP_TO}`)
+    // Как и в форме: уже наступивший слот (включая текущий) — в прошлом.
+    .refine((at) => requestedAtMs(at) > Date.now(), 'Это время уже прошло — выберите время позже'),
   purpose: z.string().trim().min(1, 'Укажите цель поездки'),
   passengersCount: z.coerce.number().int().min(1).max(50).default(1),
   withReturn: z.boolean().optional().default(false),
@@ -76,7 +86,13 @@ router.post('/', requireRideRole('employee', 'dispatcher'), validate(createReque
   const db = getWriteDb();
   const { fromAddress, toAddress, requestedAt, purpose, passengersCount, withReturn, extraStops, comment } = req.body;
 
+  // Лимит слота проверяется в той же транзакции, что и вставка
+  // (better-sqlite3 синхронный) — две одновременные заявки на последнее
+  // место в слоте не проскочат обе.
+  const { capacity } = slotCapacity(db);
   const created = db.transaction(() => {
+    const slot = slotKey(requestedAt);
+    if ((slotCounts(db, slot.slice(0, 10))[slot.slice(11)] || 0) >= capacity) return null;
     const info = db
       .prepare(
         `INSERT INTO requests (employee_id, from_address, to_address, requested_at, purpose, passengers_count, with_return, comment, status)
@@ -97,6 +113,16 @@ router.post('/', requireRideRole('employee', 'dispatcher'), validate(createReque
     });
     return info.lastInsertRowid;
   })();
+
+  if (created === null) {
+    const nextFree = nextFreeSlot(db, requestedAt, capacity);
+    return res.status(409).json({
+      error: nextFree
+        ? `На ${requestedAt.slice(11, 16)} машин уже не хватает. Ближайшее свободное время — ${nextFree.slice(11)}.`
+        : `На ${requestedAt.slice(0, 10).split('-').reverse().join('.')} после ${requestedAt.slice(11, 16)} до ${PICKUP_TO} свободного времени нет — выберите другую дату.`,
+      nextFreeSlot: nextFree,
+    });
+  }
 
   try {
     await recomputeRequestEstimate(created, { actorUserId: req.rideUser.id });
@@ -158,10 +184,24 @@ router.get('/my-history', requireRideRole('driver'), (req, res) => {
   res.json({ requests: hydrateRows(db, rows).map(serializeForDriver) });
 });
 
-// Диспетчер: полный список + сводка по статусам для мониторинга.
+// Диспетчер, вкладка «Текущие»: только активные заявки (завершённые и
+// отменённые — в журнале, см. /history), ближайшие по времени подачи
+// сверху, + сводка по статусам и итоги дня.
 router.get('/', requireRideRole('dispatcher'), (req, res) => {
   const db = getWriteDb();
-  const rows = hydrateRows(db, db.prepare(`${FULL_SELECT} ORDER BY r.created_at DESC`).all());
+  const placeholders = ACTIVE_STATUSES.map(() => '?').join(', ');
+  const rows = hydrateRows(
+    db,
+    db.prepare(`${FULL_SELECT} WHERE r.status IN (${placeholders}) ORDER BY r.requested_at ASC`).all(...ACTIVE_STATUSES)
+  );
+  const today = db
+    .prepare(
+      `SELECT status, COUNT(*) AS c FROM requests
+        WHERE substr(requested_at, 1, 10) = ? AND status IN ('completed', 'cancelled')
+        GROUP BY status`
+    )
+    .all(todayKz());
+  const todayCount = (status) => today.find((t) => t.status === status)?.c || 0;
   const threshold = staleThreshold();
   res.json({
     requests: rows.map((r) => serializeForDispatcher(r, threshold)),
@@ -170,9 +210,51 @@ router.get('/', requireRideRole('dispatcher'), (req, res) => {
       assigned: rows.filter((r) => r.status === 'assigned').length,
       inProgress: rows.filter((r) => r.status === 'in_progress').length,
       onHold: rows.filter((r) => r.on_hold).length,
+      completedToday: todayCount('completed'),
+      cancelledToday: todayCount('cancelled'),
       staleThresholdMinutes: threshold,
     },
   });
+});
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const HISTORY_LIMIT = 1000;
+
+// Диспетчер, вкладка «Журнал»: завершённые/отменённые за период по дате
+// подачи (from..to включительно, "YYYY-MM-DD"), новые сверху.
+router.get('/history', requireRideRole('dispatcher'), (req, res) => {
+  const { from, to, status } = req.query;
+  if (!DATE_RE.test(from || '') || !DATE_RE.test(to || '')) {
+    return res.status(400).json({ error: 'Укажите период: from и to в формате YYYY-MM-DD' });
+  }
+  const statuses = status === 'completed' || status === 'cancelled' ? [status] : ['completed', 'cancelled'];
+  const db = getWriteDb();
+  const rows = db
+    .prepare(
+      `${FULL_SELECT}
+        WHERE substr(r.requested_at, 1, 10) BETWEEN ? AND ?
+          AND r.status IN (${statuses.map(() => '?').join(', ')})
+        ORDER BY r.requested_at DESC
+        LIMIT ${HISTORY_LIMIT + 1}`
+    )
+    .all(from, to, ...statuses);
+  const threshold = staleThreshold();
+  res.json({
+    requests: hydrateRows(db, rows.slice(0, HISTORY_LIMIT)).map((r) => serializeForDispatcher(r, threshold)),
+    truncated: rows.length > HISTORY_LIMIT,
+  });
+});
+
+// Занятость слотов на дату — для выбора времени в форме заказа: слот, где
+// заявок уже столько, сколько машин (capacity), выбрать нельзя.
+router.get('/slots', requireRideRole('employee', 'dispatcher'), (req, res) => {
+  const { date } = req.query;
+  if (!DATE_RE.test(date || '')) {
+    return res.status(400).json({ error: 'Укажите дату в формате YYYY-MM-DD' });
+  }
+  const db = getWriteDb();
+  const { capacity, onLine } = slotCapacity(db);
+  res.json({ date, capacity, onLine, counts: slotCounts(db, date) });
 });
 
 // Взять заказ из пула — атомарно: побеждает тот, чей UPDATE первым

@@ -10,12 +10,13 @@ import { Navigate, useLocation } from "react-router-dom";
 import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "../firebase";
 import { ridesApiFetch } from "../rides/api";
-import { ROLE_HOME_PATH } from "../rides/constants";
+import { ROLE_HOME_PATH, SITE_ADMIN_EMAIL } from "../rides/constants";
 
-// Роли "admin" в rides.users больше нет — главный админ сайта эту таблицу
-// не заполняет собой вообще (см. server/rides/usersRouter.js), поэтому
-// его сюда ROLE_HOME_PATH/ROLE_EXTRA_PATHS не касаются: без записи rideUser
-// он ниже просто не подпадает под ограничение и видит весь сайт как обычно.
+// Главный админ сайта под ограничение не подпадает никогда — он ходит по
+// всем панелям системы поездок и по всему сайту, какая бы запись ни
+// лежала для него в rides.users (сервер приводит её к служебной роли
+// 'admin', см. server/rides/auth.js, но старая запись с ролью без
+// full_site_access иначе заперла бы его на одной странице).
 
 // Помимо своей "домашней" страницы, диспетчеру ещё можно на /employee —
 // он иногда сам себе заказывает машину, и на /rides-admin — он же ведёт
@@ -49,7 +50,8 @@ export default function RideAccessGate({ children }) {
     return <div style={{ padding: 30 }}>Проверка доступа...</div>;
   }
 
-  if (rideUser && !rideUser.fullSiteAccess) {
+  const isSiteAdmin = user?.email?.toLowerCase() === SITE_ADMIN_EMAIL;
+  if (rideUser && !rideUser.fullSiteAccess && !isSiteAdmin) {
     const home = ROLE_HOME_PATH[rideUser.role];
     const allowed = [home, ...(ROLE_EXTRA_PATHS[rideUser.role] || [])];
     const isAllowed = location.pathname === "/login" || allowed.some((p) => p && location.pathname.startsWith(p));

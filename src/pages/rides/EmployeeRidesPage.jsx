@@ -7,6 +7,7 @@ import { Link } from "react-router-dom";
 import { ridesApiFetch, ridesApiPost } from "../../rides/api";
 import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
+import AdminPanelLinks from "../../rides/AdminPanelLinks";
 import { formatRoute, formatEstimate, formatClock } from "../../rides/format";
 import MapPicker from "../../rides/MapPicker";
 import CancelRequestModal from "../../rides/CancelRequestModal";
@@ -16,14 +17,20 @@ const CAN_EDIT_ROUTE = ["pending_assignment", "assigned", "in_progress"];
 // datetime-local со step="900" не годится: нативный пикер (см. скриншот
 // пользователя) в своей выпадашке всё равно листает КАЖДУЮ минуту — step
 // там влияет только на стрелки при вводе с клавиатуры, а не на список
-// выбора. Поэтому время подачи — отдельный <select> с ровно 96 пунктами
-// (00:00, 00:15, ... 23:45): выбрать что-то, кроме кратного 15 мин, в
-// принципе нельзя.
-const QUARTER_HOUR_OPTIONS = Array.from({ length: 96 }, (_, i) => {
-  const h = String(Math.floor(i / 4)).padStart(2, "0");
+// выбора. Поэтому время подачи — отдельный <select> с шагом 15 мин:
+// выбрать что-то, кроме кратного 15 мин, в принципе нельзя. Только рабочее
+// время подачи — 09:00 ... 17:00 включительно (сервер проверяет то же,
+// см. server/rides/slots.js: PICKUP_FROM/PICKUP_TO).
+const QUARTER_HOUR_OPTIONS = Array.from({ length: (17 - 9) * 4 + 1 }, (_, i) => {
+  const h = String(9 + Math.floor(i / 4)).padStart(2, "0");
   const m = String((i % 4) * 15).padStart(2, "0");
   return `${h}:${m}`;
 });
+
+function nowLocalTimeStr() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 function todayLocalDateStr() {
   const d = new Date();
@@ -74,13 +81,54 @@ export default function EmployeeRidesPage() {
   const [proposeFor, setProposeFor] = useState(null); // id заявки, для которой добавляем точку через карту
   const [notice, setNotice] = useState("");
   const [fleet, setFleet] = useState(null); // { hasFree, freeCount, nextFreeAt } — занятость парка
+  const [slots, setSlots] = useState(null); // { date, capacity, counts: { "HH:MM": n } } — занятость времени подачи
 
   // requestedAt хранится одной строкой "YYYY-MM-DDTHH:MM" (как раньше у
   // datetime-local), но вводится двумя раздельными полями — датой и
   // временем с шагом 15 мин (см. QUARTER_HOUR_OPTIONS).
   const [requestedDate, requestedTime] = form.requestedAt ? form.requestedAt.split("T") : ["", ""];
-  const setRequestedDate = (value) => setForm((f) => ({ ...f, requestedAt: value ? `${value}T${requestedTime || "09:00"}` : "" }));
+
+  // Прошедшее время выбрать нельзя: прошлые даты — через min у поля даты,
+  // сегодняшние уже наступившие слоты (включая текущий) — неактивны в
+  // списке. Таймер перерисовывает форму, чтобы слоты гасли по ходу дня.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+  const today = todayLocalDateStr();
+  const nowTime = nowLocalTimeStr();
+  const isPastSlot = (date, time) => date < today || (date === today && time <= nowTime);
+
+  const setRequestedDate = (value) => setForm((f) => {
+    if (!value) return { ...f, requestedAt: "" };
+    const time = requestedTime || QUARTER_HOUR_OPTIONS.find((t) => !isPastSlot(value, t)) || QUARTER_HOUR_OPTIONS[0];
+    return { ...f, requestedAt: `${value}T${time}` };
+  });
   const setRequestedTime = (value) => setForm((f) => ({ ...f, requestedAt: `${requestedDate || todayLocalDateStr()}T${value}` }));
+
+  // На одно время принимается не больше заявок, чем машин на линии
+  // (server/rides/slots.js) — занятое время в списке выбрать нельзя.
+  // Сервер проверяет то же самое при подаче, это только подсказка заранее.
+  const slotsDate = requestedDate || todayLocalDateStr();
+  const loadSlots = useCallback(() => {
+    ridesApiFetch(`/api/v1/requests/slots?date=${slotsDate}`).then(setSlots).catch(() => setSlots(null));
+  }, [slotsDate]);
+
+  useEffect(() => {
+    loadSlots();
+    const t = setInterval(loadSlots, 60000);
+    return () => clearInterval(t);
+  }, [loadSlots]);
+
+  const isSlotFull = (time) => !!slots && slots.date === slotsDate && (slots.counts[time] || 0) >= slots.capacity;
+  const isSlotUnavailable = (time) => isPastSlot(slotsDate, time) || isSlotFull(time);
+  const selectedSlotPast = !!requestedTime && isPastSlot(slotsDate, requestedTime);
+  const selectedSlotFull = !!requestedTime && !selectedSlotPast && isSlotFull(requestedTime);
+  const selectedSlotUnavailable = selectedSlotPast || selectedSlotFull;
+  const nextFreeTime = selectedSlotUnavailable
+    ? QUARTER_HOUR_OPTIONS.find((t) => t > requestedTime && !isSlotUnavailable(t)) || null
+    : null;
 
   useEffect(() => {
     ridesApiFetch("/api/v1/users/me").then(({ user }) => setRole(user?.role || null)).catch(() => {});
@@ -210,6 +258,8 @@ export default function EmployeeRidesPage() {
     } catch (err) {
       setError(err.message || "Не удалось отправить заявку");
     } finally {
+      loadSlots(); // и после успеха (слот занят на одну заявку больше), и после отказа "время занято"
+
       setSubmitting(false);
     }
   };
@@ -233,6 +283,7 @@ export default function EmployeeRidesPage() {
         <h1 style={s.title}>Заказ служебного транспорта</h1>
         <div style={s.headerRight}>
           {role === "dispatcher" && <Link to="/dispatcher" style={s.link}>← Панель диспетчера</Link>}
+          <AdminPanelLinks style={s.link} />
           <LogoutButton />
         </div>
       </div>
@@ -307,6 +358,7 @@ export default function EmployeeRidesPage() {
               <input
                 type="date"
                 style={{ ...s.input, flex: "1 1 140px" }}
+                min={today}
                 value={requestedDate}
                 onChange={(e) => setRequestedDate(e.target.value)}
               />
@@ -316,11 +368,29 @@ export default function EmployeeRidesPage() {
                 onChange={(e) => setRequestedTime(e.target.value)}
               >
                 <option value="" disabled>Время</option>
-                {QUARTER_HOUR_OPTIONS.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
+                {QUARTER_HOUR_OPTIONS.map((t) => {
+                  const past = isPastSlot(slotsDate, t);
+                  const full = !past && isSlotFull(t);
+                  return (
+                    <option key={t} value={t} disabled={(past || full) && t !== requestedTime}>
+                      {full ? `${t} — занято` : t}
+                    </option>
+                  );
+                })}
               </select>
             </div>
+            {selectedSlotUnavailable && (
+              <div style={s.slotWarning}>
+                {selectedSlotPast ? `Время ${requestedTime} уже прошло.` : `На ${requestedTime} машин уже не хватает.`}{" "}
+                {nextFreeTime ? (
+                  <button type="button" style={s.slotLink} onClick={() => setRequestedTime(nextFreeTime)}>
+                    Выбрать ближайшее свободное — {nextFreeTime}
+                  </button>
+                ) : (
+                  "До 17:00 свободного времени нет — выберите другую дату."
+                )}
+              </div>
+            )}
           </label>
           <label style={s.label}>Кол-во пассажиров
             <input type="number" min={1} max={50} style={s.input} value={form.passengersCount} onChange={(e) => setForm({ ...form, passengersCount: e.target.value })} />
@@ -336,7 +406,7 @@ export default function EmployeeRidesPage() {
         <label style={s.label}>Комментарий
           <textarea style={{ ...s.input, minHeight: "60px" }} value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
         </label>
-        <button type="submit" style={s.primaryButton} disabled={submitting}>Подать заявку</button>
+        <button type="submit" style={s.primaryButton} disabled={submitting || selectedSlotUnavailable}>Подать заявку</button>
       </form>
 
       {mapPickerTarget && (
@@ -480,6 +550,8 @@ const s = {
   notice: { background: "#eef6ff", color: "#0b5cad", border: "1px solid #b8d9f7", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px", cursor: "pointer" },
   fleetOk: { background: "#eaf7ec", color: "#1a7f37", border: "1px solid #b6e0bf", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px" },
   fleetBusy: { background: "#fff7e6", color: "#8a5a00", border: "1px solid #f0d19a", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px" },
+  slotWarning: { marginTop: "6px", fontSize: "12px", color: "#b45309", fontWeight: 400 },
+  slotLink: { background: "none", border: "none", padding: 0, color: "#1976d2", textDecoration: "underline", cursor: "pointer", fontSize: "12px" },
   fleetHint: { marginTop: "4px", fontSize: "12px", color: "#a07840" },
   muted: { color: "#888", fontSize: "14px" },
   cardActions: { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px" },
