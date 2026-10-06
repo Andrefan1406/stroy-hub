@@ -37,3 +37,10 @@ yarn-error.log*
 
 /passwords.xlsx
 add_firebase_users.py
+
+# байткод Python (services/financing-api) — пересоздаётся при каждом запуске
+__pycache__/
+*.pyc
+
+# рабочие выгрузки Excel в корне (прогнозы, диаграммы) — не исходники
+/*.xlsx
