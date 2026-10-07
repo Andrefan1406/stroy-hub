@@ -4,7 +4,7 @@
 // POST /:id/claim), свои текущие заказы и история завершённых поездок.
 // Обновление пула в реальном времени — через Socket.io, без релоада.
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { ridesApiFetch, ridesApiPatch, ridesApiPost } from "../../rides/api";
+import { ridesApiDelete, ridesApiFetch, ridesApiPatch, ridesApiPost } from "../../rides/api";
 import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
 import AdminPanelLinks, { isSiteAdmin } from "../../rides/AdminPanelLinks";
@@ -37,6 +37,8 @@ export default function DriverDashboardPage() {
   const [proposeFor, setProposeFor] = useState(null); // requestId, для которого открыт выбор точки на карте
   const [mergeBFor, setMergeBFor] = useState(null); // id заявки из пула, которую объединяем (когда текущих заказов несколько)
   const [busyIds, setBusyIds] = useState(new Set());
+  const [telegram, setTelegram] = useState(null); // { enabled, username } — подключён ли бот на сервере
+  const [telegramLink, setTelegramLink] = useState(null); // { url, expiresAt } — одноразовая ссылка привязки
 
   const setRowBusy = (id, val) => {
     setBusyIds((prev) => {
@@ -45,6 +47,13 @@ export default function DriverDashboardPage() {
       return next;
     });
   };
+
+  // Статус «свободен / на заказе / не на линии» — всегда с сервера: он
+  // зависит от времени подачи закреплённых заказов (заказ на завтра не
+  // делает водителя занятым сегодня).
+  const refreshDriver = useCallback(() => {
+    ridesApiFetch("/api/v1/drivers/me").then(({ driver: d }) => setDriver(d)).catch(() => {});
+  }, []);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -56,6 +65,7 @@ export default function DriverDashboardPage() {
         ridesApiFetch("/api/v1/requests/my-current"),
       ]);
       setDriver(driverRes.driver);
+      setTelegram(driverRes.telegram || null);
       setPool(poolRes.requests);
       setCurrent(currentRes.requests);
     } catch (err) {
@@ -87,6 +97,20 @@ export default function DriverDashboardPage() {
     socket.on("request:updated", (req) => {
       setCurrent((prev) => prev.map((r) => (r.id === req.id ? req : r)));
     });
+    // Статус заказа сменили не здесь (в боте или другой вкладке): в пути —
+    // обновить карточку, завершён/отказ — убрать из текущих.
+    socket.on("request:status", (req) => {
+      setCurrent((prev) => (["assigned", "in_progress"].includes(req.status)
+        ? prev.map((r) => (r.id === req.id ? req : r))
+        : prev.filter((r) => r.id !== req.id)));
+      refreshDriver();
+    });
+    socket.on("driver:status", ({ status }) => setDriver((prev) => (prev ? { ...prev, status } : prev)));
+    // Привязали/отвязали Telegram в самом боте (/start по ссылке или /stop).
+    socket.on("driver:telegram", ({ linked }) => {
+      setDriver((prev) => (prev ? { ...prev, telegramLinked: linked } : prev));
+      if (linked) setTelegramLink(null);
+    });
     // Диспетчер экстренно снял заказ с водителя (переброска машины).
     socket.on("request:pulled", ({ id, reason }) => {
       setCurrent((prev) => prev.filter((r) => r.id !== id));
@@ -113,7 +137,7 @@ export default function DriverDashboardPage() {
     });
     socket.on("connect_error", () => {});
     return () => socket.disconnect();
-  }, [loadAll]);
+  }, [loadAll, refreshDriver]);
 
   const proposeMerge = async (bId, intoRequestId) => {
     setMergeBFor(null);
@@ -133,8 +157,9 @@ export default function DriverDashboardPage() {
     try {
       const { request } = await ridesApiPost(`/api/v1/requests/${id}/claim`);
       setPool((prev) => prev.filter((r) => r.id !== id));
-      setCurrent((prev) => [...prev, request]);
-      setDriver((prev) => (prev ? { ...prev, status: "busy" } : prev));
+      // Событие request:assigned могло прийти раньше ответа — без дублей.
+      setCurrent((prev) => (prev.some((r) => r.id === request.id) ? prev : [...prev, request]));
+      refreshDriver(); // «занят» — только если подача уже наступила, решает сервер
     } catch (err) {
       setError(err.message || "Заказ уже взят другим водителем");
       setPool((prev) => prev.filter((r) => r.id !== id));
@@ -150,7 +175,7 @@ export default function DriverDashboardPage() {
       const { request } = await ridesApiPost(`/api/v1/requests/${id}/status`, { status });
       if (status === "completed") {
         setCurrent((prev) => prev.filter((r) => r.id !== id));
-        setDriver((prev) => (prev ? { ...prev, status: "available" } : prev));
+        refreshDriver();
       } else {
         setCurrent((prev) => prev.map((r) => (r.id === id ? request : r)));
       }
@@ -170,7 +195,7 @@ export default function DriverDashboardPage() {
     try {
       await ridesApiPost(`/api/v1/requests/${id}/decline`, { reason });
       setCurrent((prev) => prev.filter((r) => r.id !== id));
-      setDriver((prev) => (prev ? { ...prev, status: "available" } : prev));
+      refreshDriver();
     } catch (err) {
       setError(err.message || "Не удалось отказаться от заказа");
     } finally {
@@ -191,6 +216,25 @@ export default function DriverDashboardPage() {
       loadAll();
     } catch (err) {
       setError(err.message || "Не удалось предложить точку");
+    }
+  };
+
+  const connectTelegram = async () => {
+    setError("");
+    try {
+      setTelegramLink(await ridesApiPost("/api/v1/drivers/me/telegram-link"));
+    } catch (err) {
+      setError(err.message || "Не удалось получить ссылку для Telegram");
+    }
+  };
+
+  const disconnectTelegram = async () => {
+    if (!window.confirm("Отключить Telegram? Заявки перестанут приходить в бот.")) return;
+    try {
+      await ridesApiDelete("/api/v1/drivers/me/telegram");
+      setDriver((prev) => (prev ? { ...prev, telegramLinked: false } : prev));
+    } catch (err) {
+      setError(err.message || "Не удалось отключить Telegram");
     }
   };
 
@@ -251,6 +295,27 @@ export default function DriverDashboardPage() {
 
       {error && <div style={s.error}>{error}</div>}
       {notice && <div style={s.notice} onClick={() => setNotice("")}>{notice}</div>}
+
+      {driver && telegram?.enabled && (
+        <div style={s.telegramBox}>
+          {driver.telegramLinked ? (
+            <>
+              <span>✓ Telegram подключён — новые заявки приходят в бот @{telegram.username}.</span>
+              <button style={s.linkButton} onClick={disconnectTelegram}>Отключить</button>
+            </>
+          ) : telegramLink ? (
+            <>
+              <a href={telegramLink.url} target="_blank" rel="noreferrer" style={s.primaryLink}>Открыть Telegram</a>
+              <span style={s.muted}>и нажмите «Start». Ссылка одноразовая, действует 15 минут.</span>
+            </>
+          ) : (
+            <>
+              <span>Получайте заявки и берите их прямо в Telegram.</span>
+              <button style={s.secondaryButton} onClick={connectTelegram}>Подключить Telegram</button>
+            </>
+          )}
+        </div>
+      )}
 
       <section style={s.section}>
         <h2 style={s.sectionTitle}>Мои текущие заказы ({current.length})</h2>
@@ -406,6 +471,9 @@ const s = {
   badge: { padding: "4px 10px", borderRadius: "999px", border: "1px solid", fontSize: "13px", fontWeight: 600 },
 
   error: { background: "#fff0f0", color: "#c00", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px" },
+  telegramBox: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px", background: "#f4f9ff", border: "1px solid #cfe3f7", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px" },
+  linkButton: { background: "none", border: "none", padding: 0, color: "#1976d2", textDecoration: "underline", cursor: "pointer", fontSize: "13px" },
+  primaryLink: { background: "#229ED9", color: "#fff", borderRadius: "6px", padding: "8px 14px", fontSize: "13px", fontWeight: 600, textDecoration: "none" },
   notice: { background: "#eef6ff", color: "#0b5cad", border: "1px solid #b8d9f7", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px", cursor: "pointer" },
   pendingBox: { marginTop: "8px", background: "#fffdf6", border: "1px solid #f0d9a8", borderRadius: "8px", padding: "8px 10px", fontSize: "12px", color: "#8a6d2f" },
   mergeBox: { marginTop: "8px", background: "#eef6ff", border: "1px solid #b8d9f7", borderRadius: "8px", padding: "8px 10px", fontSize: "12px", color: "#0b5cad" },

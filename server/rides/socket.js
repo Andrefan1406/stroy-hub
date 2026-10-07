@@ -8,12 +8,27 @@
 // а по роли из rides.users после проверки Firebase ID-токена — иначе
 // любой мог бы подключиться с auth:{room:'employee:5'} и подслушивать
 // чужие заявки (там телефон заказчика).
+const { EventEmitter } = require('events');
 const { Server } = require('socket.io');
 const { getAuth } = require('firebase-admin/auth');
 const { rideUserForEmail } = require('./auth');
 const { getWriteDb } = require('./db');
 
 let io = null;
+
+// Внутренняя шина: всё, что уходит водителям через Socket.io, публикуется и
+// сюда — на неё подписан Telegram-бот (telegram/notifier.js), чтобы
+// дублировать уведомления, не трогая каждое место, где они рассылаются.
+// Подписчик не должен бросать исключения в основной код: ошибка
+// слушателя логируется и проглатывается.
+const ridesBus = new EventEmitter();
+function publish(to, event, payload) {
+  try {
+    ridesBus.emit('message', { to, event, payload });
+  } catch (err) {
+    console.error('[rides] подписчик шины событий упал:', err.message);
+  }
+}
 
 function initSocket(httpServer) {
   io = new Server(httpServer, {
@@ -58,6 +73,7 @@ function initSocket(httpServer) {
 
 function emitToDrivers(event, payload) {
   io?.to('drivers').emit(event, payload);
+  publish('drivers', event, payload);
 }
 
 function emitToDispatcher(event, payload) {
@@ -70,6 +86,7 @@ function emitToEmployee(employeeId, event, payload) {
 
 function emitToDriver(driverId, event, payload) {
   io?.to(`driver:${driverId}`).emit(event, payload);
+  publish(`driver:${driverId}`, event, payload);
 }
 
-module.exports = { initSocket, emitToDrivers, emitToDispatcher, emitToEmployee, emitToDriver };
+module.exports = { initSocket, emitToDrivers, emitToDispatcher, emitToEmployee, emitToDriver, ridesBus };

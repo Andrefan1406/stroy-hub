@@ -431,6 +431,7 @@ function DriversTab({ readOnly }) {
               <th style={s.th}>Телефон</th>
               <th style={s.th}>Машина</th>
               <th style={s.th}>Статус</th>
+              <th style={s.th}>Telegram</th>
               {!readOnly && <th style={s.th}></th>}
             </tr>
           </thead>
@@ -448,6 +449,7 @@ function DriversTab({ readOnly }) {
                   )}
                 </td>
                 <td style={s.td}>{d.active ? d.status : "уволен"}</td>
+                <td style={s.td}>{d.telegramLinked ? "подключён" : "—"}</td>
                 {!readOnly && (
                   <td style={{ ...s.td, display: "flex", gap: "8px" }}>
                     {d.active ? (

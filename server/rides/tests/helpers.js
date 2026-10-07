@@ -17,17 +17,20 @@ function stubModule(relPath, exports) {
 }
 
 // Должен вызываться до первого require модулей системы поездок: db.js
-// читает RIDES_DATA_DIR при загрузке.
-function setupRidesTestApp() {
+// читает RIDES_DATA_DIR при загрузке. realSocket — оставить настоящий
+// socket.js (без сервера Socket.io он только публикует во внутреннюю шину
+// ridesBus — нужно тестам Telegram-бота).
+function setupRidesTestApp({ realSocket = false } = {}) {
   process.env.RIDES_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rides-test-'));
 
   const emitted = [];
-  stubModule('socket.js', {
+  if (!realSocket) stubModule('socket.js', {
     initSocket() {},
     emitToDrivers: (event, payload) => emitted.push({ to: 'drivers', event, payload }),
     emitToDispatcher: (event, payload) => emitted.push({ to: 'dispatcher', event, payload }),
     emitToEmployee: (id, event, payload) => emitted.push({ to: `employee:${id}`, event, payload }),
     emitToDriver: (id, event, payload) => emitted.push({ to: `driver:${id}`, event, payload }),
+    ridesBus: { on() {}, emit() {} },
   });
   stubModule('routeEstimate.js', { recomputeRequestEstimate: async () => null });
 
@@ -84,7 +87,7 @@ function listen(app) {
 
 // Тестовые данные. Даты — далеко в будущем (2030), чтобы проверки «на
 // заказе прямо сейчас» не зависели от момента запуска тестов.
-function seedPeople(db) {
+function seedPeople(db, { driverStatuses = ['available', 'available'] } = {}) {
   const user = (email, role) =>
     db.prepare('INSERT INTO users (email, name, phone, role) VALUES (?, ?, ?, ?)').run(email, email, '+7700', role).lastInsertRowid;
   const employeeId = user('employee@test', 'employee');
@@ -93,7 +96,8 @@ function seedPeople(db) {
     const userId = user(email, 'driver');
     return db.prepare('INSERT INTO drivers (user_id, status) VALUES (?, ?)').run(userId, status).lastInsertRowid;
   };
-  return { employeeId, driver1: driver('driver1@test'), driver2: driver('driver2@test') };
+  const drivers = driverStatuses.map((status, i) => driver(`driver${i + 1}@test`, status));
+  return { employeeId, driver1: drivers[0], driver2: drivers[1], driver3: drivers[2], drivers };
 }
 
 function insertRequest(db, { employeeId, requestedAt, status = 'pending_assignment', driverId = null, durationMin = 60 }) {

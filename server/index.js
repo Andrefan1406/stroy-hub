@@ -40,6 +40,7 @@ const ridesFleetRouter = require('./rides/fleetRouter');
 const { initSocket } = require('./rides/socket');
 const { startProposalTimeoutJob } = require('./rides/proposalTimeout');
 const { startDriverStatusJob } = require('./rides/driverAvailability');
+const { initTelegram } = require('./rides/telegram');
 const { runGeocodeRegionBugFix } = require('./rides/fixGeocodeRegionBug');
 const internalApiRouter = require('./internalApi');
 
@@ -109,6 +110,9 @@ startProposalTimeoutJob();
 // закреплённого заказа, статус водителя переключается сам (см.
 // server/rides/driverAvailability.js).
 startDriverStatusJob(getRidesDb);
+// Telegram-бот для водителей — включается переменными TELEGRAM_* (см.
+// server/rides/telegram/index.js), без токена не запускается.
+initTelegram({ app, getDb: getRidesDb });
 // Одноразово: см. server/rides/fixGeocodeRegionBug.js — чинит заявки,
 // которым старый (без привязки к городу) геокодер посчитал маршрут не в
 // тот город. Не блокирует старт сервера.

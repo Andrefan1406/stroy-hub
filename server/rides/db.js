@@ -204,6 +204,41 @@ CREATE INDEX IF NOT EXISTS idx_request_merges_b ON request_merges(request_b_id);
 -- Nominatim — 1 запрос/сек. found = 0 запоминает, что адрес не удалось
 -- разобрать, чтобы не долбить сервис повторно тем же мусором. fetched_at
 -- позволяет протухать кэшу (TTL проверяется в коде, см. routeEstimate.js).
+-- Telegram-бот для водителей (server/rides/telegram/). Постоянные таблицы
+-- (не пересоздаются): привязки и сообщения в чатах должны пережить рестарт.
+-- Привязка чата к водителю: один водитель — один чат. blocked = 1 —
+-- водитель заблокировал бота, рассылка ему не идёт до новой привязки.
+CREATE TABLE IF NOT EXISTS telegram_links (
+  driver_id   INTEGER PRIMARY KEY REFERENCES drivers(id),
+  chat_id     INTEGER NOT NULL UNIQUE,
+  username    TEXT,
+  blocked     INTEGER NOT NULL DEFAULT 0,
+  linked_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- Одноразовые ссылки привязки (t.me/<бот>?start=<token>), живут 15 минут.
+CREATE TABLE IF NOT EXISTS telegram_link_tokens (
+  token       TEXT PRIMARY KEY,
+  driver_id   INTEGER NOT NULL REFERENCES drivers(id),
+  expires_at  TEXT NOT NULL,
+  used_at     TEXT
+);
+-- Карточки заявок из пула, разосланные водителям: когда заявку взяли/
+-- отменили, по этим строкам сообщения у всех исправляются.
+CREATE TABLE IF NOT EXISTS telegram_pool_messages (
+  request_id  INTEGER NOT NULL,
+  chat_id     INTEGER NOT NULL,
+  message_id  INTEGER NOT NULL,
+  driver_id   INTEGER NOT NULL,
+  sent_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (request_id, chat_id)
+);
+-- Обработанные обновления Telegram — повторная доставка того же нажатия
+-- (Telegram повторяет, если сервер ответил медленно) не выполняется дважды.
+CREATE TABLE IF NOT EXISTS telegram_updates (
+  update_id    INTEGER PRIMARY KEY,
+  received_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS geocode_cache (
   address     TEXT PRIMARY KEY,
   lat         REAL,

@@ -7,7 +7,10 @@ const express = require('express');
 const { z } = require('zod');
 const { getWriteDb } = require('./db');
 const { requireRideRole, requireRoleOrSiteAdmin } = require('./auth');
-const { findDriverConflict, syncDriverStatus } = require('./driverAvailability');
+const { findDriverConflict } = require('./driverAvailability');
+const { setLineStatus } = require('./driverActions');
+const telegramStore = require('./telegram/store');
+const { telegramInfo } = require('./telegram');
 
 const router = express.Router();
 
@@ -49,14 +52,18 @@ function serialize(row) {
     vehiclePlate: row.plate_number || null,
     status: row.status,
     active: !!row.active,
+    // Подключён ли Telegram-бот (и не заблокирован водителем).
+    telegramLinked: row.telegram_chat_id != null && !row.telegram_blocked,
   };
 }
 
 const FULL_SELECT = `
-  SELECT d.*, u.name, u.phone, v.plate_number
+  SELECT d.*, u.name, u.phone, v.plate_number,
+         tl.chat_id AS telegram_chat_id, tl.blocked AS telegram_blocked
   FROM drivers d
   JOIN users u ON u.id = d.user_id
   LEFT JOIN vehicles v ON v.id = d.vehicle_id
+  LEFT JOIN telegram_links tl ON tl.driver_id = d.id
 `;
 
 router.get('/', requireRoleOrSiteAdmin('dispatcher'), (req, res) => {
@@ -90,7 +97,27 @@ router.get('/me', requireRideRole('driver'), (req, res) => {
   // Главный админ смотрит панель водителя, не будучи водителем.
   if (!row && req.isSiteAdmin) return res.json({ driver: null });
   if (!row) return res.status(404).json({ error: 'Вы не зарегистрированы как водитель' });
-  res.json({ driver: serialize(row) });
+  res.json({ driver: serialize(row), telegram: telegramInfo() });
+});
+
+// Ссылка привязки Telegram: t.me/<бот>?start=<одноразовый токен на 15 мин>.
+// Водитель открывает её — бот получает токен и привязывает чат.
+router.post('/me/telegram-link', requireRideRole('driver'), (req, res) => {
+  const info = telegramInfo();
+  if (!info.enabled) return res.status(503).json({ error: 'Telegram-бот сейчас не подключён на сервере' });
+  const db = getWriteDb();
+  const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ? AND active = 1').get(req.rideUser.id);
+  if (!driver) return res.status(403).json({ error: 'Вы не зарегистрированы как водитель' });
+  const { token, expiresAt } = telegramStore.createLinkToken(db, driver.id);
+  res.json({ url: `https://t.me/${info.username}?start=${token}`, expiresAt });
+});
+
+router.delete('/me/telegram', requireRideRole('driver'), (req, res) => {
+  const db = getWriteDb();
+  const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ?').get(req.rideUser.id);
+  if (!driver) return res.status(403).json({ error: 'Вы не зарегистрированы как водитель' });
+  telegramStore.unlinkDriver(db, driver.id);
+  res.json({ ok: true });
 });
 
 router.post('/', requireRideRole('dispatcher'), validate(driverSchema), (req, res) => {
@@ -129,6 +156,8 @@ router.patch('/:id', requireRideRole('dispatcher'), validate(driverUpdateSchema)
   };
   db.prepare('UPDATE drivers SET vehicle_id = ?, status = ?, active = ? WHERE id = ?')
     .run(next.vehicle_id, next.status, next.active, req.params.id);
+  // Уволенному — никаких рассылок: Telegram отвязывается.
+  if (archiving) telegramStore.unlinkDriver(db, existing.id);
   res.json({ driver: serialize(db.prepare(`${FULL_SELECT} WHERE d.id = ?`).get(req.params.id)) });
 });
 
@@ -138,6 +167,7 @@ router.delete('/:id', requireRideRole('dispatcher'), (req, res) => {
   if (inUse) return res.status(409).json({ error: 'У водителя есть активный заказ — сначала закройте его' });
   try {
     db.prepare('DELETE FROM drivers WHERE id = ?').run(req.params.id);
+    telegramStore.unlinkDriver(db, Number(req.params.id));
   } catch (err) {
     // requests.driver_id хранит водителя для ЛЮБОГО статуса, не только
     // активного (иначе завершённая поездка потеряла бы, кто её вёз) —
@@ -155,15 +185,9 @@ router.delete('/:id', requireRideRole('dispatcher'), (req, res) => {
 
 // Водитель сам ставит себя online/offline перед сменой.
 router.patch('/me/status', requireRideRole('driver'), validate(selfStatusSchema), (req, res) => {
-  const db = getWriteDb();
-  const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ?').get(req.rideUser.id);
-  if (!driver) return res.status(403).json({ error: 'Вы не зарегистрированы как водитель' });
-  if (driver.status === 'busy') {
-    return res.status(409).json({ error: 'Нельзя менять статус, пока не закрыт текущий заказ' });
-  }
-  db.prepare('UPDATE drivers SET status = ? WHERE id = ?').run(req.body.status, driver.id);
-  syncDriverStatus(db, driver.id); // вышел на линию, а подача закреплённого заказа уже наступила — сразу «занят»
-  res.json({ driver: serialize(db.prepare(`${FULL_SELECT} WHERE d.id = ?`).get(driver.id)) });
+  const out = setLineStatus({ userId: req.rideUser.id, status: req.body.status });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+  res.json({ driver: serialize(getWriteDb().prepare(`${FULL_SELECT} WHERE d.id = ?`).get(out.driver.id)) });
 });
 
 module.exports = router;
