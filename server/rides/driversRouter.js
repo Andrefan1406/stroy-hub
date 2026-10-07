@@ -7,6 +7,7 @@ const express = require('express');
 const { z } = require('zod');
 const { getWriteDb } = require('./db');
 const { requireRideRole, requireRoleOrSiteAdmin } = require('./auth');
+const { findDriverConflict, syncDriverStatus } = require('./driverAvailability');
 
 const router = express.Router();
 
@@ -67,8 +68,19 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), (req, res) => {
 // назначения; уволенных (active=0) сюда не пускаем, даже если статус в базе
 // остался "available" (не должно случаться — архивирование сбрасывает его в
 // offline, см. PATCH ниже, но фильтр не помешает на случай рассинхрона).
+// Кандидаты на назначение: работающие водители на линии. С ?requestId=N —
+// только те, у кого нет заказа, пересекающегося по времени с заявкой N
+// (занятость по интервалам, см. driverAvailability.js): водитель с заказом
+// на завтра свободен для сегодняшней заявки.
 router.get('/available', requireRideRole('dispatcher'), (req, res) => {
-  const rows = getWriteDb().prepare(`${FULL_SELECT} WHERE d.status = 'available' AND d.active = 1 ORDER BY u.name`).all();
+  const db = getWriteDb();
+  let rows = db.prepare(`${FULL_SELECT} WHERE d.status != 'offline' AND d.active = 1 ORDER BY u.name`).all();
+  const requestId = Number(req.query.requestId);
+  if (requestId) {
+    const request = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
+    if (!request) return res.status(404).json({ error: 'Заявка не найдена' });
+    rows = rows.filter((row) => !findDriverConflict(db, row.id, request));
+  }
   res.json({ drivers: rows.map(serialize) });
 });
 
@@ -150,6 +162,7 @@ router.patch('/me/status', requireRideRole('driver'), validate(selfStatusSchema)
     return res.status(409).json({ error: 'Нельзя менять статус, пока не закрыт текущий заказ' });
   }
   db.prepare('UPDATE drivers SET status = ? WHERE id = ?').run(req.body.status, driver.id);
+  syncDriverStatus(db, driver.id); // вышел на линию, а подача закреплённого заказа уже наступила — сразу «занят»
   res.json({ driver: serialize(db.prepare(`${FULL_SELECT} WHERE d.id = ?`).get(driver.id)) });
 });
 

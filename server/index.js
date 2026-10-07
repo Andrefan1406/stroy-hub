@@ -28,7 +28,7 @@ const concreteRequestsBoardRouter = require('./concreteRequestsBoard');
 // Отдельный SQLite-файл и своё Socket.io поверх того же HTTP-сервера
 // (нужен http.createServer вместо app.listen, чтобы Socket.io и Express
 // слушали один и тот же порт).
-const { initSchema: initRidesSchema } = require('./rides/db');
+const { initSchema: initRidesSchema, getWriteDb: getRidesDb } = require('./rides/db');
 const ridesUsersRouter = require('./rides/usersRouter');
 const ridesVehiclesRouter = require('./rides/vehiclesRouter');
 const ridesDriversRouter = require('./rides/driversRouter');
@@ -39,6 +39,7 @@ const ridesEventsRouter = require('./rides/eventsRouter');
 const ridesFleetRouter = require('./rides/fleetRouter');
 const { initSocket } = require('./rides/socket');
 const { startProposalTimeoutJob } = require('./rides/proposalTimeout');
+const { startDriverStatusJob } = require('./rides/driverAvailability');
 const { runGeocodeRegionBugFix } = require('./rides/fixGeocodeRegionBug');
 const internalApiRouter = require('./internalApi');
 
@@ -104,6 +105,10 @@ app.use('/api/internal', internalApiRouter);
 initSchema();
 initRidesSchema();
 startProposalTimeoutJob();
+// «Занят» = на заказе прямо сейчас: когда подходит время подачи уже
+// закреплённого заказа, статус водителя переключается сам (см.
+// server/rides/driverAvailability.js).
+startDriverStatusJob(getRidesDb);
 // Одноразово: см. server/rides/fixGeocodeRegionBug.js — чинит заявки,
 // которым старый (без привязки к городу) геокодер посчитал маршрут не в
 // тот город. Не блокирует старт сервера.

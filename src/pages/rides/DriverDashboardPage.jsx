@@ -329,7 +329,7 @@ export default function DriverDashboardPage() {
                   Заказчик: {r.employeeName} — <a href={`tel:${r.employeePhone}`} style={s.phoneLink}>{r.employeePhone}</a>
                 </div>
                 <div style={s.cardActions}>
-                  <button style={s.primaryButton} disabled={busyIds.has(r.id) || driver?.status !== "available"} onClick={() => claim(r.id)}>
+                  <button style={s.primaryButton} disabled={busyIds.has(r.id) || !driver || driver.status === "offline"} onClick={() => claim(r.id)}>
                     Взять заказ
                   </button>
                   {current.length > 0 && (

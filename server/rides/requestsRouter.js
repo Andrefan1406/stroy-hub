@@ -18,6 +18,7 @@ const {
   ACTIVE_STATUSES, PICKUP_FROM, PICKUP_TO, isWithinPickupHours, requestedAtMs, todayKz, slotKey, slotCapacity, slotCounts,
   nextFreeSlot,
 } = require('./slots');
+const { findDriverConflict, syncDriverStatus, describeRequest } = require('./driverAvailability');
 
 const router = express.Router();
 
@@ -56,6 +57,10 @@ const employeeCancelSchema = z.object({
 
 const assignSchema = z.object({
   driverId: z.coerce.number().int().positive(),
+});
+
+const unassignSchema = z.object({
+  reason: z.string().trim().optional().default(''),
 });
 
 const statusSchema = z.object({
@@ -266,24 +271,34 @@ router.post('/:id/claim', requireRideRole('driver'), (req, res) => {
   const db = getWriteDb();
   const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ?').get(req.rideUser.id);
   if (!driver) return res.status(403).json({ error: 'Вы не зарегистрированы как водитель' });
-  if (driver.status !== 'available') {
-    return res.status(409).json({ error: 'Вы не свободны — сначала завершите текущий заказ' });
+  if (driver.status === 'offline') {
+    return res.status(409).json({ error: 'Выйдите на линию, чтобы брать заказы' });
   }
 
+  // Занятость — по пересечению времени с другими заказами водителя (см.
+  // driverAvailability.js): заказ на завтра не мешает взять сегодняшний.
   const requestId = Number(req.params.id);
-  const result = db.transaction(() => {
+  const outcome = db.transaction(() => {
+    const row = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
+    if (!row || row.status !== 'pending_assignment') return { taken: true };
+    const conflict = findDriverConflict(db, driver.id, row);
+    if (conflict) return { conflict };
     const upd = db
       .prepare(`UPDATE requests SET status = 'assigned', driver_id = ?, assigned_by = 'self', claimed_at = datetime('now') WHERE id = ? AND status = 'pending_assignment'`)
       .run(driver.id, requestId);
-    if (upd.changes === 0) return null;
-    db.prepare(`UPDATE drivers SET status = 'busy' WHERE id = ?`).run(driver.id);
+    if (upd.changes === 0) return { taken: true };
+    syncDriverStatus(db, driver.id);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'assigned', ?)`)
       .run(requestId, req.rideUser.id);
     logEvent(db, { requestId, type: 'driver_claimed', actorUserId: req.rideUser.id, payload: { driverId: driver.id } });
-    return getRow(db, requestId);
+    return { result: getRow(db, requestId) };
   })();
 
-  if (!result) return res.status(409).json({ error: 'Заказ уже взят другим водителем' });
+  if (outcome.conflict) {
+    return res.status(409).json({ error: `По времени пересекается с вашим заказом: ${describeRequest(outcome.conflict)}` });
+  }
+  if (outcome.taken) return res.status(409).json({ error: 'Заказ уже взят другим водителем' });
+  const { result } = outcome;
 
   emitToDrivers('request:removed', { id: requestId });
   emitToDispatcher('request:updated', serializeForDispatcher(result, staleThreshold()));
@@ -306,7 +321,7 @@ router.post('/:id/decline', requireRideRole('driver'), validate(declineSchema), 
       )
       .run(req.body.reason, requestId, driver.id);
     if (upd.changes === 0) return null;
-    db.prepare(`UPDATE drivers SET status = 'available' WHERE id = ?`).run(driver.id);
+    syncDriverStatus(db, driver.id);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'pending_assignment', ?)`)
       .run(requestId, req.rideUser.id);
     logEvent(db, { requestId, type: 'driver_declined', actorUserId: req.rideUser.id, payload: { driverId: driver.id, reason: req.body.reason } });
@@ -345,7 +360,7 @@ router.post('/:id/status', requireRideRole('driver'), validate(statusSchema), as
       .prepare(`UPDATE requests SET status = ? WHERE id = ? AND driver_id = ? AND status = ?`)
       .run(newStatus, requestId, driver.id, allowedFrom);
     if (upd.changes === 0) return null;
-    if (newStatus === 'completed') db.prepare(`UPDATE drivers SET status = 'available' WHERE id = ?`).run(driver.id);
+    syncDriverStatus(db, driver.id);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, ?, ?)`)
       .run(requestId, newStatus, req.rideUser.id);
     logEvent(db, { requestId, type: 'status_changed', actorUserId: req.rideUser.id, payload: { from: allowedFrom, to: newStatus } });
@@ -384,22 +399,34 @@ router.post('/:id/status', requireRideRole('driver'), validate(statusSchema), as
 router.post('/:id/assign', requireRideRole('dispatcher'), validate(assignSchema), (req, res) => {
   const db = getWriteDb();
   const requestId = Number(req.params.id);
-  const driver = db.prepare(`SELECT * FROM drivers WHERE id = ? AND status = 'available'`).get(req.body.driverId);
-  if (!driver) return res.status(409).json({ error: 'Водитель не найден или сейчас не свободен' });
+  const driver = db
+    .prepare(`SELECT * FROM drivers WHERE id = ? AND active = 1 AND status != 'offline'`)
+    .get(req.body.driverId);
+  if (!driver) return res.status(409).json({ error: 'Водитель не найден или не на линии' });
 
-  const result = db.transaction(() => {
+  // Свободен ли водитель — по пересечению времени с его другими заказами,
+  // а не по флагу «занят» (см. driverAvailability.js).
+  const outcome = db.transaction(() => {
+    const row = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
+    if (!row || row.status !== 'pending_assignment') return { notInPool: true };
+    const conflict = findDriverConflict(db, driver.id, row);
+    if (conflict) return { conflict };
     const upd = db
       .prepare(`UPDATE requests SET status = 'assigned', driver_id = ?, assigned_by = 'dispatcher', claimed_at = datetime('now'), on_hold = 0, pull_reason = NULL WHERE id = ? AND status = 'pending_assignment'`)
       .run(driver.id, requestId);
-    if (upd.changes === 0) return null;
-    db.prepare(`UPDATE drivers SET status = 'busy' WHERE id = ?`).run(driver.id);
+    if (upd.changes === 0) return { notInPool: true };
+    syncDriverStatus(db, driver.id);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'assigned', ?)`)
       .run(requestId, req.rideUser.id);
     logEvent(db, { requestId, type: 'dispatcher_assigned', actorUserId: req.rideUser.id, payload: { driverId: driver.id } });
-    return getRow(db, requestId);
+    return { result: getRow(db, requestId) };
   })();
 
-  if (!result) return res.status(409).json({ error: 'Заказ уже не в пуле — возможно, его уже взяли' });
+  if (outcome.conflict) {
+    return res.status(409).json({ error: `Водитель занят в это время: ${describeRequest(outcome.conflict)}` });
+  }
+  if (outcome.notInPool) return res.status(409).json({ error: 'Заказ уже не в пуле — возможно, его уже взяли' });
+  const { result } = outcome;
 
   emitToDrivers('request:removed', { id: requestId });
   emitToDispatcher('request:updated', serializeForDispatcher(result, staleThreshold()));
@@ -421,7 +448,7 @@ router.post('/:id/pull', requireRideRole('dispatcher'), validate(pullSchema), as
     return res.status(400).json({ error: 'Нельзя перебросить машину на ту же заявку' });
   }
 
-  const outcome = db.transaction(() => {
+  const pullTx = db.transaction(() => {
     const row = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
     if (!row || !['assigned', 'in_progress'].includes(row.status) || !row.driver_id) {
       return { error: 'С этой заявки нечего снимать — на ней нет машины в работе' };
@@ -451,6 +478,11 @@ router.post('/:id/pull', requireRideRole('dispatcher'), validate(pullSchema), as
     });
 
     if (target) {
+      const conflict = findDriverConflict(db, freedDriverId, target);
+      if (conflict) {
+        // Откатываем снятие машины целиком: транзакция — всё или ничего.
+        throw Object.assign(new Error('conflict'), { conflict });
+      }
       db.prepare(
         `UPDATE requests SET status = 'assigned', driver_id = ?, assigned_by = 'dispatcher',
            claimed_at = datetime('now'), on_hold = 0, pull_reason = NULL WHERE id = ?`
@@ -463,14 +495,19 @@ router.post('/:id/pull', requireRideRole('dispatcher'), validate(pullSchema), as
         actorUserId: req.rideUser.id,
         payload: { driverId: freedDriverId, viaReassignFrom: requestId },
       });
-      // машина остаётся busy — просто у другой заявки
-    } else {
-      db.prepare(`UPDATE drivers SET status = 'available' WHERE id = ?`).run(freedDriverId);
     }
+    syncDriverStatus(db, freedDriverId);
 
     return { freedDriverId, hasTarget: !!target };
-  })();
+  });
 
+  let outcome;
+  try {
+    outcome = pullTx();
+  } catch (err) {
+    if (!err.conflict) throw err;
+    return res.status(409).json({ error: `Водитель занят во время той заявки: ${describeRequest(err.conflict)}` });
+  }
   if (outcome.error) return res.status(409).json({ error: outcome.error });
 
   // Попутные заявки, влитые в снятую с машины, расформировываем — они
@@ -541,6 +578,55 @@ router.post('/:id/hold-decision', requireRideRole('employee', 'dispatcher'), val
   res.json({ request: serializeForEmployee(result) });
 });
 
+// Диспетчер: снять водителя с назначенной заявки, НЕ отменяя её — заявка
+// возвращается в общий пул («В пуле»), водитель освобождается на это время.
+// Отдельно от /:id/cancel (отменяет заявку целиком) и /:id/pull (экстренная
+// переброска: заявка ждёт решения заказчика). Только до начала поездки —
+// машину с уже начатой поездки снимает /:id/pull.
+router.post('/:id/unassign', requireRideRole('dispatcher'), validate(unassignSchema), async (req, res) => {
+  const db = getWriteDb();
+  const requestId = Number(req.params.id);
+  const reason = req.body.reason || null;
+
+  const outcome = db.transaction(() => {
+    const row = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
+    if (!row || row.status !== 'assigned' || !row.driver_id || row.merged_into) return null;
+    db.prepare(
+      `UPDATE requests SET status = 'pending_assignment', driver_id = NULL, assigned_by = NULL,
+         claimed_at = NULL, on_hold = 0, pull_reason = NULL WHERE id = ?`
+    ).run(requestId);
+    syncDriverStatus(db, row.driver_id);
+    db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'pending_assignment', ?)`)
+      .run(requestId, req.rideUser.id);
+    logEvent(db, {
+      requestId,
+      type: 'driver_unassigned',
+      actorUserId: req.rideUser.id,
+      payload: { driverId: row.driver_id, reason },
+    });
+    return { freedDriverId: row.driver_id };
+  })();
+
+  if (!outcome) {
+    return res.status(409).json({ error: 'Снять водителя можно только с назначенной заявки до начала поездки' });
+  }
+
+  // Попутные, влитые в эту поездку, — обратно в пул отдельными заявками
+  // (как при отказе водителя).
+  const restoredB = dissolveMergesForA(db, requestId, 'С заявки сняли водителя', req.rideUser.id);
+  if (restoredB.length) {
+    await recomputeRequestEstimate(requestId, { actorUserId: req.rideUser.id }).catch(() => {});
+    emitDissolvedB(db, restoredB);
+  }
+
+  const fresh = getRow(db, requestId);
+  emitToDriver(outcome.freedDriverId, 'request:pulled', { id: requestId, reason });
+  emitToDrivers('request:new', serializeForDriver(fresh));
+  emitToDispatcher('request:updated', serializeForDispatcher(fresh, staleThreshold()));
+  emitToEmployee(fresh.employee_id, 'request:status', serializeForEmployee(fresh));
+  res.json({ request: serializeForDispatcher(fresh, staleThreshold()) });
+});
+
 // Диспетчер: отмена заявки — только пока поездка не началась.
 router.post('/:id/cancel', requireRideRole('dispatcher'), validate(cancelSchema), (req, res) => {
   const db = getWriteDb();
@@ -552,7 +638,7 @@ router.post('/:id/cancel', requireRideRole('dispatcher'), validate(cancelSchema)
     if (!row || ['in_progress', 'completed', 'cancelled'].includes(row.status)) return null;
     previousDriverId = row.driver_id;
     db.prepare(`UPDATE requests SET status = 'cancelled', on_hold = 0, cancel_reason = ? WHERE id = ?`).run(req.body.reason, requestId);
-    if (row.driver_id) db.prepare(`UPDATE drivers SET status = 'available' WHERE id = ?`).run(row.driver_id);
+    if (row.driver_id) syncDriverStatus(db, row.driver_id);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'cancelled', ?)`)
       .run(requestId, req.rideUser.id);
     logEvent(db, { requestId, type: 'cancelled_by_dispatcher', actorUserId: req.rideUser.id, payload: { reason: req.body.reason || null, previousStatus: row.status, wasOnHold: !!row.on_hold } });
@@ -587,7 +673,7 @@ router.post('/:id/cancel-mine', requireRideRole('employee', 'dispatcher'), valid
     if (!['pending_assignment', 'assigned'].includes(row.status)) return null;
     previousDriverId = row.driver_id;
     db.prepare(`UPDATE requests SET status = 'cancelled', on_hold = 0, cancel_reason = ? WHERE id = ?`).run(req.body.reason, requestId);
-    if (row.driver_id) db.prepare(`UPDATE drivers SET status = 'available' WHERE id = ?`).run(row.driver_id);
+    if (row.driver_id) syncDriverStatus(db, row.driver_id);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'cancelled', ?)`)
       .run(requestId, req.rideUser.id);
     logEvent(db, { requestId, type: 'cancelled_by_employee', actorUserId: req.rideUser.id, payload: { reason: req.body.reason, previousStatus: row.status } });

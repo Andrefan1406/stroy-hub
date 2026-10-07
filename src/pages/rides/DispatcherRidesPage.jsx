@@ -144,7 +144,8 @@ export default function DispatcherRidesPage() {
     setAssignTarget(requestId);
     setSelectedDriverId("");
     try {
-      const { drivers } = await ridesApiFetch("/api/v1/drivers/available");
+      // Только водители без заказа, пересекающегося по времени с этой заявкой.
+      const { drivers } = await ridesApiFetch(`/api/v1/drivers/available?requestId=${requestId}`);
       setAvailableDrivers(drivers);
     } catch (err) {
       setError(err.message || "Не удалось загрузить список свободных водителей");
@@ -162,13 +163,31 @@ export default function DispatcherRidesPage() {
     }
   };
 
+  // Отмена заявки целиком. «Отмена» в окне ввода причины — передумали,
+  // заявку не трогаем (раньше null превращался в пустую причину и заявка
+  // отменялась).
   const cancelRequest = async (id) => {
-    const reason = window.prompt("Причина отмены (необязательно):") || "";
+    const reason = window.prompt(`Отменить заявку #${id} целиком? Причина (необязательно):`);
+    if (reason === null) return;
     try {
-      const { request } = await ridesApiPost(`/api/v1/requests/${id}/cancel`, { reason });
-      setRequests((prev) => prev.map((r) => (r.id === request.id ? request : r)));
+      await ridesApiPost(`/api/v1/requests/${id}/cancel`, { reason });
+      setRequests((prev) => prev.filter((r) => r.id !== id)); // ушла в журнал
     } catch (err) {
       setError(err.message || "Не удалось отменить заявку");
+    }
+  };
+
+  // Снять водителя, не отменяя заявку: она возвращается в пул («В пуле»).
+  const unassignDriver = async (r) => {
+    const reason = window.prompt(
+      `Снять водителя ${r.driverName || ""} с заявки #${r.id}? Заявка вернётся в пул. Причина (необязательно, её увидит водитель):`
+    );
+    if (reason === null) return;
+    try {
+      const { request } = await ridesApiPost(`/api/v1/requests/${r.id}/unassign`, { reason });
+      setRequests((prev) => prev.map((x) => (x.id === request.id ? request : x)));
+    } catch (err) {
+      setError(err.message || "Не удалось снять водителя");
     }
   };
 
@@ -442,11 +461,14 @@ export default function DispatcherRidesPage() {
                         {r.onHold ? "Дать другую машину" : "Назначить"}
                       </button>
                     )}
+                    {!r.mergedInto && r.status === "assigned" && (
+                      <button style={s.secondaryButton} onClick={() => unassignDriver(r)}>Снять водителя</button>
+                    )}
                     {!r.mergedInto && ["assigned", "in_progress"].includes(r.status) && (
                       <button style={s.warnButton} onClick={() => openPull(r.id)}>Перебросить машину</button>
                     )}
                     {!r.mergedInto && ["pending_assignment", "assigned"].includes(r.status) && (
-                      <button style={s.dangerButton} onClick={() => cancelRequest(r.id)}>Отменить</button>
+                      <button style={s.dangerButton} onClick={() => cancelRequest(r.id)}>Отменить заявку</button>
                     )}
                     {!r.mergedInto && canEditRoute(r) && (
                       <button style={s.secondaryButton} onClick={() => setStopsPanelFor(stopsPanelFor === r.id ? null : r.id)}>
@@ -491,12 +513,14 @@ export default function DispatcherRidesPage() {
           <div style={s.modal} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>Назначить водителя на заявку #{assignTarget}</h3>
             {availableDrivers.length === 0 ? (
-              <p style={s.muted}>Свободных водителей сейчас нет.</p>
+              <p style={s.muted}>Нет водителей на линии, свободных на время этой заявки.</p>
             ) : (
               <select style={s.input} value={selectedDriverId} onChange={(e) => setSelectedDriverId(e.target.value)}>
                 <option value="">Выберите водителя</option>
                 {availableDrivers.map((d) => (
-                  <option key={d.id} value={d.id}>{d.name}{d.vehiclePlate ? ` — ${d.vehiclePlate}` : ""}</option>
+                  <option key={d.id} value={d.id}>
+                    {d.name}{d.vehiclePlate ? ` — ${d.vehiclePlate}` : ""}{d.status === "busy" ? " (сейчас на другом заказе)" : ""}
+                  </option>
                 ))}
               </select>
             )}

@@ -41,6 +41,7 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "test:server": "node --test \"server/rides/tests/*.test.js\"",
     "eject": "react-scripts eject",
     "server": "node server/index.js",
     "financing-api": "cd services/financing-api && .venv\\Scripts\\python.exe -m uvicorn main:app --port 8000",
