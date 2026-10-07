@@ -18,11 +18,12 @@ const CAN_EDIT_ROUTE = ["pending_assignment", "assigned", "in_progress"];
 // пользователя) в своей выпадашке всё равно листает КАЖДУЮ минуту — step
 // там влияет только на стрелки при вводе с клавиатуры, а не на список
 // выбора. Поэтому время подачи — отдельный <select> с шагом 15 мин:
-// выбрать что-то, кроме кратного 15 мин, в принципе нельзя. Только рабочее
-// время подачи — 09:00 ... 17:00 включительно (сервер проверяет то же,
-// см. server/rides/slots.js: PICKUP_FROM/PICKUP_TO).
-const QUARTER_HOUR_OPTIONS = Array.from({ length: (17 - 9) * 4 + 1 }, (_, i) => {
-  const h = String(9 + Math.floor(i / 4)).padStart(2, "0");
+// выбрать что-то, кроме кратного 15 мин, в принципе нельзя. Время подачи —
+// весь день, 00:00 ... 23:45 (прошедшее неактивно, см. isPastSlot). Ограничено
+// другое — КОГДА можно подать заявку: см. SUBMIT_FROM/SUBMIT_TO в
+// server/rides/slots.js.
+const QUARTER_HOUR_OPTIONS = Array.from({ length: 24 * 4 }, (_, i) => {
+  const h = String(Math.floor(i / 4)).padStart(2, "0");
   const m = String((i % 4) * 15).padStart(2, "0");
   return `${h}:${m}`;
 });
@@ -120,6 +121,14 @@ export default function EmployeeRidesPage() {
     const t = setInterval(loadSlots, 60000);
     return () => clearInterval(t);
   }, [loadSlots]);
+
+  // Заявки принимаются только в рабочее время. Решает сервер (время
+  // Казахстана, приходит вместе со слотами); пока ответа нет — по часам
+  // браузера, с теми же границами.
+  const submission = slots?.submission || {
+    open: nowTime >= "08:30" && nowTime < "17:30",
+    message: "Заявки на легковой транспорт принимаются с 08:30 до 17:30. Сейчас подать заявку нельзя.",
+  };
 
   const isSlotFull = (time) => !!slots && slots.date === slotsDate && (slots.counts[time] || 0) >= slots.capacity;
   const isSlotUnavailable = (time) => isPastSlot(slotsDate, time) || isSlotFull(time);
@@ -306,6 +315,13 @@ export default function EmployeeRidesPage() {
         )
       )}
 
+      {!submission.open && (
+        <div style={s.submissionClosed}>
+          <b>{submission.message}</b>
+          <div style={s.fleetHint}>Форму можно заполнить заранее и отправить, когда откроется приём.</div>
+        </div>
+      )}
+
       <form onSubmit={submit} style={s.form}>
         <div style={s.formRow}>
           <label style={s.label}>Откуда
@@ -387,7 +403,7 @@ export default function EmployeeRidesPage() {
                     Выбрать ближайшее свободное — {nextFreeTime}
                   </button>
                 ) : (
-                  "До 17:00 свободного времени нет — выберите другую дату."
+                  "До конца дня свободного времени нет — выберите другую дату."
                 )}
               </div>
             )}
@@ -406,7 +422,7 @@ export default function EmployeeRidesPage() {
         <label style={s.label}>Комментарий
           <textarea style={{ ...s.input, minHeight: "60px" }} value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
         </label>
-        <button type="submit" style={s.primaryButton} disabled={submitting || selectedSlotUnavailable}>Подать заявку</button>
+        <button type="submit" style={s.primaryButton} disabled={submitting || selectedSlotUnavailable || !submission.open}>Подать заявку</button>
       </form>
 
       {mapPickerTarget && (
@@ -550,6 +566,7 @@ const s = {
   notice: { background: "#eef6ff", color: "#0b5cad", border: "1px solid #b8d9f7", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px", cursor: "pointer" },
   fleetOk: { background: "#eaf7ec", color: "#1a7f37", border: "1px solid #b6e0bf", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px" },
   fleetBusy: { background: "#fff7e6", color: "#8a5a00", border: "1px solid #f0d19a", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px" },
+  submissionClosed: { background: "#fff0f0", color: "#a40000", border: "1px solid #f5b5b5", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px" },
   slotWarning: { marginTop: "6px", fontSize: "12px", color: "#b45309", fontWeight: 400 },
   slotLink: { background: "none", border: "none", padding: 0, color: "#1976d2", textDecoration: "underline", cursor: "pointer", fontSize: "12px" },
   fleetHint: { marginTop: "4px", fontSize: "12px", color: "#a07840" },

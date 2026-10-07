@@ -9,16 +9,17 @@ const { requireRideRole } = require('./auth');
 const { emitToDrivers, emitToDispatcher, emitToEmployee, emitToDriver } = require('./socket');
 const { recomputeRequestEstimate } = require('./routeEstimate');
 const { logEvent } = require('./events');
-const { dissolveMergesForA, cascadeCompleteMergedB, emitDissolvedB } = require('./mergeApply');
+const { dissolveMergesForA, emitDissolvedB } = require('./mergeApply');
 const {
   FULL_SELECT, validate, staleThreshold, hydrateRows, getRow,
   serializeForDriver, serializeForEmployee, serializeForDispatcher, z,
 } = require('./requestView');
 const {
-  ACTIVE_STATUSES, PICKUP_FROM, PICKUP_TO, isWithinPickupHours, requestedAtMs, todayKz, slotKey, slotCapacity, slotCounts,
-  nextFreeSlot,
+  ACTIVE_STATUSES, SUBMIT_FROM, SUBMIT_TO, SUBMISSION_CLOSED_MESSAGE, isSubmissionOpen, requestedAtMs, todayKz, slotKey,
+  slotCapacity, slotCounts, nextFreeSlot,
 } = require('./slots');
 const { findDriverConflict, syncDriverStatus, describeRequest } = require('./driverAvailability');
+const { claimRequest, changeRequestStatus, declineRequest } = require('./driverActions');
 
 const router = express.Router();
 
@@ -29,7 +30,6 @@ const createRequestSchema = z.object({
     .string()
     .trim()
     .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, 'Укажите дату и время')
-    .refine(isWithinPickupHours, `Время подачи — с ${PICKUP_FROM} до ${PICKUP_TO}`)
     // Как и в форме: уже наступивший слот (включая текущий) — в прошлом.
     .refine((at) => requestedAtMs(at) > Date.now(), 'Это время уже прошло — выберите время позже'),
   purpose: z.string().trim().min(1, 'Укажите цель поездки'),
@@ -88,6 +88,8 @@ const holdDecisionSchema = z.object({
 // асинхронные, а better-sqlite3-транзакция синхронная, поэтому это
 // отдельный шаг ПОСЛЕ вставки, а не внутри неё.
 router.post('/', requireRideRole('employee', 'dispatcher'), validate(createRequestSchema), async (req, res) => {
+  // Заявки принимаются только в рабочее время (slots.js: SUBMIT_FROM/SUBMIT_TO).
+  if (!isSubmissionOpen()) return res.status(403).json({ error: SUBMISSION_CLOSED_MESSAGE });
   const db = getWriteDb();
   const { fromAddress, toAddress, requestedAt, purpose, passengersCount, withReturn, extraStops, comment } = req.body;
 
@@ -124,7 +126,7 @@ router.post('/', requireRideRole('employee', 'dispatcher'), validate(createReque
     return res.status(409).json({
       error: nextFree
         ? `На ${requestedAt.slice(11, 16)} машин уже не хватает. Ближайшее свободное время — ${nextFree.slice(11)}.`
-        : `На ${requestedAt.slice(0, 10).split('-').reverse().join('.')} после ${requestedAt.slice(11, 16)} до ${PICKUP_TO} свободного времени нет — выберите другую дату.`,
+        : `На ${requestedAt.slice(0, 10).split('-').reverse().join('.')} после ${requestedAt.slice(11, 16)} свободного времени нет — выберите другую дату.`,
       nextFreeSlot: nextFree,
     });
   }
@@ -259,7 +261,14 @@ router.get('/slots', requireRideRole('employee', 'dispatcher'), (req, res) => {
   }
   const db = getWriteDb();
   const { capacity, onLine } = slotCapacity(db);
-  res.json({ date, capacity, onLine, counts: slotCounts(db, date) });
+  res.json({
+    date,
+    capacity,
+    onLine,
+    counts: slotCounts(db, date),
+    // Окно приёма заявок — форма показывает сообщение, когда оно закрыто.
+    submission: { open: isSubmissionOpen(), from: SUBMIT_FROM, to: SUBMIT_TO, message: SUBMISSION_CLOSED_MESSAGE },
+  });
 });
 
 // Взять заказ из пула — атомарно: побеждает тот, чей UPDATE первым
@@ -268,129 +277,23 @@ router.get('/slots', requireRideRole('employee', 'dispatcher'), (req, res) => {
 // request:removed, которое рассылается победителю раньше, чем он успевает
 // ответить проигравшим — гонка решается на уровне БД, а не сокетов.
 router.post('/:id/claim', requireRideRole('driver'), (req, res) => {
-  const db = getWriteDb();
-  const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ?').get(req.rideUser.id);
-  if (!driver) return res.status(403).json({ error: 'Вы не зарегистрированы как водитель' });
-  if (driver.status === 'offline') {
-    return res.status(409).json({ error: 'Выйдите на линию, чтобы брать заказы' });
-  }
-
-  // Занятость — по пересечению времени с другими заказами водителя (см.
-  // driverAvailability.js): заказ на завтра не мешает взять сегодняшний.
-  const requestId = Number(req.params.id);
-  const outcome = db.transaction(() => {
-    const row = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
-    if (!row || row.status !== 'pending_assignment') return { taken: true };
-    const conflict = findDriverConflict(db, driver.id, row);
-    if (conflict) return { conflict };
-    const upd = db
-      .prepare(`UPDATE requests SET status = 'assigned', driver_id = ?, assigned_by = 'self', claimed_at = datetime('now') WHERE id = ? AND status = 'pending_assignment'`)
-      .run(driver.id, requestId);
-    if (upd.changes === 0) return { taken: true };
-    syncDriverStatus(db, driver.id);
-    db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'assigned', ?)`)
-      .run(requestId, req.rideUser.id);
-    logEvent(db, { requestId, type: 'driver_claimed', actorUserId: req.rideUser.id, payload: { driverId: driver.id } });
-    return { result: getRow(db, requestId) };
-  })();
-
-  if (outcome.conflict) {
-    return res.status(409).json({ error: `По времени пересекается с вашим заказом: ${describeRequest(outcome.conflict)}` });
-  }
-  if (outcome.taken) return res.status(409).json({ error: 'Заказ уже взят другим водителем' });
-  const { result } = outcome;
-
-  emitToDrivers('request:removed', { id: requestId });
-  emitToDispatcher('request:updated', serializeForDispatcher(result, staleThreshold()));
-  emitToEmployee(result.employee_id, 'request:assigned', serializeForEmployee(result));
-  res.json({ request: serializeForDriver(result) });
+  const out = claimRequest({ userId: req.rideUser.id, requestId: Number(req.params.id) });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+  res.json({ request: serializeForDriver(out.request) });
 });
 
 // Водитель отказывается от уже взятого заказа — возвращается в общий пул.
 router.post('/:id/decline', requireRideRole('driver'), validate(declineSchema), async (req, res) => {
-  const db = getWriteDb();
-  const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ?').get(req.rideUser.id);
-  if (!driver) return res.status(403).json({ error: 'Вы не зарегистрированы как водитель' });
-
-  const requestId = Number(req.params.id);
-  const result = db.transaction(() => {
-    const upd = db
-      .prepare(
-        `UPDATE requests SET status = 'pending_assignment', driver_id = NULL, assigned_by = NULL, claimed_at = NULL, cancel_reason = ?
-         WHERE id = ? AND driver_id = ? AND status IN ('assigned', 'in_progress')`
-      )
-      .run(req.body.reason, requestId, driver.id);
-    if (upd.changes === 0) return null;
-    syncDriverStatus(db, driver.id);
-    db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'pending_assignment', ?)`)
-      .run(requestId, req.rideUser.id);
-    logEvent(db, { requestId, type: 'driver_declined', actorUserId: req.rideUser.id, payload: { driverId: driver.id, reason: req.body.reason } });
-    return getRow(db, requestId);
-  })();
-
-  if (!result) return res.status(409).json({ error: 'Не удалось отказаться — заказ уже не ваш или сменил статус' });
-
-  // Если на заказе висели попутные (влитые) заявки — расформировываем: их
-  // точки вынимаются из маршрута, сами они возвращаются в пул.
-  const restoredB = dissolveMergesForA(db, requestId, 'Водитель отказался от заказа', req.rideUser.id);
-  if (restoredB.length) {
-    await recomputeRequestEstimate(requestId, { actorUserId: req.rideUser.id }).catch(() => {});
-    emitDissolvedB(db, restoredB);
-  }
-
-  const fresh = getRow(db, requestId);
-  emitToDrivers('request:new', serializeForDriver(fresh));
-  emitToDispatcher('request:updated', serializeForDispatcher(fresh, staleThreshold()));
-  emitToEmployee(fresh.employee_id, 'request:status', serializeForEmployee(fresh));
+  const out = await declineRequest({ userId: req.rideUser.id, requestId: Number(req.params.id), reason: req.body.reason });
+  if (out.error) return res.status(out.status).json({ error: out.error });
   res.json({ ok: true });
 });
 
 // Водитель меняет статус своего текущего заказа: assigned -> in_progress -> completed.
 router.post('/:id/status', requireRideRole('driver'), validate(statusSchema), async (req, res) => {
-  const db = getWriteDb();
-  const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ?').get(req.rideUser.id);
-  if (!driver) return res.status(403).json({ error: 'Вы не зарегистрированы как водитель' });
-
-  const requestId = Number(req.params.id);
-  const newStatus = req.body.status;
-  const allowedFrom = newStatus === 'in_progress' ? 'assigned' : 'in_progress';
-
-  const outcome = db.transaction(() => {
-    const upd = db
-      .prepare(`UPDATE requests SET status = ? WHERE id = ? AND driver_id = ? AND status = ?`)
-      .run(newStatus, requestId, driver.id, allowedFrom);
-    if (upd.changes === 0) return null;
-    syncDriverStatus(db, driver.id);
-    db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, ?, ?)`)
-      .run(requestId, newStatus, req.rideUser.id);
-    logEvent(db, { requestId, type: 'status_changed', actorUserId: req.rideUser.id, payload: { from: allowedFrom, to: newStatus } });
-    // Заявка завершена — попутные (влитые) заявки закрываются вместе с ней.
-    const completedMergedB = newStatus === 'completed' ? cascadeCompleteMergedB(db, requestId, req.rideUser.id) : [];
-    return { completedMergedB };
-  })();
-
-  if (!outcome) return res.status(409).json({ error: 'Нельзя сменить статус — заказ не ваш или уже в другом статусе' });
-
-  for (const bId of outcome.completedMergedB) {
-    emitToEmployee(getRow(db, bId).employee_id, 'request:status', serializeForEmployee(getRow(db, bId)));
-    emitToDispatcher('request:updated', serializeForDispatcher(getRow(db, bId), staleThreshold()));
-  }
-
-  // При выходе в рейс пересчитываем оценку от «сейчас» (до этого
-  // expected_completion_at считался от желаемого времени подачи) — иначе
-  // прогноз освобождения машины в форме заказа и у диспетчера врёт.
-  if (newStatus === 'in_progress') {
-    try {
-      await recomputeRequestEstimate(requestId, { actorUserId: req.rideUser.id });
-    } catch (err) {
-      console.error('[rides] recompute on in_progress failed:', err.message);
-    }
-  }
-
-  const result = getRow(db, requestId);
-  emitToDispatcher('request:updated', serializeForDispatcher(result, staleThreshold()));
-  emitToEmployee(result.employee_id, 'request:status', serializeForEmployee(result));
-  res.json({ request: serializeForDriver(result) });
+  const out = await changeRequestStatus({ userId: req.rideUser.id, requestId: Number(req.params.id), status: req.body.status });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+  res.json({ request: serializeForDriver(out.request) });
 });
 
 // Диспетчер: принудительное назначение — исключение, а не основной

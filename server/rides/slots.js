@@ -16,10 +16,12 @@
 // чужую поездку (merged_into).
 const KZ_OFFSET = '+05:00';
 const SLOT_MINUTES = 15;
-// Машину можно заказать только на рабочее время подачи — с 09:00 по 17:00
-// включительно (тот же диапазон в списке времени формы, EmployeeRidesPage.jsx).
-const PICKUP_FROM = '09:00';
-const PICKUP_TO = '17:00';
+// Подать заявку можно только в рабочее время — с 08:30 до 17:30 по времени
+// Казахстана (17:30 — уже нельзя). Время ПОДАЧИ машины при этом любое,
+// 00:00–23:45, лишь бы не в прошлом. Форма (EmployeeRidesPage.jsx) берёт
+// эти границы из /requests/slots и показывает сообщение вне окна.
+const SUBMIT_FROM = '08:30';
+const SUBMIT_TO = '17:30';
 const ACTIVE_STATUSES = ['pending_assignment', 'assigned', 'in_progress'];
 
 function requestedAtMs(requestedAt) {
@@ -32,6 +34,14 @@ function todayKz() {
   return new Date(Date.now() + 5 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
+// Сейчас принимаются заявки? [SUBMIT_FROM, SUBMIT_TO) по времени Казахстана.
+function isSubmissionOpen(now = Date.now()) {
+  const time = new Date(now + 5 * 3600 * 1000).toISOString().slice(11, 16);
+  return time >= SUBMIT_FROM && time < SUBMIT_TO;
+}
+
+const SUBMISSION_CLOSED_MESSAGE = `Заявки на легковой транспорт принимаются с ${SUBMIT_FROM} до ${SUBMIT_TO}. Сейчас подать заявку нельзя.`;
+
 // "YYYY-MM-DDTHH:MM", округлённое вниз до слота (старые заявки могли быть
 // поданы с произвольными минутами, до выбора времени списком).
 function slotKey(requestedAt) {
@@ -39,11 +49,6 @@ function slotKey(requestedAt) {
   const [h, m] = time.split(':').map(Number);
   const mm = String(Math.floor(m / SLOT_MINUTES) * SLOT_MINUTES).padStart(2, '0');
   return `${date}T${String(h).padStart(2, '0')}:${mm}`;
-}
-
-function isWithinPickupHours(requestedAt) {
-  const time = requestedAt.slice(11, 16);
-  return time >= PICKUP_FROM && time <= PICKUP_TO;
 }
 
 function slotCapacity(db) {
@@ -70,15 +75,14 @@ function slotCounts(db, date) {
   return counts;
 }
 
-// Ближайший свободный слот той же даты не раньше requestedAt и не позже
-// PICKUP_TO; null — до конца рабочего времени всё занято.
+// Ближайший свободный слот той же даты не раньше requestedAt; null — до
+// конца дня всё занято.
 function nextFreeSlot(db, requestedAt, capacity) {
   const key = slotKey(requestedAt);
   const date = key.slice(0, 10);
   const counts = slotCounts(db, date);
-  const toMinutes = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
-  const start = Math.max(toMinutes(key.slice(11)), toMinutes(PICKUP_FROM));
-  for (let minutes = start; minutes <= toMinutes(PICKUP_TO); minutes += SLOT_MINUTES) {
+  const [h, m] = key.slice(11).split(':').map(Number);
+  for (let minutes = h * 60 + m; minutes < 24 * 60; minutes += SLOT_MINUTES) {
     const time = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
     if ((counts[time] || 0) < capacity) return `${date}T${time}`;
   }
@@ -87,9 +91,10 @@ function nextFreeSlot(db, requestedAt, capacity) {
 
 module.exports = {
   ACTIVE_STATUSES,
-  PICKUP_FROM,
-  PICKUP_TO,
-  isWithinPickupHours,
+  SUBMIT_FROM,
+  SUBMIT_TO,
+  SUBMISSION_CLOSED_MESSAGE,
+  isSubmissionOpen,
   requestedAtMs,
   todayKz,
   slotKey,
