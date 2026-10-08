@@ -16,6 +16,7 @@ const { getWriteDb } = require('./db');
 // заказы машины ссылаются на users.id. В списке пользователей на
 // /rides-admin эта запись не показывается (см. usersRouter.js).
 const { ADMIN_EMAIL } = require('../adminAuth');
+const { verifySession, isSessionToken } = require('./telegram/webappAuth');
 
 function isSiteAdminEmail(email) {
   return !!email && email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
@@ -37,7 +38,33 @@ if (!getApps().length) {
   }
 }
 
-async function verifyToken(req, res) {
+// Сессия Telegram Mini App (telegram/webappAuth.js): токен валиден, пока
+// жива привязка Telegram этого пользователя. Возвращает { email } как
+// decoded Firebase-токена или null.
+function resolveTelegramSession(token) {
+  const userId = verifySession(token, process.env.TELEGRAM_BOT_TOKEN);
+  if (!userId) return null;
+  const row = getWriteDb()
+    .prepare(
+      `SELECT u.email FROM users u JOIN telegram_user_links l ON l.user_id = u.id
+        WHERE u.id = ? AND l.blocked = 0`
+    )
+    .get(userId);
+  return row ? { email: row.email, viaTelegram: true } : null;
+}
+
+// Bearer-токен -> { email, viaTelegram? } или исключение. Firebase ID-токен
+// сайта либо (allowTelegram) сессия Mini App. Общая для REST и Socket.io.
+async function decodeBearerToken(token, { allowTelegram = true } = {}) {
+  if (isSessionToken(token)) {
+    const session = allowTelegram ? resolveTelegramSession(token) : null;
+    if (!session) throw new Error('Сессия Telegram недействительна');
+    return session;
+  }
+  return getAuth().verifyIdToken(token);
+}
+
+async function verifyToken(req, res, { allowTelegram = false } = {}) {
   const header = req.headers.authorization || '';
   const match = header.match(/^Bearer (.+)$/);
   if (!match) {
@@ -45,7 +72,7 @@ async function verifyToken(req, res) {
     return null;
   }
   try {
-    return await getAuth().verifyIdToken(match[1]);
+    return await decodeBearerToken(match[1], { allowTelegram });
   } catch (err) {
     res.status(401).json({ error: 'Недействительный или просроченный токен авторизации' });
     return null;
@@ -86,8 +113,10 @@ function rideUserForEmail(email) {
 // Верифицирует токен и подгружает запись из rides.users в req.rideUser
 // (null, если человек не добавлен в систему поездок) — общий первый шаг
 // для requireRideRole/requireAnyRideUser и для GET /users/me.
+// Сессия Mini App здесь принимается (allowTelegram), а в requireSiteAdmin —
+// нет: управление ролями — только с сайта под Firebase-логином.
 async function loadRideUser(req, res, next) {
-  const decoded = await verifyToken(req, res);
+  const decoded = await verifyToken(req, res, { allowTelegram: true });
   if (!decoded || !decoded.email) return;
   req.firebaseEmail = decoded.email;
   req.isSiteAdmin = isSiteAdminEmail(decoded.email);
@@ -151,5 +180,5 @@ function requireRoleOrSiteAdmin(...roles) {
 
 module.exports = {
   loadRideUser, requireAnyRideUser, requireRideRole, requireSiteAdmin, requireRoleOrSiteAdmin,
-  findRideUserByEmail, rideUserForEmail, isSiteAdminEmail, verifyToken,
+  findRideUserByEmail, rideUserForEmail, isSiteAdminEmail, verifyToken, decodeBearerToken,
 };

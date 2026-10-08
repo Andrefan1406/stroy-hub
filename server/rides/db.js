@@ -199,26 +199,25 @@ CREATE INDEX IF NOT EXISTS idx_request_merges_status ON request_merges(status);
 CREATE INDEX IF NOT EXISTS idx_request_merges_a ON request_merges(request_a_id);
 CREATE INDEX IF NOT EXISTS idx_request_merges_b ON request_merges(request_b_id);
 
--- Кэш геокодирования адресов (Nominatim): один и тот же адрес подачи/
--- назначения встречается в заявках постоянно, а лимит бесплатного
--- Nominatim — 1 запрос/сек. found = 0 запоминает, что адрес не удалось
--- разобрать, чтобы не долбить сервис повторно тем же мусором. fetched_at
--- позволяет протухать кэшу (TTL проверяется в коде, см. routeEstimate.js).
--- Telegram-бот для водителей (server/rides/telegram/). Постоянные таблицы
--- (не пересоздаются): привязки и сообщения в чатах должны пережить рестарт.
--- Привязка чата к водителю: один водитель — один чат. blocked = 1 —
--- водитель заблокировал бота, рассылка ему не идёт до новой привязки.
-CREATE TABLE IF NOT EXISTS telegram_links (
-  driver_id   INTEGER PRIMARY KEY REFERENCES drivers(id),
+-- Telegram-бот «VK Dev · Транспорт» (server/rides/telegram/) — для
+-- водителей, пассажиров и диспетчеров. Постоянные таблицы (не
+-- пересоздаются): привязки и сообщения в чатах должны пережить рестарт.
+-- Привязка чата к пользователю системы поездок: один пользователь — один
+-- чат. Роль (а с ней меню бота и права) берётся из users при каждом
+-- обращении. blocked = 1 — человек заблокировал бота, рассылка ему не идёт
+-- до новой привязки. chat_id личного чата совпадает с Telegram user id —
+-- по нему же Mini App находит пользователя (telegram/webappAuth.js).
+CREATE TABLE IF NOT EXISTS telegram_user_links (
+  user_id     INTEGER PRIMARY KEY REFERENCES users(id),
   chat_id     INTEGER NOT NULL UNIQUE,
   username    TEXT,
   blocked     INTEGER NOT NULL DEFAULT 0,
   linked_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 -- Одноразовые ссылки привязки (t.me/<бот>?start=<token>), живут 15 минут.
-CREATE TABLE IF NOT EXISTS telegram_link_tokens (
+CREATE TABLE IF NOT EXISTS telegram_user_link_tokens (
   token       TEXT PRIMARY KEY,
-  driver_id   INTEGER NOT NULL REFERENCES drivers(id),
+  user_id     INTEGER NOT NULL REFERENCES users(id),
   expires_at  TEXT NOT NULL,
   used_at     TEXT
 );
@@ -238,7 +237,18 @@ CREATE TABLE IF NOT EXISTS telegram_updates (
   update_id    INTEGER PRIMARY KEY,
   received_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Заявки, о которых диспетчерам уже сообщили «никто не взял, скоро
+-- подача» — сообщение уходит один раз на заявку.
+CREATE TABLE IF NOT EXISTS telegram_stale_alerts (
+  request_id  INTEGER PRIMARY KEY,
+  sent_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
+-- Кэш геокодирования адресов (Nominatim): один и тот же адрес подачи/
+-- назначения встречается в заявках постоянно, а лимит бесплатного
+-- Nominatim — 1 запрос/сек. found = 0 запоминает, что адрес не удалось
+-- разобрать, чтобы не долбить сервис повторно тем же мусором. fetched_at
+-- позволяет протухать кэшу (TTL проверяется в коде, см. routeEstimate.js).
 CREATE TABLE IF NOT EXISTS geocode_cache (
   address     TEXT PRIMARY KEY,
   lat         REAL,
@@ -321,6 +331,25 @@ function migrateSchema(db) {
   const driverColumns = db.prepare("PRAGMA table_info(drivers)").all().map((c) => c.name);
   if (!driverColumns.includes('active')) {
     db.exec('ALTER TABLE drivers ADD COLUMN active INTEGER NOT NULL DEFAULT 1');
+  }
+
+  // Бот был только для водителей: привязка хранилась по drivers.id
+  // (telegram_links). Теперь — по пользователю; старые привязки
+  // переносятся, чтобы водителям не подключаться заново. Неиспользованные
+  // ссылки привязки живут 15 минут — их не переносим.
+  const hasOldLinks = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'telegram_links'")
+    .get();
+  if (hasOldLinks) {
+    db.transaction(() => {
+      db.exec(`
+        INSERT OR IGNORE INTO telegram_user_links (user_id, chat_id, username, blocked, linked_at)
+        SELECT d.user_id, l.chat_id, l.username, l.blocked, l.linked_at
+          FROM telegram_links l JOIN drivers d ON d.id = l.driver_id;
+        DROP TABLE telegram_links;
+        DROP TABLE IF EXISTS telegram_link_tokens;
+      `);
+    })();
   }
 }
 

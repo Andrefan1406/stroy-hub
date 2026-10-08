@@ -5,9 +5,12 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import { auth } from "../firebase";
+import { isTelegramMiniApp } from "./telegramSession";
 
 export default function LogoutButton({ style }) {
   const navigate = useNavigate();
+  // В Telegram Mini App выходить не из чего — окно закрывается самим Telegram.
+  if (isTelegramMiniApp()) return null;
 
   const handleLogout = async () => {
     if (!window.confirm("Вы уверены, что хотите выйти?")) return;

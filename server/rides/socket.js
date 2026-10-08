@@ -10,8 +10,7 @@
 // чужие заявки (там телефон заказчика).
 const { EventEmitter } = require('events');
 const { Server } = require('socket.io');
-const { getAuth } = require('firebase-admin/auth');
-const { rideUserForEmail } = require('./auth');
+const { rideUserForEmail, decodeBearerToken } = require('./auth');
 const { getWriteDb } = require('./db');
 
 let io = null;
@@ -39,7 +38,8 @@ function initSocket(httpServer) {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('Не передан токен авторизации'));
     try {
-      const decoded = await getAuth().verifyIdToken(token);
+      // Firebase ID-токен сайта или сессия Telegram Mini App (auth.js).
+      const decoded = await decodeBearerToken(token);
       const rideUser = rideUserForEmail(decoded.email);
       if (!rideUser) return next(new Error('Вы не добавлены как пользователь системы служебного транспорта'));
       socket.rideUser = rideUser;

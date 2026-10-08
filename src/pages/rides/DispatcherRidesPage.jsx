@@ -13,6 +13,8 @@ import { ridesApiFetch, ridesApiPost } from "../../rides/api";
 import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
 import AdminPanelLinks, { isSiteAdmin } from "../../rides/AdminPanelLinks";
+import TelegramConnect from "../../rides/TelegramConnect";
+import { isTelegramMiniApp, ridesPath } from "../../rides/telegramSession";
 import MapPicker from "../../rides/MapPicker";
 import { formatRoute, formatEstimate, formatDelta, formatClock, minutesSince } from "../../rides/format";
 
@@ -288,6 +290,8 @@ export default function DispatcherRidesPage() {
   const sortedRequests = [...requests].sort(
     (a, b) => (a.requestedAt || "").localeCompare(b.requestedAt || "") || a.id - b.id
   );
+  // В Telegram Mini App — только «Текущие»: журнал и справочники — на сайте.
+  const inTelegram = isTelegramMiniApp();
 
   return (
     <div style={s.page}>
@@ -298,21 +302,22 @@ export default function DispatcherRidesPage() {
             <AdminPanelLinks style={s.link} />
           ) : (
             <>
-              <Link to="/rides-admin" style={s.link}>Водители и машины</Link>
-              <Link to="/employee" style={s.link}>Заказать машину себе</Link>
+              {!inTelegram && <Link to="/rides-admin" style={s.link}>Водители и машины</Link>}
+              <Link to={ridesPath("/employee")} style={s.link}>Заказать машину себе</Link>
             </>
           )}
           <LogoutButton />
         </div>
       </div>
       {error && <div style={s.error}>{error}</div>}
+      <TelegramConnect hint="Получайте в Telegram новые заявки, отказы водителей и заявки, которые никто не взял." />
 
-      <div style={s.tabs}>
+      {!inTelegram && <div style={s.tabs}>
         <button style={tab === "current" ? s.tabActive : s.tab} onClick={() => setTab("current")}>
           Текущие{requests.length ? ` (${requests.length})` : ""}
         </button>
         <button style={tab === "journal" ? s.tabActive : s.tab} onClick={() => setTab("journal")}>Журнал</button>
-      </div>
+      </div>}
 
       {tab === "journal" && <HistoryJournal />}
 
@@ -347,8 +352,10 @@ export default function DispatcherRidesPage() {
 
       <div style={s.todayLine}>
         Сегодня: завершено {summary?.completedToday ?? 0}, отменено {summary?.cancelledToday ?? 0}
-        {" · "}
-        <button style={s.linkButton} onClick={() => setTab("journal")}>открыть журнал</button>
+        {!inTelegram && <>
+          {" · "}
+          <button style={s.linkButton} onClick={() => setTab("journal")}>открыть журнал</button>
+        </>}
       </div>
 
       {proposals.length > 0 && (

@@ -46,6 +46,9 @@ export default function RideAccessGate({ children }) {
     return () => { cancelled = true; };
   }, [user]);
 
+  // Telegram Mini App живёт без Firebase-логина и со своими правилами (/tg/*).
+  if (location.pathname.startsWith("/tg")) return children;
+
   if (user === undefined || (user && rideUser === undefined)) {
     return <div style={{ padding: 30 }}>Проверка доступа...</div>;
   }

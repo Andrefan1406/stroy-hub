@@ -55,6 +55,7 @@ const row = (id) => db.prepare('SELECT * FROM requests WHERE id = ?').get(id);
 const { employeeId, drivers } = seedPeople(db, { driverStatuses: ['available', 'available', 'offline'] });
 const [d1, d2, d3] = drivers;
 const CHAT = { [d1]: 101, [d2]: 102, [d3]: 103 };
+const userOf = (driverId) => db.prepare('SELECT user_id FROM drivers WHERE id = ?').get(driverId).user_id;
 const newPoolRequest = (requestedAt) => {
   const id = insertRequest(db, { employeeId, requestedAt });
   emitToDrivers('request:new', { id });
@@ -63,18 +64,18 @@ const newPoolRequest = (requestedAt) => {
 
 test('привязка по одноразовой ссылке, повторно ссылка не работает', async () => {
   for (const driverId of drivers) {
-    const { token } = store.createLinkToken(db, driverId);
+    const { token } = store.createLinkToken(db, userOf(driverId));
     await message(CHAT[driverId], `/start ${token}`);
     assert.equal(store.getLinkByDriver(db, driverId)?.chat_id, CHAT[driverId]);
   }
-  const { token } = store.createLinkToken(db, d1);
+  const { token } = store.createLinkToken(db, userOf(d1));
   await message(555, `/start ${token}`);
   const n = calls.length;
   await message(556, `/start ${token}`); // та же ссылка из другого чата
   assert.match(sentTo(n, 556)[0].params.text, /устарела или уже использована/);
   assert.equal(store.getChatContext(db, 556), null);
   // 555 перепривязал водителя 1 — возвращаем как было, чат 101.
-  const again = store.createLinkToken(db, d1);
+  const again = store.createLinkToken(db, userOf(d1));
   await message(101, `/start ${again.token}`);
   assert.equal(store.getLinkByDriver(db, d1).chat_id, 101);
 });
@@ -177,7 +178,7 @@ test('водитель заблокировал бота — рассылка е
   newPoolRequest('2030-05-13T10:00');
   await settle();
   blockedChats.delete(102);
-  assert.equal(db.prepare('SELECT blocked FROM telegram_links WHERE chat_id = 102').get().blocked, 1);
+  assert.equal(db.prepare('SELECT blocked FROM telegram_user_links WHERE chat_id = 102').get().blocked, 1);
   const n = calls.length;
   newPoolRequest('2030-05-13T12:00');
   await settle();

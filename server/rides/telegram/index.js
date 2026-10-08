@@ -1,14 +1,20 @@
-// Telegram-бот для водителей. Включается переменными окружения; без
+// Telegram-бот «VK Dev · Транспорт» — один на все роли: водителям пул и
+// заказы, пассажирам уведомления и форма заявки (Mini App), диспетчерам
+// уведомления и панель (Mini App). Включается переменными окружения; без
 // TELEGRAM_BOT_TOKEN не запускается вовсе — сайт работает как раньше.
 //
 //   TELEGRAM_BOT_TOKEN       — токен от @BotFather
 //   TELEGRAM_MODE            — webhook (по умолчанию, для хостинга) | polling (локальная проверка)
 //   TELEGRAM_WEBHOOK_SECRET  — для webhook: случайная строка, Telegram присылает её в заголовке
 //   PUBLIC_BASE_URL          — для webhook: внешний адрес сервера, например https://xxx.onrender.com
+//   TELEGRAM_WEBAPP_URL      — адрес фронтенда (Netlify), например https://xxx.netlify.app;
+//                              Mini App открывается по /tg. Только https. Не задан —
+//                              кнопок Mini App нет, уведомления работают.
 //
 // Один токен нельзя одновременно использовать в webhook и polling: для
 // локальной проверки заведите отдельного тестового бота.
 const { ridesBus, emitToDriver } = require('../socket');
+const { requestEvents } = require('../events');
 const { createApi } = require('./api');
 const { createSender } = require('./sender');
 const { createNotifier } = require('./notifier');
@@ -16,18 +22,27 @@ const { createBot } = require('./bot');
 const store = require('./store');
 
 const WEBHOOK_PATH = '/api/telegram/webhook';
-const COMMANDS = [
-  { command: 'pool', description: 'Пул свободных заявок' },
-  { command: 'my', description: 'Мои заказы' },
-  { command: 'help', description: 'Как пользоваться ботом' },
-  { command: 'stop', description: 'Отключить Telegram от кабинета' },
-];
+// Команды по умолчанию — для ещё не подключённых чатов; подключённым
+// ставятся команды их роли (bot.js: COMMANDS).
+const DEFAULT_COMMANDS = [{ command: 'help', description: 'Как подключить бота' }];
+const STALE_CHECK_MS = 60 * 1000;
 
-const state = { enabled: false, username: null };
+const state = { enabled: false, username: null, webApp: false };
 
 // Для сайта: подключён ли бот и как называется (ссылка привязки t.me/<имя>).
 function telegramInfo() {
-  return { enabled: state.enabled && !!state.username, username: state.username };
+  return { enabled: state.enabled && !!state.username, username: state.username, webApp: state.enabled && state.webApp };
+}
+
+// Ссылки Mini App для кнопок бота. Параметр go — куда страница /tg
+// отправит после входа (src/pages/rides/TelegramMiniApp.jsx).
+function appLinks(env) {
+  const base = (env.TELEGRAM_WEBAPP_URL || '').trim().replace(/\/$/, '');
+  if (!/^https:\/\//.test(base)) {
+    if (base) console.error('[telegram] TELEGRAM_WEBAPP_URL должен начинаться с https:// — Mini App выключен');
+    return null;
+  }
+  return { newRequest: `${base}/tg?go=new`, myRequests: `${base}/tg?go=my`, panel: `${base}/tg?go=panel` };
 }
 
 async function pollLoop(api, bot) {
@@ -53,17 +68,33 @@ function initTelegram({ app, getDb, env = process.env }) {
     return null;
   }
   const mode = env.TELEGRAM_MODE === 'polling' ? 'polling' : 'webhook';
+  const apps = appLinks(env);
   const api = createApi(token);
   const sender = createSender(api, getDb);
-  const notifier = createNotifier({ getDb, sender });
+  const notifier = createNotifier({ getDb, sender, apps });
   const bot = createBot({
     getDb,
     sender,
-    // Привязали/отвязали в боте — кабинет водителя на сайте обновится сам.
-    emitLinked: (driverId) => emitToDriver(driverId, 'driver:telegram', { linked: !!store.getLinkByDriver(getDb(), driverId) }),
+    apps,
+    // Привязали/отвязали в боте — кабинет водителя на сайте обновится сам
+    // (страницы пассажира и диспетчера узнают это опросом, TelegramConnect.jsx).
+    emitLinked: (userId) => {
+      const db = getDb();
+      const driver = db.prepare('SELECT id FROM drivers WHERE user_id = ?').get(userId);
+      if (driver) emitToDriver(driver.id, 'driver:telegram', { linked: !!store.getLinkByUser(db, userId) });
+    },
   });
-  ridesBus.on('message', notifier.handle);
+  const subscribe = () => {
+    ridesBus.on('message', notifier.handle);
+    requestEvents.on('event', notifier.handleRequestEvent);
+  };
+  const unsubscribe = () => {
+    ridesBus.off('message', notifier.handle);
+    requestEvents.off('event', notifier.handleRequestEvent);
+  };
+  subscribe();
   state.enabled = true;
+  state.webApp = !!apps;
 
   if (mode === 'webhook') {
     const secret = env.TELEGRAM_WEBHOOK_SECRET;
@@ -84,7 +115,7 @@ function initTelegram({ app, getDb, env = process.env }) {
   (async () => {
     try {
       state.username = (await api.call('getMe')).username;
-      await api.call('setMyCommands', { commands: COMMANDS });
+      await api.call('setMyCommands', { commands: DEFAULT_COMMANDS });
       if (mode === 'webhook') {
         await api.call('setWebhook', {
           url: `${env.PUBLIC_BASE_URL.replace(/\/$/, '')}${WEBHOOK_PATH}`,
@@ -98,7 +129,7 @@ function initTelegram({ app, getDb, env = process.env }) {
       console.log(`[telegram] бот @${state.username} запущен (${mode})`);
     } catch (err) {
       state.enabled = false;
-      ridesBus.off('message', notifier.handle); // не слать в Telegram, который нас не пустил
+      unsubscribe(); // не слать в Telegram, который нас не пустил
       console.error('[telegram] запуск бота не удался:', err.message);
     }
   })();
@@ -107,7 +138,17 @@ function initTelegram({ app, getDb, env = process.env }) {
     try { store.pruneOldUpdates(getDb()); } catch (err) { console.error('[telegram] очистка:', err.message); }
   }, 6 * 3600 * 1000).unref();
 
+  // «Заявку никто не взял, подача скоро» — диспетчерам.
+  setInterval(() => {
+    if (!state.enabled) return;
+    notifier.checkStale().catch((err) => console.error('[telegram] проверка заявок без водителя:', err.message));
+  }, STALE_CHECK_MS).unref();
+
   return { bot, notifier, sender };
 }
 
-module.exports = { initTelegram, telegramInfo, WEBHOOK_PATH };
+function botToken() {
+  return process.env.TELEGRAM_BOT_TOKEN || null;
+}
+
+module.exports = { initTelegram, telegramInfo, botToken, WEBHOOK_PATH };

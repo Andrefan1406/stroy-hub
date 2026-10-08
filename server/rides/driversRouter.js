@@ -63,7 +63,7 @@ const FULL_SELECT = `
   FROM drivers d
   JOIN users u ON u.id = d.user_id
   LEFT JOIN vehicles v ON v.id = d.vehicle_id
-  LEFT JOIN telegram_links tl ON tl.driver_id = d.id
+  LEFT JOIN telegram_user_links tl ON tl.user_id = d.user_id
 `;
 
 router.get('/', requireRoleOrSiteAdmin('dispatcher'), (req, res) => {
@@ -108,7 +108,7 @@ router.post('/me/telegram-link', requireRideRole('driver'), (req, res) => {
   const db = getWriteDb();
   const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ? AND active = 1').get(req.rideUser.id);
   if (!driver) return res.status(403).json({ error: 'Вы не зарегистрированы как водитель' });
-  const { token, expiresAt } = telegramStore.createLinkToken(db, driver.id);
+  const { token, expiresAt } = telegramStore.createLinkToken(db, req.rideUser.id);
   res.json({ url: `https://t.me/${info.username}?start=${token}`, expiresAt });
 });
 
@@ -166,8 +166,9 @@ router.delete('/:id', requireRideRole('dispatcher'), (req, res) => {
   const inUse = db.prepare(`SELECT 1 FROM requests WHERE driver_id = ? AND status IN ('assigned', 'in_progress')`).get(req.params.id);
   if (inUse) return res.status(409).json({ error: 'У водителя есть активный заказ — сначала закройте его' });
   try {
+    const driver = db.prepare('SELECT user_id FROM drivers WHERE id = ?').get(req.params.id);
     db.prepare('DELETE FROM drivers WHERE id = ?').run(req.params.id);
-    telegramStore.unlinkDriver(db, Number(req.params.id));
+    if (driver) telegramStore.unlinkUser(db, driver.user_id);
   } catch (err) {
     // requests.driver_id хранит водителя для ЛЮБОГО статуса, не только
     // активного (иначе завершённая поездка потеряла бы, кто её вёз) —

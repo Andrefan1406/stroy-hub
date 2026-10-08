@@ -7,6 +7,7 @@ import React from "react";
 import { Link, useLocation } from "react-router-dom";
 import { getAuth } from "firebase/auth";
 import { SITE_ADMIN_EMAIL } from "./constants";
+import { isTelegramMiniApp } from "./telegramSession";
 
 const PANELS = [
   { path: "/dispatcher", label: "Диспетчер" },
@@ -15,7 +16,9 @@ const PANELS = [
   { path: "/rides-admin", label: "Водители и машины" },
 ];
 
+// В Telegram Mini App ссылки на панели сайта не нужны (там своя навигация).
 export function isSiteAdmin() {
+  if (isTelegramMiniApp()) return false;
   return getAuth().currentUser?.email?.toLowerCase() === SITE_ADMIN_EMAIL;
 }
 

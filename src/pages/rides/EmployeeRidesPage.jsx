@@ -11,6 +11,8 @@ import AdminPanelLinks from "../../rides/AdminPanelLinks";
 import { formatRoute, formatEstimate, formatClock } from "../../rides/format";
 import MapPicker from "../../rides/MapPicker";
 import CancelRequestModal from "../../rides/CancelRequestModal";
+import TelegramConnect from "../../rides/TelegramConnect";
+import { isTelegramMiniApp, ridesPath } from "../../rides/telegramSession";
 
 const CAN_EDIT_ROUTE = ["pending_assignment", "assigned", "in_progress"];
 
@@ -291,13 +293,17 @@ export default function EmployeeRidesPage() {
       <div style={s.header}>
         <h1 style={s.title}>Заказ служебного транспорта</h1>
         <div style={s.headerRight}>
-          {role === "dispatcher" && <Link to="/dispatcher" style={s.link}>← Панель диспетчера</Link>}
+          {/* Админу на сайте ссылки даёт AdminPanelLinks, в Mini App её нет. */}
+          {(role === "dispatcher" || (role === "admin" && isTelegramMiniApp())) && (
+            <Link to={ridesPath("/dispatcher")} style={s.link}>← Панель диспетчера</Link>
+          )}
           <AdminPanelLinks style={s.link} />
           <LogoutButton />
         </div>
       </div>
       {error && <div style={s.error}>{error}</div>}
       {notice && <div style={s.notice} onClick={() => setNotice("")}>{notice}</div>}
+      <TelegramConnect hint="Узнавайте в Telegram, кто вас везёт: водитель назначен, машина в пути, поездка завершена." />
 
       {fleet && (
         fleet.hasFree ? (

@@ -17,7 +17,8 @@ export default function AccountBar() {
 
   useEffect(() => onAuthStateChanged(auth, (user) => setEmail(user?.email?.toLowerCase() || "")), []);
 
-  if (!email || location.pathname === "/login") return null;
+  // В Telegram Mini App (/tg/*) вход — через Telegram, не через этот логин.
+  if (!email || location.pathname === "/login" || location.pathname.startsWith("/tg")) return null;
 
   const login = email.split("@")[0];
 

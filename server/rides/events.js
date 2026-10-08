@@ -6,6 +6,8 @@
 // Отсюда же берёт данные страница «Журнал» у диспетчера/админа и выгрузка
 // в Excel (server/rides/eventsRouter.js).
 
+const { EventEmitter } = require('events');
+
 // Типы событий — держим списком в одном месте, чтобы фронт и выгрузка
 // показывали человекочитаемые названия, а не сырой код.
 const EVENT_TYPES = {
@@ -42,15 +44,38 @@ function eventTypeLabel(type) {
 // db.transaction(...), так и вне её; в обоих случаях это просто
 // синхронный INSERT. Ошибку журналирования глотаем — она не должна
 // ронять основную операцию с заявкой.
+//
+// Каждое записанное событие публикуется в requestEvents — на него подписан
+// Telegram-бот (уведомления пассажиру и диспетчеру, telegram/notifier.js).
+// Публикация отложена (setImmediate): logEvent часто вызывается внутри
+// транзакции, и подписчик должен увидеть уже зафиксированные данные. Если
+// транзакция откатилась, строки события нет — подписчик это проверяет
+// (eventStillLogged) и ничего не шлёт.
+const requestEvents = new EventEmitter();
+
 function logEvent(db, { requestId, type, actorUserId = null, payload = null }) {
   try {
-    db.prepare(
+    const info = db.prepare(
       `INSERT INTO request_events (request_id, event_type, actor_user_id, payload_json)
        VALUES (?, ?, ?, ?)`
     ).run(requestId, type, actorUserId, payload == null ? null : JSON.stringify(payload));
+    const event = { id: Number(info.lastInsertRowid), requestId, type, actorUserId, payload };
+    setImmediate(() => {
+      try {
+        requestEvents.emit('event', event);
+      } catch (err) {
+        console.error('[rides] подписчик журнала событий упал:', err.message);
+      }
+    });
   } catch (err) {
     console.error('[rides] logEvent failed:', err.message);
   }
+}
+
+function eventStillLogged(db, { id, requestId, type }) {
+  return !!db
+    .prepare('SELECT 1 FROM request_events WHERE id = ? AND request_id = ? AND event_type = ?')
+    .get(id, requestId, type);
 }
 
 // Журнал для диспетчера/админа: фильтры по заявке, типу события и периоду
@@ -92,4 +117,4 @@ function listEvents(db, { requestId, type, from, to, limit = 500, offset = 0 } =
   });
 }
 
-module.exports = { logEvent, listEvents, eventTypeLabel, EVENT_TYPES };
+module.exports = { logEvent, listEvents, eventTypeLabel, EVENT_TYPES, requestEvents, eventStillLogged };

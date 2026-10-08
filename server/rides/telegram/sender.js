@@ -64,6 +64,8 @@ function createSender(api, getDb, { minGapMs = MIN_GAP_MS } = {}) {
         disable_web_page_preview: true,
         reply_markup: replyMarkup || { inline_keyboard: [] },
       }),
+    // Прочие методы (команды чата, кнопка меню) — через ту же очередь.
+    call: (method, params) => enqueue(method, params),
     // Ответ на нажатие кнопки — мимо очереди: Telegram ждёт его быстро,
     // иначе у водителя «крутятся часики» на кнопке.
     answer: (callbackQueryId, text, showAlert = false) =>

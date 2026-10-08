@@ -45,6 +45,7 @@ import DriverDashboardPage from "./pages/rides/DriverDashboardPage";
 import EmployeeRidesPage from "./pages/rides/EmployeeRidesPage";
 import DispatcherRidesPage from "./pages/rides/DispatcherRidesPage";
 import RidesAdminPage from "./pages/rides/RidesAdminPage";
+import TelegramMiniApp, { TelegramMiniAppRoute } from "./pages/rides/TelegramMiniApp";
 import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
 
@@ -65,6 +66,13 @@ const App = () => {
 
         {/* Авторизация */}
         <Route path="/login" element={<LoginPage />} />
+
+        {/* Telegram Mini App системы поездок — вход через Telegram, без
+            Firebase-логина (см. pages/rides/TelegramMiniApp.jsx). Роль
+            проверяет сервер по сессии Telegram. */}
+        <Route path="/tg" element={<TelegramMiniApp />} />
+        <Route path="/tg/employee" element={<TelegramMiniAppRoute><EmployeeRidesPage /></TelegramMiniAppRoute>} />
+        <Route path="/tg/dispatcher" element={<TelegramMiniAppRoute><DispatcherRidesPage /></TelegramMiniAppRoute>} />
 
         {/* Система служебного транспорта (заявки на поездки) */}
         <Route path="/driver" element={<Protected><RideRoleRoute roles={["driver"]}><DriverDashboardPage /></RideRoleRoute></Protected>}/>

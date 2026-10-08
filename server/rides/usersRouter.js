@@ -21,6 +21,7 @@ const { getAuth } = require('firebase-admin/auth');
 const { getWriteDb } = require('./db');
 const { loadRideUser, requireSiteAdmin, requireRoleOrSiteAdmin, isSiteAdminEmail } = require('./auth');
 const { ADMIN_EMAIL } = require('../adminAuth');
+const telegramStore = require('./telegram/store');
 
 const router = express.Router();
 
@@ -198,7 +199,10 @@ router.delete('/:email', requireSiteAdmin, rejectSiteAdminTarget, (req, res) => 
     return res.status(409).json({ error: 'У пользователя есть карточка водителя — сначала удалите её в разделе "Водители"' });
   }
 
-  db.prepare('DELETE FROM users WHERE id = ?').run(existing.id);
+  db.transaction(() => {
+    telegramStore.forgetUser(db, existing.id); // привязка Telegram ссылается на пользователя
+    db.prepare('DELETE FROM users WHERE id = ?').run(existing.id);
+  })();
   res.json({ ok: true });
 });
 

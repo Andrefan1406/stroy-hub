@@ -20,6 +20,7 @@ const {
 } = require('./slots');
 const { findDriverConflict, syncDriverStatus, describeRequest } = require('./driverAvailability');
 const { claimRequest, changeRequestStatus, declineRequest } = require('./driverActions');
+const { cancelOwnRequest } = require('./employeeActions');
 
 const router = express.Router();
 
@@ -560,40 +561,12 @@ router.post('/:id/cancel', requireRideRole('dispatcher'), validate(cancelSchema)
   res.json({ request: serializeForDispatcher(result, staleThreshold()) });
 });
 
-// Сотрудник (или диспетчер — для своей же заявки) отменяет СВОЮ заявку.
-// Разрешено, пока её ещё не приняли (pending_assignment) или водитель уже
-// назначен, но ещё не нажал "В пути" (assigned) — та же граница, что и у
-// диспетчерской отмены выше: как только поездка реально началась
-// (in_progress), отменить может только диспетчер вручную, не сам заказчик.
+// Сотрудник (или диспетчер — для своей же заявки) отменяет СВОЮ заявку —
+// правила в employeeActions.js (тот же код у Telegram-бота).
 router.post('/:id/cancel-mine', requireRideRole('employee', 'dispatcher'), validate(employeeCancelSchema), (req, res) => {
-  const db = getWriteDb();
-  const requestId = Number(req.params.id);
-
-  let previousDriverId = null;
-  const result = db.transaction(() => {
-    const row = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
-    if (!row || row.employee_id !== req.rideUser.id) return null;
-    if (!['pending_assignment', 'assigned'].includes(row.status)) return null;
-    previousDriverId = row.driver_id;
-    db.prepare(`UPDATE requests SET status = 'cancelled', on_hold = 0, cancel_reason = ? WHERE id = ?`).run(req.body.reason, requestId);
-    if (row.driver_id) syncDriverStatus(db, row.driver_id);
-    db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'cancelled', ?)`)
-      .run(requestId, req.rideUser.id);
-    logEvent(db, { requestId, type: 'cancelled_by_employee', actorUserId: req.rideUser.id, payload: { reason: req.body.reason, previousStatus: row.status } });
-    return getRow(db, requestId);
-  })();
-
-  if (!result) {
-    return res.status(409).json({ error: 'Заявку нельзя отменить — водитель уже в пути, поездка завершена, либо это не ваша заявка' });
-  }
-
-  const restoredB = dissolveMergesForA(db, requestId, 'Заказчик отменил заявку', req.rideUser.id);
-  if (restoredB.length) emitDissolvedB(db, restoredB);
-
-  emitToDrivers('request:removed', { id: requestId });
-  emitToDispatcher('request:updated', serializeForDispatcher(result, staleThreshold()));
-  if (previousDriverId) emitToDriver(previousDriverId, 'request:removed', { id: requestId });
-  res.json({ request: serializeForEmployee(result) });
+  const out = cancelOwnRequest({ userId: req.rideUser.id, requestId: Number(req.params.id), reason: req.body.reason });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+  res.json({ request: serializeForEmployee(out.request) });
 });
 
 module.exports = router;
