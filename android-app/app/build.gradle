@@ -1,0 +1,59 @@
+// Android-приложение «VK Dev · Транспорт» — оболочка над сайтом (WebView):
+// открывает страницу заказа служебного транспорта, вход тот же, что на
+// сайте (Firebase, логин и пароль). Логика заявок целиком на сайте и
+// сервере — приложение обновлять нужно только при смене адреса или иконки.
+//
+// Подпись релизной сборки — ключом ВНЕ репозитория: путь к файлу с
+// параметрами ключа берётся из свойства vkdevKeystore (по умолчанию
+// %USERPROFILE%\.stroy-hub-android\keystore.properties). Без него
+// собирается только отладочная версия.
+plugins {
+    id 'com.android.application'
+}
+
+def keystorePropsFile = file(findProperty('vkdevKeystore') ?: "${System.getProperty('user.home')}/.stroy-hub-android/keystore.properties")
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) keystorePropsFile.withInputStream { keystoreProps.load(it) }
+
+android {
+    namespace 'kz.vkdev.transport'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'kz.vkdev.transport'
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+        // Адрес страницы, которую открывает приложение. Сменить без правки
+        // кода: gradlew assembleRelease -PstartUrl=https://...
+        buildConfigField 'String', 'START_URL', "\"${findProperty('startUrl') ?: 'https://vkdevelopment.netlify.app/employee'}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreProps['storeFile']) {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig keystoreProps['storeFile'] ? signingConfigs.release : null
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
