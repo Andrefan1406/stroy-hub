@@ -1,1 +1,4 @@
+# Старый адрес branch deploy ветки feature/ride-request-system -> основной сайт.
+https://feature-ride-request-system--vkdevelopment.netlify.app/*  https://vkdevelopment.netlify.app/:splat  301!
+
 /*    /index.html   200
