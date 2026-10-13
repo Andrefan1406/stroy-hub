@@ -30,6 +30,7 @@ yarn-error.log*
 
 # локальная БД системы поездок (заявки на служебный транспорт)
 /server/rides/data/
+/server/layouts/data/
 
 # Firebase service account ключ (см. server/rides/README.md) — секрет, никогда не коммитить
 /firebase-key.json

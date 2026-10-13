@@ -48,6 +48,8 @@ import RidesAdminPage from "./pages/rides/RidesAdminPage";
 import TelegramMiniApp, { TelegramMiniAppRoute } from "./pages/rides/TelegramMiniApp";
 import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
+import SiteLayoutsPage from "./pages/SiteLayoutsPage";
+import SiteLayoutEditorPage from "./pages/SiteLayoutEditorPage";
 
 
 const Protected = ({ children }) => (
@@ -109,6 +111,11 @@ const App = () => {
 
         {/* Главная */}
         <Route path="/" element={<Protected><HomePage /></Protected>} />
+
+        {/* Схемы расположения бытовок — доступ проверяют страница и сервер
+            (главный админ + список, который он ведёт), см. server/layouts/. */}
+        <Route path="/site-layouts" element={<Protected><SiteLayoutsPage /></Protected>} />
+        <Route path="/site-layouts/:id" element={<Protected><SiteLayoutEditorPage /></Protected>} />
 
         {/* Заявки */}
         <Route

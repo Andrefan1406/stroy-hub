@@ -39,6 +39,8 @@ const ridesEventsRouter = require('./rides/eventsRouter');
 const ridesFleetRouter = require('./rides/fleetRouter');
 const ridesTelegramRouter = require('./rides/telegramRouter');
 const { initSocket } = require('./rides/socket');
+const layoutsRouter = require('./layouts/router');
+const { initLayoutsSocket } = require('./layouts/socket');
 const { startProposalTimeoutJob } = require('./rides/proposalTimeout');
 const { startDriverStatusJob } = require('./rides/driverAvailability');
 const { initTelegram } = require('./rides/telegram');
@@ -103,6 +105,8 @@ app.use('/api/v1/requests', ridesMergeRouter);
 app.use('/api/v1/events', ridesEventsRouter);
 app.use('/api/v1/fleet-status', ridesFleetRouter);
 app.use('/api/v1/telegram', ridesTelegramRouter);
+// Схемы расположения бытовок (страница /site-layouts) — см. server/layouts/.
+app.use('/api/layouts', layoutsRouter);
 app.use('/api/internal', internalApiRouter);
 
 initSchema();
@@ -130,7 +134,9 @@ startRascenkiSync();
 startGprReportSync();
 
 const server = http.createServer(app);
-initSocket(server);
+const io = initSocket(server);
+// Совместная правка схем бытовок — отдельное пространство '/layouts' того же Socket.io.
+initLayoutsSocket(io);
 
 // Render передаёт порт через PORT — слушаем его в первую очередь,
 // SMART_REQUEST_PROXY_PORT остаётся для локального оверрайда.

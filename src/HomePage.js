@@ -6,6 +6,7 @@ import { fetchGprReportBlock, gprBlockMessage } from './gprReportGate';
 import { ridesApiFetch } from './rides/api';
 import { ROLE_HOME_PATH } from './rides/constants';
 import { fetchManualBlock, manualBlockMessage } from './manualBlockGate';
+import { layoutsApi } from './siteLayout/api';
 
 
 const HomePage = () => {
@@ -53,6 +54,15 @@ const HomePage = () => {
     if (!currentEmail) return;
     ridesApiFetch('/api/v1/users/me')
       .then(({ user }) => setRideRole(user?.role || null))
+      .catch(() => {});
+  }, [currentEmail]);
+
+  // Схемы бытовок — кнопка только тем, кому админ дал доступ (и самому админу).
+  const [canSeeLayouts, setCanSeeLayouts] = useState(false);
+  useEffect(() => {
+    if (!currentEmail) return;
+    layoutsApi('/access')
+      .then(({ canEdit }) => setCanSeeLayouts(!!canEdit))
       .catch(() => {});
   }, [currentEmail]);
 
@@ -146,6 +156,12 @@ const HomePage = () => {
       >
         Графики и отчёты
       </button>
+
+      {canSeeLayouts && (
+        <button onClick={() => navigate('/site-layouts')} style={styles.button}>
+          Схемы бытовок
+        </button>
+      )}
 
       {rideRole && ROLE_HOME_PATH[rideRole] && (
         <button onClick={() => navigate(ROLE_HOME_PATH[rideRole])} style={styles.rideButton}>
