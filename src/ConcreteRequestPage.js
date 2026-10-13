@@ -4,6 +4,7 @@ import { useLocation } from 'react-router-dom';
 import Select from 'react-select';
 import { getAuth } from 'firebase/auth';
 import styles from './RequestPage.module.css';
+import css from './ConcreteRequestPage.module.css';
 import {
   objectCategoryOptions,
   objectPositionOptions,
@@ -15,10 +16,15 @@ import {
 import ConcretePendingRequestsTable from './components/ConcretePendingRequestsTable';
 import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
 
+// poaNumber/poaDate/poaName — доверенность на получение бетона (номер,
+// дата, ФИО доверенного лица), обязательна в каждой строке. В таблице
+// Google пишется в конец строки, после столбцов, которые заполняет
+// диспетчер БРУ (см. doPost в Apps Script заявок на бетон).
 const emptyConcreteRow = () => ({
   date: '', time: '', category: '', object: '', position: '',
   block: '', floor: '', constructive: '', material: '',
-  concreteGrade: '', concreteClass: '', quantity: '', note: ''
+  concreteGrade: '', concreteClass: '', quantity: '',
+  poaNumber: '', poaDate: '', poaName: '', note: ''
 });
 
 // Стилизованная замена window.confirm() для предупреждения об окне 15:00-17:00
@@ -136,8 +142,54 @@ const pruneConcreteChain = (row) => {
   return next;
 };
 
+const MATERIAL_OPTIONS = ['Бетон', 'Раствор'];
+const MOBILITY_OPTIONS = ['П3', 'П4'];
+
+// Общий вид выпадающих списков формы (react-select) — в тон обычным полям.
+const selectStyles = {
+  control: (base, state) => ({
+    ...base,
+    minHeight: 36,
+    fontSize: 14,
+    borderRadius: 6,
+    borderColor: state.isFocused ? '#1976d2' : '#c8d0da',
+    boxShadow: state.isFocused ? '0 0 0 2px rgba(25, 118, 210, 0.15)' : 'none',
+    backgroundColor: state.isDisabled ? '#f2f4f7' : '#fff',
+  }),
+  valueContainer: (base) => ({ ...base, padding: '0 8px' }),
+  menu: (base) => ({ ...base, fontSize: 14, zIndex: 20 }),
+  singleValue: (base) => ({ ...base, whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip' }),
+};
+
+// Подпись над полем; звёздочка — поле обязательно для этой строки.
+const Field = ({ label, required, children }) => (
+  <div className={css.field}>
+    <span className={css.label}>
+      {label}
+      {required && <span className={css.required}>*</span>}
+    </span>
+    {children}
+  </div>
+);
+
+// Выпадающий список, который отдаёт изменения в handleChange как обычный input.
+const SelectField = ({ label, name, required, options, value, onChange, isDisabled = false }) => (
+  <Field label={label} required={required}>
+    <Select
+      options={options.map((opt) => ({ value: opt, label: opt }))}
+      value={value ? { value, label: value } : null}
+      onChange={(selected) => onChange({ target: { name, value: selected ? selected.value : '' } })}
+      placeholder='Выберите...'
+      isClearable
+      isDisabled={isDisabled}
+      menuPlacement='auto'
+      styles={selectStyles}
+    />
+  </Field>
+);
+
 const getActiveRequiredFields = (row) => {
-  const activeFields = ['date', 'time', 'category', 'quantity'];
+  const activeFields = ['date', 'time', 'category', 'quantity', 'poaNumber', 'poaDate', 'poaName'];
 
   if (row.category === REALIZATION_CATEGORY) {
     activeFields.push('note');
@@ -237,6 +289,11 @@ const ConcreteRequestPage = () => {
         const regex = /^\d{0,6}([.,]\d?)?$/;
         if (value === '' || regex.test(value)) {
           row.quantity = value;
+        }
+      } else if (name === 'poaNumber') {
+        // Номер доверенности — целое число, только цифры.
+        if (/^\d{0,10}$/.test(value)) {
+          row.poaNumber = value;
         }
       } else {
         row[name] = value;
@@ -356,6 +413,9 @@ const ConcreteRequestPage = () => {
     concreteGrade: row.concreteGrade,
     concreteClass: row.concreteClass,
     quantity: parseFloat((row.quantity || '').replace(',', '.')),
+    poaNumber: parseInt(row.poaNumber, 10),
+    poaDate: row.poaDate,
+    poaName: row.poaName.trim(),
     note: row.note,
     responsibleName: userName,
     responsiblePhone: userPhone
@@ -373,11 +433,7 @@ const ConcreteRequestPage = () => {
     setShowModal(false);
     setUserName('');
     setUserPhone('');
-    setFormRows([{
-      date: '', time: '', category: '', object: '', position: '',
-      block: '', floor: '', constructive: '', material: '',
-      concreteGrade: '', concreteClass: '', quantity: '', note: ''
-    }]);
+    setFormRows([emptyConcreteRow()]);
 
     // Заявка ушла напрямую в Google Apps Script, а не через наш бэкенд —
     // просим сервер пересинкать таблицу немедленно, не дожидаясь планового
@@ -400,528 +456,203 @@ const ConcreteRequestPage = () => {
 
   
   
-  const categoryOptions = Object.keys(objectCategoryOptions).map(opt => ({
-    value: opt,
-    label: opt
-  }));
+  const categoryOptions = Object.keys(objectCategoryOptions);
 
   return (
-    <div className={styles.wideContainer}>
-      <h2>Заявка на бетон или раствор</h2>
+    <div className={css.page}>
+      <h2 className={css.title}>Заявка на бетон или раствор</h2>
       <form onSubmit={handleSubmit}>
-        <table className={styles.requestTable}>
-          <thead>
-            <tr>
-              <th>Дата</th><th>Время</th><th>Категория</th><th>Объект</th>
-              <th>Позиция</th><th>Блок</th><th>Этаж</th><th>Конструктив</th>
-              <th>Материал</th><th>Марка</th><th>Подвижность</th>
-              <th>Количество</th><th>Примечание</th><th>Действия</th>
-            </tr>
-          </thead>
-          <tbody>
-            {formRows.map((row, index) => (
-              <tr key={index}>
-                <td style={{ minWidth: 80 }}>
-                  <div
-                    style={{
-                      border: '1px solid #ccc',
-                      borderRadius: 4,
-                      padding: '2px 8px',
-                      minHeight: '30px',
-                      fontSize: '12px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      backgroundColor: 'white',
-                    }}
-                  >
-                    <input
-                      type='date'
-                      name='date'
-                      value={row.date}
-                      min={minDate}
-                      max={maxDate}
-                      onChange={e => handleChange(e, index)}
-                      style={{
-                        border: 'none',
-                        outline: 'none',
-                        fontSize: '12px',
-                        width: '100%',
-                        background: 'transparent',
-                        appearance: 'none',
-                      }}
-                    />
-                  </div>
-                </td>
-                <td style={{ minWidth: 80 }}>
-                  <div
-                    style={{
-                      border: '1px solid #ccc',
-                      borderRadius: 4,
-                      padding: '2px 8px',
-                      minHeight: '30px',
-                      fontSize: '12px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      backgroundColor: 'white',
-                    }}
-                  >
-                    <select
-                      name='time'
-                      value={row.time}
-                      onChange={e => handleChange(e, index)}
-                      style={{
-                        border: 'none',
-                        outline: 'none',
-                        fontSize: '12px',
-                        width: '100%',
-                        background: 'transparent',
-                        appearance: 'none',
-                      }}
-                    >
-                      <option value=''>--</option>
-                      {[...Array(24)].map((_, h) => {
-                        const hourStr = `${h.toString().padStart(2, '0')}:00`;
-                        const isToday = row.date === todayStr;
-                        const isDisabled = isToday && h <= currentHour;
-                        return (
-                          <option key={h} value={hourStr} disabled={isDisabled}>
-                            {hourStr}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-                </td>
+        {formRows.map((row, index) => {
+          const required = new Set(getActiveRequiredFields(row));
+          const onChange = (e) => handleChange(e, index);
+          const hasBlocks = !!positionBlockOptions[row.position];
+          return (
+            <section key={index} className={css.card}>
+              <div className={css.cardHeader}>
+                <span className={css.cardTitle}>
+                  {formRows.length > 1 ? `Заявка ${index + 1}` : 'Заявка'}
+                </span>
+                {formRows.length > 1 && (
+                  <button type='button' className={css.removeLink} onClick={() => removeRow(index)}>
+                    Удалить
+                  </button>
+                )}
+              </div>
 
-                <td style={{ minWidth: 160 }}>
-                  <Select
-                    options={categoryOptions}
-                    value={categoryOptions.find(opt => opt.value === row.category) || null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'category',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',       // разрешаем перенос
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',       // <== ключевая строчка
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
+              <div className={css.grid}>
+                <Field label='Дата' required={required.has('date')}>
+                  <input
+                    type='date'
+                    name='date'
+                    className={css.input}
+                    value={row.date}
+                    min={minDate}
+                    max={maxDate}
+                    onChange={onChange}
                   />
+                </Field>
 
-                </td>
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(objectCategoryOptions[row.category] || []).map(obj => ({
-                      value: obj,
-                      label: obj
-                    }))}
-                    value={row.object ? { value: row.object, label: row.object } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'object',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.category}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
+                <Field label='Время' required={required.has('time')}>
+                  <select name='time' className={css.input} value={row.time} onChange={onChange}>
+                    <option value=''>--</option>
+                    {[...Array(24)].map((_, h) => {
+                      const hourStr = `${h.toString().padStart(2, '0')}:00`;
+                      const isDisabled = row.date === todayStr && h <= currentHour;
+                      return (
+                        <option key={h} value={hourStr} disabled={isDisabled}>
+                          {hourStr}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </Field>
 
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(objectPositionOptions[row.object] || []).map(pos => ({
-                      value: pos,
-                      label: pos
-                    }))}
-                    value={row.position ? { value: row.position, label: row.position } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'position',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.object}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(positionBlockOptions[row.position] || []).map(b => ({
-                      value: b,
-                      label: b
-                    }))}
-                    value={row.block ? { value: row.block, label: row.block } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'block',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.position || !positionBlockOptions[row.position]}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(blockFloorOptions[row.block] || []).map(f => ({
-                      value: f,
-                      label: f
-                    }))}
-                    value={row.floor ? { value: row.floor, label: row.floor } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'floor',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.block || !positionBlockOptions[row.position]}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(floorConstructiveOptions[row.floor] || []).map(c => ({
-                      value: c,
-                      label: c
-                    }))}
-                    value={row.constructive ? { value: row.constructive, label: row.constructive } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'constructive',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.floor || !positionBlockOptions[row.position]}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 100 }}>
-                <Select
-                  options={[
-                    { value: 'Бетон', label: 'Бетон' },
-                    { value: 'Раствор', label: 'Раствор' }
-                  ]}
-                  value={row.material ? { value: row.material, label: row.material } : null}
-                  onChange={selected => {
-                    const e = {
-                      target: {
-                        name: 'material',
-                        value: selected ? selected.value : ''
-                      }
-                    };
-                    handleChange(e, index);
-                  }}
-                  placeholder="Выберите..."
-                  isClearable
-                  isDisabled={!!positionBlockOptions[row.position]}
-                  styles={{
-                    control: base => ({
-                      ...base,
-                      minHeight: '30px',
-                      fontSize: '12px',
-                      backgroundColor: positionBlockOptions[row.position] ? '#f0f0f0' : 'white',
-                    })
-                  }}
+                <SelectField
+                  label='Категория'
+                  name='category'
+                  required={required.has('category')}
+                  options={categoryOptions}
+                  value={row.category}
+                  onChange={onChange}
                 />
-
-                </td>
-
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(materialGradeOptions[row.material] || []).map(g => ({
-                      value: g,
-                      label: g
-                    }))}
-                    value={row.concreteGrade ? { value: row.concreteGrade, label: row.concreteGrade } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'concreteGrade',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.material}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
+                <SelectField
+                  label='Объект'
+                  name='object'
+                  required={required.has('object')}
+                  options={objectCategoryOptions[row.category] || []}
+                  value={row.object}
+                  onChange={onChange}
+                  isDisabled={!row.category}
+                />
+                <SelectField
+                  label='Позиция'
+                  name='position'
+                  required={required.has('position')}
+                  options={objectPositionOptions[row.object] || []}
+                  value={row.position}
+                  onChange={onChange}
+                  isDisabled={!row.object}
+                />
+                <SelectField
+                  label='Блок'
+                  name='block'
+                  required={required.has('block')}
+                  options={positionBlockOptions[row.position] || []}
+                  value={row.block}
+                  onChange={onChange}
+                  isDisabled={!row.position || !hasBlocks}
+                />
+                <SelectField
+                  label='Этаж'
+                  name='floor'
+                  required={required.has('floor')}
+                  options={blockFloorOptions[row.block] || []}
+                  value={row.floor}
+                  onChange={onChange}
+                  isDisabled={!row.block || !hasBlocks}
+                />
+                <SelectField
+                  label='Конструктив'
+                  name='constructive'
+                  required={required.has('constructive')}
+                  options={floorConstructiveOptions[row.floor] || []}
+                  value={row.constructive}
+                  onChange={onChange}
+                  isDisabled={!row.floor || !hasBlocks}
+                />
+                <SelectField
+                  label='Материал'
+                  name='material'
+                  required={required.has('material')}
+                  options={MATERIAL_OPTIONS}
+                  value={row.material}
+                  onChange={onChange}
+                  isDisabled={hasBlocks}
+                />
+                <SelectField
+                  label='Марка'
+                  name='concreteGrade'
+                  required={required.has('concreteGrade')}
+                  options={materialGradeOptions[row.material] || []}
+                  value={row.concreteGrade}
+                  onChange={onChange}
+                  isDisabled={!row.material}
+                />
+                {row.material === 'Бетон' ? (
+                  <SelectField
+                    label='Подвижность'
+                    name='concreteClass'
+                    required={required.has('concreteClass')}
+                    options={MOBILITY_OPTIONS}
+                    value={row.concreteClass}
+                    onChange={onChange}
                   />
-                </td>
+                ) : (
+                  <Field label='Подвижность'>
+                    <div className={css.placeholderBox} />
+                  </Field>
+                )}
 
-                <td style={{ minWidth: 80 }}>
-                  {row.material === 'Бетон' ? (
-                    <Select
-                      options={[
-                        { value: 'П3', label: 'П3' },
-                        { value: 'П4', label: 'П4' }
-                      ]}
-                      value={row.concreteClass ? { value: row.concreteClass, label: row.concreteClass } : null}
-                      onChange={selected => {
-                        const e = {
-                          target: {
-                            name: 'concreteClass',
-                            value: selected ? selected.value : ''
-                          }
-                        };
-                        handleChange(e, index);
-                      }}
-                      placeholder="Выберите..."
-                      isClearable
-                      styles={{
-                        control: base => ({
-                          ...base,
-                          minHeight: '30px',
-                          fontSize: '12px',
-                          whiteSpace: 'normal',
-                          lineHeight: '1.2',
-                        }),
-                        menu: base => ({
-                          ...base,
-                          fontSize: '12px',
-                          whiteSpace: 'normal',
-                          wordWrap: 'break-word',
-                        }),
-                        singleValue: base => ({
-                          ...base,
-                          whiteSpace: 'normal',
-                          wordWrap: 'break-word',
-                          overflow: 'visible',
-                          textOverflow: 'clip',
-                        })
-                      }}
-                    />
-                  ) : (
-                    <div style={{ minHeight: '30px', backgroundColor: '#f5f5f5' }}></div>
-                  )}
-                </td>
+                <Field label='Количество, м³' required={required.has('quantity')}>
+                  <input
+                    type='text'
+                    inputMode='decimal'
+                    name='quantity'
+                    className={css.input}
+                    value={row.quantity}
+                    onChange={onChange}
+                    placeholder='Введите число'
+                  />
+                </Field>
+              </div>
 
-                <td style={{ minWidth: 80 }}>
-                  <div
-                    style={{
-                      border: '1px solid #ccc',
-                      borderRadius: 4,
-                      padding: '2px 8px',
-                      minHeight: '30px',
-                      fontSize: '12px',
-                      display: 'flex',
-                      alignItems: 'center',
-                    }}
-                  >
-                    <input
-                      type='text'
-                      name='quantity'
-                      value={row.quantity}
-                      onChange={e => handleChange(e, index)}
-                      placeholder='Введите число'
-                      style={{
-                        border: 'none',
-                        outline: 'none',
-                        fontSize: '12px',
-                        width: '100%',
-                        background: 'transparent',
-                      }}
-                    />
+              <div className={css.bottomRow}>
+                <fieldset className={css.group}>
+                  <legend className={css.groupTitle}>Доверенность</legend>
+                  <div className={css.groupGrid}>
+                    <Field label='Номер' required>
+                      <input
+                        type='text'
+                        inputMode='numeric'
+                        name='poaNumber'
+                        className={css.input}
+                        value={row.poaNumber}
+                        onChange={onChange}
+                        placeholder='№'
+                      />
+                    </Field>
+                    <Field label='Дата' required>
+                      <input type='date' name='poaDate' className={css.input} value={row.poaDate} onChange={onChange} />
+                    </Field>
+                    <Field label='ФИО' required>
+                      <input
+                        type='text'
+                        name='poaName'
+                        className={css.input}
+                        value={row.poaName}
+                        onChange={onChange}
+                        placeholder='ФИО по доверенности'
+                      />
+                    </Field>
                   </div>
-                </td>
+                </fieldset>
 
-                <td><textarea name='note' value={row.note} onChange={e => handleChange(e, index)} rows={2} placeholder='Введите примечание...' /></td>
-                <td className={styles.actionsCell}>
-                  {formRows.length > 1 && (
-                    <button
-                      type='button'
-                      className={styles.removeButton}
-                      onClick={() => removeRow(index)}
-                    >
-                      Удалить
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                <Field label='Примечание' required={required.has('note')}>
+                  <textarea
+                    name='note'
+                    className={css.textarea}
+                    value={row.note}
+                    onChange={onChange}
+                    rows={2}
+                    placeholder='Введите примечание...'
+                  />
+                </Field>
+              </div>
+            </section>
+          );
+        })}
 
-        <div className={styles.buttonsContainer}>
+        <div className={css.actions}>
           <button type='button' onClick={addRow} className={styles.addButton}>Добавить строку</button>
           <button type='submit' className={styles.submitButton}>Отправить заявку</button>
         </div>
