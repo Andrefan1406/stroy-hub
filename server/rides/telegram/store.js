@@ -179,7 +179,7 @@ function poolRequests(db, limit = POOL_LIST_LIMIT) {
   const ids = db
     .prepare(
       `SELECT id FROM requests
-        WHERE status = 'pending_assignment' AND on_hold = 0 AND merge_lock = 0 AND merged_into IS NULL
+        WHERE status = 'pending_assignment' AND on_hold = 0 AND merged_into IS NULL
         ORDER BY requested_at ASC, id ASC`
     )
     .all()
@@ -188,7 +188,7 @@ function poolRequests(db, limit = POOL_LIST_LIMIT) {
 }
 
 function isInPool(row) {
-  return !!row && row.status === 'pending_assignment' && !row.on_hold && !row.merge_lock && !row.merged_into;
+  return !!row && row.status === 'pending_assignment' && !row.on_hold && !row.merged_into;
 }
 
 function driverOrders(db, driverId) {

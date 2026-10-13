@@ -1,28 +1,77 @@
-// Применение и расформирование объединений заявок (П.6). Вынесено из
-// роутера, потому что каскады (завершение/отмена/переброска заявки A)
-// живут в requestsRouter, а таймаут-джоба — в proposalTimeout.js.
-const { recomputeRequestEstimate, chooseInsertIndex, geocodeAddress } = require('./routeEstimate');
+// Совместные поездки: попутная заявка B (из пула) вливается в поездку A
+// (назначенную или уже в пути) — точки B встают в маршрут A на ближайший
+// участок, B получает того же водителя и merged_into = A.
+//
+// Объединение мгновенное, без согласований: его делает водитель A
+// («Подвезти попутно» — на сайте или в Telegram) или диспетчер («Добавить
+// попутно»). Ограничение одно — по времени (driverAvailability.fitsMergeWindow):
+// подача B не раньше чем за 15 мин до подачи A и не позже окончания A.
+//
+// Тут же каскады: расформирование при отмене/снятии машины с A, общее
+// завершение, снятие отменённой B с маршрута A.
+const { getWriteDb } = require('./db');
+const {
+  recomputeRequestEstimate, estimateFromPoints, chooseInsertIndex, geocodeAddress,
+} = require('./routeEstimate');
 const { logEvent } = require('./events');
 const { emitToDrivers, emitToDispatcher, emitToEmployee, emitToDriver } = require('./socket');
 const {
   getRow, serializeForDriver, serializeForEmployee, serializeForDispatcher, staleThreshold,
 } = require('./requestView');
-const { serializeMerge } = require('./mergeView');
+const { requestedAtMs } = require('./slots');
+const { fitsMergeWindow, MERGE_LEAD_MINUTES } = require('./driverAvailability');
+
+const MINUTE = 60000;
 
 function renumberStops(db, requestId) {
   const rows = db.prepare('SELECT id FROM request_stops WHERE request_id = ? ORDER BY stop_order ASC').all(requestId);
   rows.forEach((s, i) => db.prepare('UPDATE request_stops SET stop_order = ? WHERE id = ?').run(i, s.id));
 }
 
-// Оба согласия получены — вливаем точки заявки B в маршрут A. Асинхронная
-// (геокодер + пересчёт). Вызывать после того, как merge помечен approved.
-async function applyMerge(db, mergeId, actorUserId) {
-  const m = db.prepare('SELECT * FROM request_merges WHERE id = ?').get(mergeId);
-  if (!m) return null;
-  const A = db.prepare('SELECT * FROM requests WHERE id = ?').get(m.request_a_id);
-  const B = db.prepare('SELECT * FROM requests WHERE id = ?').get(m.request_b_id);
-  if (!A || !B) return null;
+const getRequest = (db, id) => db.prepare('SELECT * FROM requests WHERE id = ?').get(id);
 
+// Поездка, к которой можно добавлять попутчиков: в работе у водителя и сама
+// не попутная.
+const isCarrier = (row) => !!row && ['assigned', 'in_progress'].includes(row.status) && !!row.driver_id && !row.merged_into;
+// Заявка, которую можно добавить попутно: свободна в пуле.
+const isInPool = (row) => !!row && row.status === 'pending_assignment' && !row.on_hold && !row.merged_into;
+
+// Тексты согласованы с заказчиком: «основная заявка» — на которую уже
+// назначен водитель, «эта заявка» — которую добавляем попутно.
+const TIME_MISMATCH_TEXT =
+  `Нельзя добавить попутно: не совпадает время. Время подачи этой заявки должно быть не раньше чем за ${MERGE_LEAD_MINUTES} минут до подачи основной заявки и до того, как водитель её выполнит.`;
+
+function mergeError(A, B, now = Date.now()) {
+  if (A && B && A.id === B.id) return 'Нельзя объединить заявку саму с собой';
+  if (!isInPool(B)) return 'Эта заявка уже не в пуле — её взяли или отменили';
+  if (!isCarrier(A)) return 'Поездка, к которой добавляем, уже не в работе';
+  if (!fitsMergeWindow(A, B, now)) return TIME_MISMATCH_TEXT;
+  return null;
+}
+
+// Поездки, к которым можно добавить заявку B (driverId — только поездки
+// этого водителя), ближайшие по времени подачи к B — первыми.
+function mergeCandidates(db, B, { driverId = null, now = Date.now() } = {}) {
+  if (!isInPool(B)) return [];
+  const rows = db
+    .prepare(
+      `SELECT r.* FROM requests r JOIN drivers d ON d.id = r.driver_id
+        WHERE r.status IN ('assigned', 'in_progress') AND r.merged_into IS NULL AND d.active = 1
+          ${driverId ? 'AND r.driver_id = ?' : ''}`
+    )
+    .all(...(driverId ? [driverId] : []));
+  const pickupB = requestedAtMs(B.requested_at);
+  return rows
+    .filter((A) => A.id !== B.id && fitsMergeWindow(A, B, now))
+    .sort((a, b) => Math.abs(requestedAtMs(a.requested_at) - pickupB) - Math.abs(requestedAtMs(b.requested_at) - pickupB));
+}
+
+const coordsOf = async (address, lat, lng) =>
+  (lat != null && lng != null ? { lat, lng } : geocodeAddress(address).catch(() => null));
+
+// Куда встанут точки B в маршруте A: stop_order первой точки блока B
+// (0 — сразу после A.to). Точки B идут подряд: посадка, высадка, доп. пункты.
+async function planMerge(db, A, B) {
   const bStops = db
     .prepare('SELECT address, lat, lng FROM request_stops WHERE request_id = ? ORDER BY stop_order ASC')
     .all(B.id);
@@ -31,70 +80,132 @@ async function applyMerge(db, mergeId, actorUserId) {
     { address: B.to_address, lat: B.to_lat, lng: B.to_lng },
     ...bStops,
   ];
-
-  let bFromC = B.from_lat != null ? { lat: B.from_lat, lng: B.from_lng } : null;
-  if (!bFromC) bFromC = await geocodeAddress(B.from_address).catch(() => null);
-
   const aStops = db
-    .prepare('SELECT stop_order, lat, lng FROM request_stops WHERE request_id = ? ORDER BY stop_order ASC')
+    .prepare('SELECT address, lat, lng FROM request_stops WHERE request_id = ? ORDER BY stop_order ASC')
     .all(A.id);
+  const bFrom = await coordsOf(B.from_address, B.from_lat, B.from_lng);
   const chain = [
     A.to_lat != null ? { lat: A.to_lat, lng: A.to_lng } : null,
     ...aStops.map((s) => (s.lat != null ? { lat: s.lat, lng: s.lng } : null)),
   ];
-  const insertAt = chooseInsertIndex(chain, bFromC); // stop_order для первой точки блока B
+  return { bPoints, aStops, insertAt: chooseInsertIndex(chain, bFrom) };
+}
 
-  db.transaction(() => {
+// От какого момента считать время поездки A: начатая — от «сейчас», иначе —
+// от времени подачи (если оно ещё впереди).
+function tripStartMs(A, now = Date.now()) {
+  if (A.status === 'in_progress') return now;
+  const start = requestedAtMs(A.requested_at);
+  return Number.isNaN(start) ? now : Math.max(start, now);
+}
+
+// Прогноз для диспетчера без записи в базу: насколько удлинится поездка A и
+// примерное время посадки пассажира B. Поля — null, если маршрут не
+// построился (адрес не нашёлся на карте).
+async function previewMerge(db, A, B, now = Date.now()) {
+  const plan = await planMerge(db, A, B);
+  const aStopCoords = [];
+  for (const s of plan.aStops) aStopCoords.push(await coordsOf(s.address, s.lat, s.lng));
+  const bCoords = [];
+  for (const p of plan.bPoints) bCoords.push(await coordsOf(p.address, p.lat, p.lng));
+  const aFrom = await coordsOf(A.from_address, A.from_lat, A.from_lng);
+  const aTo = await coordsOf(A.to_address, A.to_lat, A.to_lng);
+  const coords = [aFrom, aTo, ...aStopCoords.slice(0, plan.insertAt), ...bCoords, ...aStopCoords.slice(plan.insertAt)];
+  const est = await estimateFromPoints(coords, !!A.with_return);
+  if (!est) return { durationMin: null, deltaMin: null, pickupEtaAt: null };
+  // «Было» считаем тем же способом, а не берём сохранённое duration_min:
+  // оно могло устареть, и разница вышла бы с минусом.
+  const before = await estimateFromPoints([aFrom, aTo, ...aStopCoords], !!A.with_return);
+  const pickup = est.perPoint.find((p) => p.index === plan.insertAt + 2);
+  return {
+    durationMin: est.durationMin,
+    deltaMin: before ? est.durationMin - before.durationMin : null,
+    pickupEtaAt: pickup ? new Date(tripStartMs(A, now) + pickup.etaMinutes * MINUTE).toISOString() : null,
+  };
+}
+
+// Объединить сразу. initiator — 'driver' | 'dispatcher' (в журнал и в
+// assigned_by заявки B). Возвращает { request: A, merged: B, mergeId,
+// pickupEtaAt, deltaMin } либо { error, status }.
+async function mergeRequests({ bId, aId, actorUserId, initiator }) {
+  const db = getWriteDb();
+  const first = mergeError(getRequest(db, aId), getRequest(db, bId));
+  if (first) return { error: first, status: 409 };
+
+  // Геокодирование — до транзакции (сеть); состояние заявок после него
+  // проверяется заново: за это время B могли взять, а A — завершить.
+  const A0 = getRequest(db, aId);
+  const plan = await planMerge(db, A0, getRequest(db, bId));
+
+  const committed = db.transaction(() => {
+    const A = getRequest(db, aId);
+    const B = getRequest(db, bId);
+    const err = mergeError(A, B);
+    if (err) return { error: err };
+    const stopCount = db.prepare('SELECT COUNT(*) AS n FROM request_stops WHERE request_id = ?').get(A.id).n;
+    const insertAt = Math.min(plan.insertAt, stopCount);
+
     db.prepare('UPDATE request_stops SET stop_order = stop_order + ? WHERE request_id = ? AND stop_order >= ?')
-      .run(bPoints.length, A.id, insertAt);
+      .run(plan.bPoints.length, A.id, insertAt);
     const ins = db.prepare(
       'INSERT INTO request_stops (request_id, address, stop_order, lat, lng, merged_from_request_id) VALUES (?, ?, ?, ?, ?, ?)'
     );
-    bPoints.forEach((p, i) => ins.run(A.id, p.address, insertAt + i, p.lat ?? null, p.lng ?? null, B.id));
+    plan.bPoints.forEach((p, i) => ins.run(A.id, p.address, insertAt + i, p.lat ?? null, p.lng ?? null, B.id));
 
     db.prepare(
-      `UPDATE requests SET status = 'assigned', driver_id = ?, assigned_by = 'dispatcher',
+      `UPDATE requests SET status = 'assigned', driver_id = ?, assigned_by = ?, on_hold = 0,
          merge_lock = 0, merged_into = ?, claimed_at = datetime('now') WHERE id = ?`
-    ).run(A.driver_id, A.id, B.id);
+    ).run(A.driver_id, initiator === 'driver' ? 'self' : 'dispatcher', A.id, B.id);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'assigned', ?)`)
       .run(B.id, actorUserId);
+    const info = db
+      .prepare(
+        `INSERT INTO request_merges (request_a_id, request_b_id, driver_id, status, decided_by, decided_at, initiated_by, initiator_role)
+         VALUES (?, ?, ?, 'approved', ?, datetime('now'), ?, ?)`
+      )
+      .run(A.id, B.id, A.driver_id, actorUserId, actorUserId, initiator);
+    return { mergeId: Number(info.lastInsertRowid), insertAt, durationBefore: A.duration_min };
+  })();
+  if (committed.error) return { error: committed.error, status: 409 };
 
-    db.prepare(`UPDATE request_merges SET status = 'approved', decided_at = datetime('now'), decided_by = ? WHERE id = ?`)
-      .run(actorUserId, mergeId);
+  const est = await recomputeRequestEstimate(aId, { actorUserId }).catch(() => null);
+  const pickup = est?.perPoint?.find((p) => p.index === committed.insertAt + 2);
+  const pickupEtaAt = pickup ? new Date(tripStartMs(getRequest(db, aId)) + pickup.etaMinutes * MINUTE).toISOString() : null;
+  const deltaMin = est && committed.durationBefore != null ? est.durationMin - committed.durationBefore : null;
 
-    logEvent(db, { requestId: A.id, type: 'merge_approved', actorUserId, payload: { mergeId, mergedRequestId: B.id } });
-    logEvent(db, { requestId: B.id, type: 'merge_approved', actorUserId, payload: { mergeId, mergedIntoRequestId: A.id } });
+  // Журнал — после пересчёта: уведомления (telegram/notifier.js) берут из
+  // заявки уже посчитанное время посадки.
+  db.transaction(() => {
+    db.prepare('UPDATE requests SET pickup_eta_at = ? WHERE id = ?').run(pickupEtaAt, bId);
+    db.prepare('UPDATE request_merges SET pickup_eta_at = ? WHERE id = ?').run(pickupEtaAt, committed.mergeId);
+    const common = { mergeId: committed.mergeId, initiator, pickupEtaAt, deltaMin };
+    logEvent(db, { requestId: aId, type: 'requests_merged', actorUserId, payload: { ...common, mergedRequestId: bId } });
+    logEvent(db, { requestId: bId, type: 'requests_merged', actorUserId, payload: { ...common, mergedIntoRequestId: aId } });
   })();
 
-  const est = await recomputeRequestEstimate(A.id, { actorUserId }).catch(() => null);
-
-  // Время посадки пассажира B = накопительная оценка до точки B.from
-  // (её позиция в общем списке точек A: 0 = A.from, 1 = A.to, далее стопы).
-  let pickupEtaAt = null;
-  if (est && est.perPoint) {
-    const pt = est.perPoint.find((p) => p.index === insertAt + 2);
-    if (pt) {
-      const aNow = db.prepare('SELECT status, requested_at FROM requests WHERE id = ?').get(A.id);
-      let base = Date.now();
-      if (aNow.status !== 'in_progress' && aNow.requested_at) {
-        const t = new Date(aNow.requested_at).getTime();
-        if (!Number.isNaN(t) && t > base) base = t;
-      }
-      pickupEtaAt = new Date(base + pt.etaMinutes * 60000).toISOString();
-    }
-  }
-  db.prepare('UPDATE requests SET pickup_eta_at = ? WHERE id = ?').run(pickupEtaAt, B.id);
-  db.prepare('UPDATE request_merges SET pickup_eta_at = ? WHERE id = ?').run(pickupEtaAt, mergeId);
-
-  const aRow = getRow(db, A.id);
-  const bRow = getRow(db, B.id);
-  emitToDrivers('request:removed', { id: B.id });
+  const aRow = getRow(db, aId);
+  const bRow = getRow(db, bId);
+  emitToDrivers('request:removed', { id: bId });
   emitToDispatcher('request:updated', serializeForDispatcher(aRow, staleThreshold()));
   emitToDispatcher('request:updated', serializeForDispatcher(bRow, staleThreshold()));
   emitToEmployee(aRow.employee_id, 'request:status', serializeForEmployee(aRow));
+  emitToEmployee(aRow.employee_id, 'merge:applied', { requestId: aId, mergedRequestId: bId });
   emitToEmployee(bRow.employee_id, 'request:merged', serializeForEmployee(bRow));
-  if (A.driver_id) emitToDriver(A.driver_id, 'request:updated', serializeForDriver(aRow));
-  return { pickupEtaAt };
+  // updateReason: 'merge' — Telegram пришлёт водителю своё сообщение о
+  // попутчике по журналу, общее «маршрут изменён» не нужно.
+  emitToDriver(aRow.driver_id, 'request:updated', { ...serializeForDriver(aRow), updateReason: 'merge' });
+  emitToDriver(aRow.driver_id, 'merge:applied', { requestId: aId, mergedRequestId: bId, initiator });
+  return { request: aRow, merged: bRow, mergeId: committed.mergeId, pickupEtaAt, deltaMin };
+}
+
+// Водитель добавляет попутно к СВОЕЙ поездке (сайт и Telegram).
+async function driverMerge({ userId, bId, aId }) {
+  const db = getWriteDb();
+  const driver = db.prepare('SELECT * FROM drivers WHERE user_id = ? AND active = 1').get(userId);
+  if (!driver) return { error: 'Вы не зарегистрированы как водитель', status: 403 };
+  const A = getRequest(db, aId);
+  if (!A || A.driver_id !== driver.id) return { error: 'Попутно можно добавить только к своей поездке', status: 409 };
+  return mergeRequests({ bId, aId, actorUserId: userId, initiator: 'driver' });
 }
 
 // Расформировать все объединения, где A — «несущая» заявка: точки B
@@ -126,10 +237,39 @@ function dissolveMergesForA(db, aId, reason, actorUserId) {
   return merged;
 }
 
+// Попутную заявку B отменили (заказчик или диспетчер) — её точки больше не
+// нужны в маршруте A. Без этого водитель заехал бы за отменившим пассажиром,
+// а при завершении A отменённая B «завершилась» бы вместе с ней. Вызывать
+// после фиксации отмены; пересчитывает маршрут A и сообщает водителю.
+async function detachCancelledB(db, bId, actorUserId) {
+  const B = getRequest(db, bId);
+  if (!B || B.status !== 'cancelled' || !B.merged_into) return null;
+  const aId = B.merged_into;
+  db.transaction(() => {
+    db.prepare('DELETE FROM request_stops WHERE request_id = ? AND merged_from_request_id = ?').run(aId, bId);
+    renumberStops(db, aId);
+    db.prepare('UPDATE requests SET merged_into = NULL, pickup_eta_at = NULL WHERE id = ?').run(bId);
+    db.prepare("UPDATE request_merges SET status = 'rejected', decision_reason = ?, decided_at = datetime('now') WHERE request_b_id = ? AND status = 'approved'")
+      .run('Попутную заявку отменили', bId);
+    logEvent(db, { requestId: aId, type: 'merged_request_cancelled', actorUserId, payload: { cancelledRequestId: bId } });
+  })();
+  await recomputeRequestEstimate(aId, { actorUserId }).catch(() => null);
+  const aRow = getRow(db, aId);
+  if (aRow) {
+    emitToDispatcher('request:updated', serializeForDispatcher(aRow, staleThreshold()));
+    emitToEmployee(aRow.employee_id, 'request:status', serializeForEmployee(aRow));
+    if (aRow.driver_id) emitToDriver(aRow.driver_id, 'request:updated', serializeForDriver(aRow));
+  }
+  return aId;
+}
+
 // Заявка A завершена — попутные B завершаются вместе с ней (одна поездка
 // обслужила обе, время не делим). Вызывать ВНУТРИ транзакции /status.
 function cascadeCompleteMergedB(db, aId, actorUserId) {
-  const bs = db.prepare("SELECT id FROM requests WHERE merged_into = ? AND status != 'completed'").all(aId).map((r) => r.id);
+  const bs = db
+    .prepare("SELECT id FROM requests WHERE merged_into = ? AND status IN ('assigned', 'in_progress')")
+    .all(aId)
+    .map((r) => r.id);
   for (const bId of bs) {
     db.prepare("UPDATE requests SET status = 'completed' WHERE id = ?").run(bId);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'completed', ?)`)
@@ -151,8 +291,17 @@ function emitDissolvedB(db, restoredIds) {
 }
 
 module.exports = {
-  applyMerge,
+  TIME_MISMATCH_TEXT,
+  MERGE_LEAD_MINUTES,
+  isCarrier,
+  isInPool,
+  mergeError,
+  mergeCandidates,
+  previewMerge,
+  mergeRequests,
+  driverMerge,
   dissolveMergesForA,
+  detachCancelledB,
   cascadeCompleteMergedB,
   emitDissolvedB,
   renumberStops,

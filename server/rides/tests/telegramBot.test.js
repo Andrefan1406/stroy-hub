@@ -162,6 +162,24 @@ test('отказ с причиной: заявка в пуле, причина �
   assert.ok(sentTo(n, 102).some((c) => c.params.text.includes(`Заявка №${id}`)), 'заявка снова ушла водителям');
 });
 
+test('«Подвезти попутно» в боте: кнопка только у водителя с подходящей поездкой, объединение сразу', async () => {
+  // У водителя 1 заказ 08.05 12:00 (60 мин) -> попутную можно с 11:30 до 13:00.
+  const n = calls.length;
+  const id = newPoolRequest('2030-05-08T12:20');
+  await settle();
+  const keyboardOf = (chatId) => sentTo(n, chatId)[0].params.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+  assert.ok(keyboardOf(101).includes(`mrg:${id}`), 'водителю 1 — кнопка «Подвезти попутно»');
+  assert.ok(!keyboardOf(102).includes(`mrg:${id}`), 'водителю 2 подходящей поездки нет');
+
+  const m = calls.length;
+  await press(101, `mrg:${id}`);
+  const carrier = db.prepare("SELECT id FROM requests WHERE driver_id = ? AND requested_at = '2030-05-08T12:00'").get(d1).id;
+  assert.equal(row(id).merged_into, carrier);
+  assert.match(answers(m)[0].params.text, /добавлена попутно/);
+  const edits = callsSince(m).filter((c) => c.method === 'editMessageText');
+  assert.ok(edits.some((e) => e.params.chat_id === 102 && /добавлена попутно к поездке/.test(e.params.text)), 'у других карточка исправлена');
+});
+
 test('непривязанный чат ничего не может', async () => {
   const id = newPoolRequest('2030-05-12T09:00');
   await settle();

@@ -64,6 +64,26 @@ function findDriverConflict(db, driverId, candidate, now = Date.now()) {
   return null;
 }
 
+// Совместная поездка: попутную заявку B можно добавить к поездке A, только
+// если подача B не раньше чем за MERGE_LEAD_MINUTES до подачи A и не позже
+// окончания A (для начатой поездки — прогноза окончания, но не раньше
+// «сейчас»). Это не правило занятости: объединение — отдельное действие,
+// обычное назначение двух поездок на одно время по-прежнему запрещено.
+const MERGE_LEAD_MINUTES = Number(process.env.RIDE_MERGE_LEAD_MINUTES || 15);
+
+// [от, до] в мс для подачи попутной заявки или null (время A не распознано).
+function mergeWindow(carrier, now = Date.now()) {
+  const interval = requestInterval(carrier, now);
+  if (!interval) return null;
+  return [requestedAtMs(carrier.requested_at) - MERGE_LEAD_MINUTES * MINUTE, interval[1]];
+}
+
+function fitsMergeWindow(carrier, candidate, now = Date.now()) {
+  const window = mergeWindow(carrier, now);
+  const pickup = requestedAtMs(candidate.requested_at);
+  return !!window && !Number.isNaN(pickup) && pickup >= window[0] && pickup <= window[1];
+}
+
 // На заказе прямо сейчас: поездка начата, либо назначенная подача уже
 // наступила (с учётом запаса на дорогу).
 function isBusyNow(db, driverId, now = Date.now()) {
@@ -114,7 +134,10 @@ function startDriverStatusJob(getDb) {
 module.exports = {
   DEFAULT_TRIP_MINUTES,
   DRIVER_BUFFER_MINUTES,
+  MERGE_LEAD_MINUTES,
   requestInterval,
+  mergeWindow,
+  fitsMergeWindow,
   intervalsOverlap,
   findDriverConflict,
   isBusyNow,

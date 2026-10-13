@@ -34,6 +34,8 @@ const EVENT_TYPES = {
   merge_approved: 'Объединение заявок подтверждено',
   merge_rejected: 'Объединение заявок отклонено',
   merge_dissolved: 'Объединение заявок расформировано',
+  requests_merged: 'Заявки объединены в одну поездку',
+  merged_request_cancelled: 'Попутную заявку отменили — её точки убраны из маршрута',
 };
 
 function eventTypeLabel(type) {

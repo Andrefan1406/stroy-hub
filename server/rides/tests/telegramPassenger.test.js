@@ -28,6 +28,7 @@ const apps = { newRequest: 'https://app.test/tg?go=new', myRequests: 'https://ap
 const sender = createSender(api, getDb, { minGapMs: 0 });
 const notifier = createNotifier({ getDb, sender, apps });
 requestEvents.on('event', notifier.handleRequestEvent);
+require('../socket').ridesBus.on('message', notifier.handle); // события водителям (пул, «маршрут изменён»)
 const bot = createBot({ getDb, sender, apps });
 
 // Дождаться, пока отложенные события журнала разошлись и очередь пуста.
@@ -232,4 +233,29 @@ test('событие из откатившейся транзакции не р�
   })());
   await settle();
   assert.equal(sentTo(n, PASSENGER).length, 0);
+});
+
+test('объединение диспетчером: уведомления водителю, пассажиру поездки и попутному пассажиру', async () => {
+  const { mergeRequests } = require('../mergeApply');
+  const DRIVER = 401;
+  const COMPANION = 501;
+  const companionId = db.prepare("INSERT INTO users (email, name, phone, role) VALUES ('b@test', 'Попутчик', '+7705', 'employee')").run().lastInsertRowid;
+  await message(DRIVER, `/start ${store.createLinkToken(db, driverUserId).token}`);
+  await message(COMPANION, `/start ${store.createLinkToken(db, companionId).token}`);
+
+  const A = insertRequest(db, { employeeId, requestedAt: '2030-06-12T10:00', status: 'assigned', driverId, durationMin: 60 });
+  const B = insertRequest(db, { employeeId: companionId, requestedAt: '2030-06-12T10:10' });
+  const n = calls.length;
+  const out = await mergeRequests({ bId: B, aId: A, actorUserId: dispatcherId, initiator: 'dispatcher' });
+  assert.ok(!out.error, out.error);
+  await settle();
+
+  assert.match(sentTo(n, PASSENGER)[0].text, new RegExp(`К вашей поездке №${A} добавлен попутный пассажир`));
+  assert.doesNotMatch(sentTo(n, PASSENGER)[0].text, /\+7705/, 'телефон попутчика пассажиру поездки не показываем');
+  assert.match(sentTo(n, COMPANION)[0].text, /Вас подвезут попутно/);
+  const toDriver = sentTo(n, DRIVER);
+  assert.equal(toDriver.length, 1, 'одно сообщение водителю, без лишнего «маршрут изменён»');
+  assert.match(toDriver[0].text, /Диспетчер добавил попутного пассажира/);
+  assert.match(toDriver[0].text, /\+7705/, 'водителю — телефон попутчика');
+  assert.equal(sentTo(n, DISPATCHER).length, 0, 'диспетчеру о своём действии не пишем');
 });

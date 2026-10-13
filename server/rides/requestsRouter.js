@@ -9,7 +9,7 @@ const { requireRideRole } = require('./auth');
 const { emitToDrivers, emitToDispatcher, emitToEmployee, emitToDriver } = require('./socket');
 const { recomputeRequestEstimate } = require('./routeEstimate');
 const { logEvent } = require('./events');
-const { dissolveMergesForA, emitDissolvedB } = require('./mergeApply');
+const { dissolveMergesForA, emitDissolvedB, detachCancelledB } = require('./mergeApply');
 const {
   FULL_SELECT, validate, staleThreshold, hydrateRows, getRow,
   serializeForDriver, serializeForEmployee, serializeForDispatcher, z,
@@ -152,12 +152,11 @@ router.get('/mine', requireRideRole('employee', 'dispatcher'), (req, res) => {
 });
 
 // Водитель: пул свободных заявок, самые ранние сверху. Снятые с машины и
-// ждущие решения заказчика (on_hold), а также заблокированные на время
-// переговоров об объединении (merge_lock) в пул не отдаём.
+// ждущие решения заказчика (on_hold) в пул не отдаём.
 router.get('/pool', requireRideRole('driver'), (req, res) => {
   const db = getWriteDb();
   const rows = db
-    .prepare(`${FULL_SELECT} WHERE r.status = 'pending_assignment' AND r.on_hold = 0 AND r.merge_lock = 0 ORDER BY r.created_at ASC`)
+    .prepare(`${FULL_SELECT} WHERE r.status = 'pending_assignment' AND r.on_hold = 0 ORDER BY r.created_at ASC`)
     .all();
   res.json({ requests: hydrateRows(db, rows).map(serializeForDriver) });
 });
@@ -357,6 +356,9 @@ router.post('/:id/pull', requireRideRole('dispatcher'), validate(pullSchema), as
     if (!row || !['assigned', 'in_progress'].includes(row.status) || !row.driver_id) {
       return { error: 'С этой заявки нечего снимать — на ней нет машины в работе' };
     }
+    if (row.merged_into) {
+      return { error: `Заявку везут попутно в поездке #${row.merged_into} — машину снимают с основной поездки` };
+    }
     const freedDriverId = row.driver_id;
 
     let target = null;
@@ -532,7 +534,7 @@ router.post('/:id/unassign', requireRideRole('dispatcher'), validate(unassignSch
 });
 
 // Диспетчер: отмена заявки — только пока поездка не началась.
-router.post('/:id/cancel', requireRideRole('dispatcher'), validate(cancelSchema), (req, res) => {
+router.post('/:id/cancel', requireRideRole('dispatcher'), validate(cancelSchema), async (req, res) => {
   const db = getWriteDb();
   const requestId = Number(req.params.id);
 
@@ -553,6 +555,8 @@ router.post('/:id/cancel', requireRideRole('dispatcher'), validate(cancelSchema)
 
   const restoredB = dissolveMergesForA(db, requestId, 'Заявку отменил диспетчер', req.rideUser.id);
   if (restoredB.length) emitDissolvedB(db, restoredB);
+  // Заявку везли попутно — убрать её точки из маршрута основной поездки.
+  await detachCancelledB(db, requestId, req.rideUser.id);
 
   emitToDrivers('request:removed', { id: requestId });
   emitToDispatcher('request:updated', serializeForDispatcher(result, staleThreshold()));
@@ -563,8 +567,8 @@ router.post('/:id/cancel', requireRideRole('dispatcher'), validate(cancelSchema)
 
 // Сотрудник (или диспетчер — для своей же заявки) отменяет СВОЮ заявку —
 // правила в employeeActions.js (тот же код у Telegram-бота).
-router.post('/:id/cancel-mine', requireRideRole('employee', 'dispatcher'), validate(employeeCancelSchema), (req, res) => {
-  const out = cancelOwnRequest({ userId: req.rideUser.id, requestId: Number(req.params.id), reason: req.body.reason });
+router.post('/:id/cancel-mine', requireRideRole('employee', 'dispatcher'), validate(employeeCancelSchema), async (req, res) => {
+  const out = await cancelOwnRequest({ userId: req.rideUser.id, requestId: Number(req.params.id), reason: req.body.reason });
   if (out.error) return res.status(out.status).json({ error: out.error });
   res.json({ request: serializeForEmployee(out.request) });
 });

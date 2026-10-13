@@ -32,7 +32,20 @@ function setupRidesTestApp({ realSocket = false } = {}) {
     emitToDriver: (id, event, payload) => emitted.push({ to: `driver:${id}`, event, payload }),
     ridesBus: { on() {}, emit() {} },
   });
-  stubModule('routeEstimate.js', { recomputeRequestEstimate: async () => null });
+  // Без сети: геокодер ничего не находит, точки встают в конец маршрута,
+  // «маршрут» — 10 мин на каждый отрезок (для прогноза объединения).
+  stubModule('routeEstimate.js', {
+    recomputeRequestEstimate: async () => null,
+    geocodeAddress: async () => null,
+    chooseInsertIndex: (chain) => chain.length - 1,
+    estimateFromPoints: async (coords) => ({
+      durationMin: (coords.length - 1) * 10,
+      distanceKm: coords.length - 1,
+      perPoint: coords.map((_, i) => ({ index: i, etaMinutes: i * 10 })),
+    }),
+    estimateRoute: async () => null,
+    estimateProposalImpact: async () => null,
+  });
 
   const { initSchema, getWriteDb } = require(path.join(RIDES_DIR, 'db.js'));
   initSchema();
@@ -64,6 +77,7 @@ function setupRidesTestApp({ realSocket = false } = {}) {
   app.use(express.json());
   app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'requestsRouter.js')));
   app.use('/api/v1/drivers', require(path.join(RIDES_DIR, 'driversRouter.js')));
+  app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'mergeRouter.js')));
 
   return { app, db, emitted };
 }

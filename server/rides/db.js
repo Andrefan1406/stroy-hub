@@ -333,6 +333,24 @@ function migrateSchema(db) {
     db.exec('ALTER TABLE drivers ADD COLUMN active INTEGER NOT NULL DEFAULT 1');
   }
 
+  // Совместные поездки теперь объединяются сразу, без согласования:
+  // request_merges — только журнал состоявшихся объединений (кто сделал —
+  // водитель или диспетчер). Висевшие на согласовании закрываем, блокировку
+  // заявок в пуле снимаем (merge_lock больше не ставится).
+  const mergeColumns = db.prepare("PRAGMA table_info(request_merges)").all().map((c) => c.name);
+  if (!mergeColumns.includes('initiated_by')) {
+    db.exec('ALTER TABLE request_merges ADD COLUMN initiated_by INTEGER REFERENCES users(id)');
+  }
+  if (!mergeColumns.includes('initiator_role')) {
+    db.exec('ALTER TABLE request_merges ADD COLUMN initiator_role TEXT');
+  }
+  db.exec(`
+    UPDATE request_merges SET status = 'rejected', decided_at = datetime('now'),
+      decision_reason = 'Согласование объединений отменено — объединение теперь сразу'
+     WHERE status = 'pending';
+    UPDATE requests SET merge_lock = 0 WHERE merge_lock = 1;
+  `);
+
   // Бот был только для водителей: привязка хранилась по drivers.id
   // (telegram_links). Теперь — по пользователю; старые привязки
   // переносятся, чтобы водителям не подключаться заново. Неиспользованные

@@ -12,8 +12,9 @@ const fmt = require('./format');
 const { getRow } = require('../requestView');
 const actions = require('../driverActions');
 const { cancelOwnRequest } = require('../employeeActions');
+const { mergeCandidates, driverMerge, TIME_MISMATCH_TEXT } = require('../mergeApply');
 
-const DRIVER_ACTIONS = new Set(['claim', 'go', 'done', 'doneY', 'decl', 'rsn', 'card']);
+const DRIVER_ACTIONS = new Set(['claim', 'go', 'done', 'doneY', 'decl', 'rsn', 'card', 'mrg', 'mrgA', 'pcard']);
 
 // Команды в меню «/» — свои у каждой роли (ставятся чату при привязке).
 const COMMANDS = {
@@ -72,7 +73,8 @@ function createBot({ getDb, sender, apps = null, emitLinked = () => {} }) {
     const { requests, total } = store.poolRequests(db);
     if (!requests.length) return sender.send(ctx.chat_id, 'Сейчас в пуле нет свободных заявок.');
     for (const row of requests) {
-      const msg = await sender.send(ctx.chat_id, fmt.poolCardText(row), fmt.poolKeyboard(row));
+      const canMerge = mergeCandidates(db, row, { driverId: ctx.driver_id }).length > 0;
+      const msg = await sender.send(ctx.chat_id, fmt.poolCardText(row), fmt.poolKeyboard(row, { canMerge }));
       if (msg) store.savePoolMessage(db, { requestId: row.id, chatId: ctx.chat_id, messageId: msg.message_id, driverId: ctx.driver_id });
     }
     if (total > requests.length) {
@@ -244,6 +246,41 @@ function createBot({ getDb, sender, apps = null, emitLinked = () => {} }) {
         await sender.edit(chatId, messageId, `Вы отказались от заказа №${requestId}. Причина: ${fmt.esc(reason)}. Заявка вернулась в пул.`);
         return sender.answer(cb.id, 'Отказ принят');
       }
+      // «Подвезти попутно» на карточке пула: одна подходящая поездка —
+      // объединяем сразу, несколько — водитель выбирает (mrgA).
+      case 'mrg':
+      case 'mrgA': {
+        const B = getRow(db, requestId);
+        if (!store.isInPool(B)) {
+          await sender.edit(chatId, messageId, fmt.unavailableText(requestId, B));
+          return sender.answer(cb.id, 'Заявка уже не в пуле', true);
+        }
+        let intoId = Number(extra);
+        if (action === 'mrg') {
+          const trips = mergeCandidates(db, B, { driverId: ctx.driver_id });
+          if (!trips.length) return sender.answer(cb.id, TIME_MISMATCH_TEXT, true);
+          if (trips.length > 1) {
+            await sender.edit(chatId, messageId, `К какой поездке добавить заявку №${requestId}?`, fmt.mergeChoiceKeyboard(requestId, trips));
+            return sender.answer(cb.id);
+          }
+          intoId = trips[0].id;
+        }
+        const out = await driverMerge({ userId: ctx.user_id, bId: requestId, aId: intoId });
+        if (out.error) return sender.answer(cb.id, out.error, true);
+        // Карточку пула правит рассылка (request:removed), обновлённая
+        // карточка заказа с попутчиком приходит по журналу (requests_merged).
+        return sender.answer(cb.id, `Заявка №${requestId} добавлена попутно к заказу №${intoId}`);
+      }
+      case 'pcard': {
+        const B = getRow(db, requestId);
+        if (!store.isInPool(B)) {
+          await sender.edit(chatId, messageId, fmt.unavailableText(requestId, B));
+          return sender.answer(cb.id);
+        }
+        const canMerge = mergeCandidates(db, B, { driverId: ctx.driver_id }).length > 0;
+        await sender.edit(chatId, messageId, fmt.poolCardText(B), fmt.poolKeyboard(B, { canMerge }));
+        return sender.answer(cb.id);
+      }
       case 'card': {
         const row = getRow(db, requestId);
         if (!row || row.driver_id !== ctx.driver_id || !['assigned', 'in_progress'].includes(row.status)) {
@@ -278,7 +315,7 @@ function createBot({ getDb, sender, apps = null, emitLinked = () => {} }) {
       case 'ecr': {
         const reason = fmt.EMPLOYEE_CANCEL_REASONS[extra];
         if (!reason) return sender.answer(cb.id);
-        const out = cancelOwnRequest({ userId: ctx.user_id, requestId, reason });
+        const out = await cancelOwnRequest({ userId: ctx.user_id, requestId, reason });
         if (out.error) return sender.answer(cb.id, out.error, true);
         await sender.edit(chatId, messageId, `❌ Заявка №${requestId} отменена. Причина: ${fmt.esc(reason)}.`);
         return sender.answer(cb.id, 'Заявка отменена');

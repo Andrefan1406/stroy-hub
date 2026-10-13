@@ -4,7 +4,8 @@
 // водителя вручную или отменить заявку. Плюс (доработка П.1/П.5) —
 // модерация предложений по маршруту: водитель/заказчик предлагают точку,
 // диспетчер одобряет или отклоняет; сам диспетчер добавляет/убирает точки
-// без согласования. Две вкладки: «Текущие» — только активные заявки,
+// без согласования. Совместные поездки: «Добавить попутно» сразу
+// объединяет заявку без водителя с поездкой водителя (MergeIntoModal). Две вкладки: «Текущие» — только активные заявки,
 // ближайшие по времени подачи сверху; «Журнал» — завершённые/отменённые
 // за период (грузится с сервера по запросу, см. HistoryJournal).
 import React, { useCallback, useEffect, useState } from "react";
@@ -16,7 +17,8 @@ import AdminPanelLinks, { isSiteAdmin } from "../../rides/AdminPanelLinks";
 import TelegramConnect from "../../rides/TelegramConnect";
 import { isTelegramMiniApp, ridesPath } from "../../rides/telegramSession";
 import MapPicker from "../../rides/MapPicker";
-import { formatRoute, formatEstimate, formatDelta, formatClock, minutesSince } from "../../rides/format";
+import MergeIntoModal from "../../rides/MergeIntoModal";
+import { formatRoute, formatEstimate, formatDelta, formatClock, minutesSince, fitsMergeWindow } from "../../rides/format";
 
 function formatDateTime(value) {
   if (!value) return "—";
@@ -61,7 +63,6 @@ export default function DispatcherRidesPage() {
   const [requests, setRequests] = useState([]);
   const [summary, setSummary] = useState(null);
   const [proposals, setProposals] = useState([]);
-  const [merges, setMerges] = useState([]);
   const [fleet, setFleet] = useState(null);
   const [availableDrivers, setAvailableDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -71,6 +72,7 @@ export default function DispatcherRidesPage() {
   const [stopsPanelFor, setStopsPanelFor] = useState(null); // requestId с раскрытым управлением точками
   const [mapForRequest, setMapForRequest] = useState(null); // requestId, для которого открыт выбор точки на карте
   const [pullTarget, setPullTarget] = useState(null); // requestId, с которого снимаем машину
+  const [mergeTarget, setMergeTarget] = useState(null); // requestId, которую добавляем попутно
   const [pullForm, setPullForm] = useState({ reason: "", targetRequestId: "" });
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState("current"); // "current" | "journal"
@@ -85,16 +87,14 @@ export default function DispatcherRidesPage() {
     setLoading(true);
     setError("");
     try {
-      const [{ requests: rows, summary: sum }, { proposals: props }, { merges: mrg }, fleetRes] = await Promise.all([
+      const [{ requests: rows, summary: sum }, { proposals: props }, fleetRes] = await Promise.all([
         ridesApiFetch("/api/v1/requests"),
         ridesApiFetch("/api/v1/requests/stop-changes/pending"),
-        ridesApiFetch("/api/v1/requests/merges/pending"),
         ridesApiFetch("/api/v1/fleet-status"),
       ]);
       setRequests(rows);
       setSummary(sum);
       setProposals(props);
-      setMerges(mrg);
       setFleet(fleetRes);
     } catch (err) {
       setError(err.message || "Не удалось загрузить заявки");
@@ -124,10 +124,6 @@ export default function DispatcherRidesPage() {
     socket.on("request:updated", upsert);
     socket.on("proposal:new", (p) => setProposals((prev) => (prev.some((x) => x.id === p.id) ? prev : [...prev, p])));
     socket.on("proposal:updated", (p) => setProposals((prev) => prev.filter((x) => x.id !== p.id)));
-    socket.on("merge:new", (m) => setMerges((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m])));
-    socket.on("merge:updated", (m) => setMerges((prev) => (
-      m.status === "pending" ? prev.map((x) => (x.id === m.id ? m : x)) : prev.filter((x) => x.id !== m.id)
-    )));
     socket.on("connect_error", () => {});
     return () => socket.disconnect();
   }, []);
@@ -226,24 +222,11 @@ export default function DispatcherRidesPage() {
     }
   };
 
-  const decideMerge = async (id, decision) => {
-    setBusy(true);
-    setError("");
-    try {
-      if (decision === "approve") {
-        await ridesApiPost(`/api/v1/requests/merges/${id}/approve`);
-      } else {
-        const reason = window.prompt("Причина отказа в объединении:");
-        if (reason === null) { setBusy(false); return; }
-        if (!reason.trim()) { setError("Укажите причину"); setBusy(false); return; }
-        await ridesApiPost(`/api/v1/requests/merges/${id}/reject`, { reason });
-      }
-      setMerges((prev) => prev.filter((m) => m.id !== id));
-    } catch (err) {
-      setError(err.message || "Не удалось обработать объединение");
-    } finally {
-      setBusy(false);
-    }
+  // Объединение состоялось: обе заявки обновляются (сокет тоже пришлёт их,
+  // но окно закрываем сразу).
+  const onMerged = ({ request, merged }) => {
+    setRequests((prev) => prev.map((r) => (r.id === request.id ? request : r.id === merged.id ? merged : r)));
+    setMergeTarget(null);
   };
 
   const openPull = (requestId) => {
@@ -334,11 +317,6 @@ export default function DispatcherRidesPage() {
             <div style={s.cardLabel}>Сняты с машины</div><div style={s.cardValue}>{summary.onHold}</div>
           </div>
         )}
-        {merges.length > 0 && (
-          <div style={{ ...s.card, ...s.cardAlert }}>
-            <div style={s.cardLabel}>Объединения заявок</div><div style={s.cardValue}>{merges.length}</div>
-          </div>
-        )}
         <div style={s.card}>
           <div style={s.cardLabel}>Свободные машины</div>
           <div style={s.cardValue}>{fleet ? fleet.freeCount : "—"}</div>
@@ -387,36 +365,6 @@ export default function DispatcherRidesPage() {
         </section>
       )}
 
-      {merges.length > 0 && (
-        <section style={s.proposalsBox}>
-          <h2 style={s.sectionTitle}>Объединение заявок — нужно решение</h2>
-          {merges.map((m) => {
-            const age = minutesSince(m.createdAt);
-            return (
-              <div key={m.id} style={s.proposalRow}>
-                <div style={s.proposalMain}>
-                  <div style={s.proposalTitle}>
-                    Заявка #{m.requestAId} + заявка #{m.requestBId} · водитель {m.driverName}
-                  </div>
-                  <div style={s.proposalMeta}>Основной маршрут: {m.aRoute}</div>
-                  <div style={s.proposalMeta}>Попутная заявка: {m.bRoute}</div>
-                  <div style={s.proposalMeta}>
-                    Согласие: заказчик {m.approvedByA ? "✓" : "ждём"} · диспетчер {m.approvedByDispatcher ? "✓" : "ждём"}
-                    {age != null && <> · {age === 0 ? "только что" : `${age} мин назад`}</>}
-                  </div>
-                </div>
-                <div style={s.proposalActions}>
-                  <button style={s.primaryButton} disabled={busy || m.approvedByDispatcher} onClick={() => decideMerge(m.id, "approve")}>
-                    {m.approvedByDispatcher ? "Вы согласовали" : "Одобрить"}
-                  </button>
-                  <button style={s.dangerButton} disabled={busy} onClick={() => decideMerge(m.id, "reject")}>Отклонить</button>
-                </div>
-              </div>
-            );
-          })}
-        </section>
-      )}
-
       <div style={s.tableWrap}>
         <table style={s.table}>
           <thead>
@@ -446,7 +394,7 @@ export default function DispatcherRidesPage() {
                     {r.stopProposals?.length > 0 && <span style={s.pendingBadge}>+{r.stopProposals.length} на модерации</span>}
                     {r.mergedRequests?.length > 0 && <span style={s.mergeBadge}>🔗 попутно #{r.mergedRequests.map((m) => m.id).join(", #")}</span>}
                     {r.mergedInto && <span style={s.mergeBadge}>🔗 в составе поездки #{r.mergedInto}</span>}
-                    {r.pendingMerges?.length > 0 && <span style={s.pendingBadge}>объединение на согласовании</span>}
+                    {r.comment && <div style={s.commentLine}>💬 {r.comment}</div>}
                   </td>
                   <td style={s.td}>{formatEstimate(r) || "—"}</td>
                   <td style={s.td}>
@@ -467,6 +415,10 @@ export default function DispatcherRidesPage() {
                       <button style={s.secondaryButton} onClick={() => openAssign(r.id)}>
                         {r.onHold ? "Дать другую машину" : "Назначить"}
                       </button>
+                    )}
+                    {!r.mergedInto && !r.onHold && r.status === "pending_assignment"
+                      && requests.some((t) => t.id !== r.id && fitsMergeWindow(r, t)) && (
+                      <button style={s.mergeButton} onClick={() => { setError(""); setMergeTarget(r.id); }}>Добавить попутно</button>
                     )}
                     {!r.mergedInto && r.status === "assigned" && (
                       <button style={s.secondaryButton} onClick={() => unassignDriver(r)}>Снять водителя</button>
@@ -537,6 +489,10 @@ export default function DispatcherRidesPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {mergeTarget && (
+        <MergeIntoModal requestId={mergeTarget} onClose={() => setMergeTarget(null)} onMerged={onMerged} />
       )}
 
       {mapForRequest && (
@@ -729,6 +685,8 @@ const s = {
   staleRow: { background: "#fff8e1" },
   staleBadge: { marginLeft: "8px", fontSize: "11px", color: "#b8860b", fontWeight: 700 },
   pendingBadge: { marginLeft: "8px", fontSize: "11px", color: "#e67e22", fontWeight: 700, whiteSpace: "nowrap" },
+  commentLine: { marginTop: "4px", fontSize: "12px", color: "#7a4b00", background: "#fff6e0", borderRadius: "4px", padding: "2px 6px", display: "inline-block" },
+  mergeButton: { background: "#eef6ff", color: "#0b5cad", border: "1px solid #b8d9f7", borderRadius: "6px", padding: "6px 12px", cursor: "pointer", fontSize: "13px", marginRight: "6px" },
   mergeBadge: { marginLeft: "8px", fontSize: "11px", color: "#0b5cad", fontWeight: 700, whiteSpace: "nowrap" },
   returnBadge: { fontSize: "12px", color: "#888" },
 

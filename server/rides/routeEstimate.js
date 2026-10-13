@@ -321,6 +321,7 @@ async function estimateProposalImpact(requestId, { action, targetStopId, address
 
 module.exports = {
   estimateRoute,
+  estimateFromPoints,
   recomputeRequestEstimate,
   geocodeAddress,
   chooseInsertIndex,

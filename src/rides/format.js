@@ -1,3 +1,17 @@
+// Время подачи заявки ("YYYY-MM-DDTHH:MM", время Казахстана) -> мс.
+export function pickupMs(requestedAt) {
+  return Date.parse(`${(requestedAt || "").replace(" ", "T").slice(0, 16)}:00+05:00`);
+}
+
+// Можно ли добавить заявку попутно к поездке: подача заявки попадает в окно
+// поездки (mergeWindow считает сервер — не раньше чем за 15 мин до её подачи
+// и до её окончания). Окончательно проверяет сервер при объединении.
+export function fitsMergeWindow(request, trip) {
+  if (!trip.mergeWindow) return false;
+  const t = pickupMs(request.requestedAt);
+  return t >= Date.parse(trip.mergeWindow.from) && t <= Date.parse(trip.mergeWindow.to);
+}
+
 // Маршрут заявки — from, to и произвольное число доп. пунктов (r.stops) —
 // собирается в одну строку одинаково на всех трёх страницах (сотрудник/
 // водитель/диспетчер), поэтому вынесен сюда, а не продублирован трижды.

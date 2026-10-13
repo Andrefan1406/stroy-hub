@@ -5,6 +5,7 @@
 // доп. пункты и открытые предложения по маршруту.
 const { z } = require('zod');
 const { requestedAtMs } = require('./slots');
+const { mergeWindow } = require('./driverAvailability');
 
 const FULL_SELECT = `
   SELECT
@@ -72,7 +73,8 @@ function getMergedRequests(db, requestId) {
   return db
     .prepare(
       `SELECT b.id, b.from_address AS fromAddress, b.to_address AS toAddress,
-              b.pickup_eta_at AS pickupEtaAt, b.status,
+              b.pickup_eta_at AS pickupEtaAt, b.status, b.comment,
+              b.passengers_count AS passengersCount,
               emp.name AS employeeName, emp.phone AS employeePhone
        FROM requests b
        JOIN users emp ON emp.id = b.employee_id
@@ -82,34 +84,11 @@ function getMergedRequests(db, requestId) {
     .all(requestId);
 }
 
-// Незакрытые предложения объединения, где участвует эта заявка (как A или
-// как B) — чтобы карточка водителя/заказчика показала «идёт согласование».
-function getPendingMerges(db, requestId) {
-  return db
-    .prepare(
-      `SELECT m.id, m.request_a_id AS requestAId, m.request_b_id AS requestBId,
-              m.approved_by_a AS approvedByA, m.approved_by_dispatcher AS approvedByDispatcher,
-              m.created_at AS createdAt,
-              a.from_address AS aFrom, a.to_address AS aTo,
-              b.from_address AS bFrom, b.to_address AS bTo,
-              du.name AS driverName
-       FROM request_merges m
-       JOIN requests a ON a.id = m.request_a_id
-       JOIN requests b ON b.id = m.request_b_id
-       JOIN drivers d ON d.id = m.driver_id
-       JOIN users du ON du.id = d.user_id
-       WHERE m.status = 'pending' AND (m.request_a_id = ? OR m.request_b_id = ?)`
-    )
-    .all(requestId, requestId)
-    .map((r) => ({ ...r, approvedByA: !!r.approvedByA, approvedByDispatcher: !!r.approvedByDispatcher }));
-}
-
 function hydrate(db, row) {
   if (!row) return row;
   row.stopsFull = getStops(db, row.id); // [{ id, address }] по порядку
   row.stopProposals = getOpenProposals(db, row.id);
   row.mergedRequests = getMergedRequests(db, row.id);
-  row.pendingMerges = getPendingMerges(db, row.id);
   return row;
 }
 
@@ -147,23 +126,30 @@ function baseFields(row) {
     expectedCompletionAt: row.expected_completion_at ?? null,
     onHold: !!row.on_hold,
     pullReason: row.pull_reason || null,
-    mergeLock: !!row.merge_lock,
     mergedInto: row.merged_into ?? null,
     pickupEtaAt: row.pickup_eta_at ?? null,
     // телефон пассажира B из mergedRequests — только водителю (см. serializeForDriver)
     mergedRequests: (row.mergedRequests || []).map(({ employeePhone, ...m }) => m),
-    pendingMerges: row.pendingMerges || [],
   };
 }
 
 // Пул и «мои текущие» у водителя — тут телефон заказчика можно отдавать
 // (требование: только водителю, у которого заказ в пуле либо уже назначен).
+function carrierWindow(row) {
+  if (!['assigned', 'in_progress'].includes(row.status) || row.merged_into) return null;
+  const window = mergeWindow(row);
+  return window ? { from: new Date(window[0]).toISOString(), to: new Date(window[1]).toISOString() } : null;
+}
+
 function serializeForDriver(row) {
   return {
     ...baseFields(row),
     employeeName: row.employee_name,
     employeePhone: row.employee_phone,
     mergedRequests: row.mergedRequests || [], // с телефонами пассажиров B — водителю можно
+    // Для своей поездки в работе: когда должна быть подача заявки из пула,
+    // чтобы её можно было взять попутно (кнопка «Подвезти попутно»).
+    mergeWindow: carrierWindow(row),
   };
 }
 
@@ -181,6 +167,9 @@ function serializeForDispatcher(row, staleThresholdMinutes = staleThreshold()) {
     // Подсветка — по близости ко времени подачи, а не по возрасту заявки:
     // заказ на завтра, поданный сегодня, ждать водителя может спокойно.
     isStale: row.status === 'pending_assignment' && !row.on_hold && !row.merged_into && minutesToPickup <= staleThresholdMinutes,
+    // Для поездки в работе — когда может быть подача попутной заявки
+    // (кнопка «Добавить попутно» только у заявок, которые куда-то подходят).
+    mergeWindow: carrierWindow(row),
   };
 }
 

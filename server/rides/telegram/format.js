@@ -75,6 +75,24 @@ function tripLines(row) {
   return lines;
 }
 
+// "2026-10-13T04:35:00.000Z" -> "09:35" по времени Казахстана.
+function formatClock(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString('ru-RU', { timeZone: 'Asia/Almaty', hour: '2-digit', minute: '2-digit' });
+}
+
+// Попутные пассажиры в поездке водителя — с телефоном (водителю можно).
+function companionLines(row) {
+  return (row.mergedRequests || []).map((m) => {
+    const eta = formatClock(m.pickupEtaAt);
+    return [
+      `🔗 Попутно №${m.id}: ${esc(m.fromAddress)} → ${esc(m.toAddress)}${eta ? `, посадка ≈ ${eta}` : ''}`,
+      `   👤 ${esc(m.employeeName)}${m.employeePhone ? `, 📞 ${esc(m.employeePhone)}` : ''}${m.comment ? `\n   💬 ${esc(m.comment)}` : ''}`,
+    ].join('\n');
+  });
+}
+
 function poolCardText(row) {
   return [`<b>Заявка №${row.id}</b>`, ...tripLines(row)].join('\n');
 }
@@ -87,6 +105,7 @@ function orderCardText(row) {
     ...tripLines(row),
     `👤 Заказчик: ${esc(row.employee_name)}`,
     `📞 ${esc(row.employee_phone)}`,
+    ...companionLines(row),
   ].join('\n');
 }
 
@@ -102,8 +121,25 @@ function withMap(rows, row) {
   return url ? [...rows, [{ text: '🗺 Маршрут на карте', url }]] : rows;
 }
 
-function poolKeyboard(row) {
-  return { inline_keyboard: withMap([[{ text: '✅ Взять', callback_data: `claim:${row.id}` }]], row) };
+// canMerge — у водителя есть поездка, к которой эту заявку можно добавить
+// попутно по времени (mergeApply.mergeCandidates).
+function poolKeyboard(row, { canMerge = false } = {}) {
+  const buttons = [[{ text: '✅ Взять', callback_data: `claim:${row.id}` }]];
+  if (canMerge) buttons.push([{ text: '🔗 Подвезти попутно', callback_data: `mrg:${row.id}` }]);
+  return { inline_keyboard: withMap(buttons, row) };
+}
+
+// Подходящих поездок несколько — водитель выбирает, к какой добавить.
+function mergeChoiceKeyboard(bId, trips) {
+  return {
+    inline_keyboard: [
+      ...trips.map((a) => [{
+        text: `№${a.id} · ${formatPickup(a.requested_at)} · ${a.from_address} → ${a.to_address}`.slice(0, 60),
+        callback_data: `mrgA:${bId}:${a.id}`,
+      }]),
+      [{ text: '← Назад', callback_data: `pcard:${bId}` }],
+    ],
+  };
 }
 
 function orderKeyboard(row) {
@@ -154,10 +190,11 @@ const inline = (rows) => (rows.length ? { inline_keyboard: rows } : undefined);
 // Почему заявка больше недоступна — для правки разосланных карточек пула.
 function unavailableText(id, row) {
   let why = 'больше недоступна';
-  if (row?.status === 'assigned' || row?.status === 'in_progress') why = 'уже взята другим водителем';
+  if (row?.merged_into) why = `добавлена попутно к поездке №${row.merged_into}`;
+  else if (row?.status === 'assigned' || row?.status === 'in_progress') why = 'уже взята другим водителем';
   else if (row?.status === 'cancelled') why = 'отменена';
   else if (row?.status === 'completed') why = 'уже выполнена';
-  else if (row?.on_hold || row?.merge_lock || row?.merged_into) why = 'снята из пула';
+  else if (row?.on_hold) why = 'снята из пула';
   return `<s>Заявка №${id}</s> — ${why}.`;
 }
 
@@ -192,7 +229,7 @@ const canCancelOwn = (row) => ['pending_assignment', 'assigned'].includes(row.st
 function myRequestKeyboard(row, apps) {
   const rows = [];
   if (canCancelOwn(row)) rows.push([{ text: '✖ Отменить заявку', callback_data: `ecan:${row.id}` }]);
-  if (row.on_hold || row.pendingMerges?.length) rows.push(...appRow('Открыть заявку', apps?.myRequests));
+  if (row.on_hold) rows.push(...appRow('Открыть заявку', apps?.myRequests));
   return inline(rows);
 }
 
@@ -223,14 +260,34 @@ const passenger = {
   ].filter(Boolean).join('\n'),
   cancelled: (row, reason) => [`❌ Заявка №${row.id} отменена диспетчером.`, reason ? `Причина: ${esc(reason)}` : null]
     .filter(Boolean).join('\n'),
-  mergeProposed: (row) =>
-    `🔗 Водитель по заявке №${row.id} предлагает взять попутного пассажира. Нужно ваше согласие — откройте заявку.`,
-  merged: (row) => [`🔗 Ваша заявка №${row.id} объединена с поездкой №${row.merged_into} — поедете вместе.`, ...driverLines(row)].join('\n'),
+  // Пассажиру попутной заявки B: его подвезут в чужой поездке.
+  merged: (row) => {
+    const eta = formatClock(row.pickup_eta_at);
+    return [
+      `🔗 <b>Вас подвезут попутно</b> — заявка №${row.id} объединена с поездкой №${row.merged_into}.`,
+      eta ? `🕘 Посадка ≈ <b>${eta}</b>, ${esc(row.from_address)}` : `📍 Посадка: ${esc(row.from_address)}`,
+      ...driverLines(row),
+    ].join('\n');
+  },
+  // Пассажиру основной поездки A: к ней добавили попутчика (без его телефона).
+  companionAdded: (row, companion) => {
+    const eta = formatClock(companion?.pickup_eta_at);
+    return [
+      `🔗 К вашей поездке №${row.id} добавлен попутный пассажир (заявка №${companion?.id ?? '—'}).`,
+      companion ? `Водитель заберёт его по пути: ${esc(companion.from_address)}${eta ? ` ≈ ${eta}` : ''}.` : null,
+    ].filter(Boolean).join('\n');
+  },
   mergeDissolved: (row, reason) => [
     `🔄 Совместная поездка по заявке №${row.id} отменена${reason ? ` (${esc(reason)})` : ''}.`,
     'Ищем вам отдельного водителя.',
   ].join('\n'),
 };
+
+// Водителю: к его поездке добавили попутную заявку (сам или диспетчер).
+function driverMergedText(row, companion, initiator) {
+  const who = initiator === 'dispatcher' ? 'Диспетчер добавил' : 'Добавлен';
+  return [`🔗 <b>${who} попутного пассажира</b> — заявка №${companion?.id ?? '—'}`, '', orderCardText(row)].join('\n');
+}
 
 // --- диспетчер ---
 
@@ -325,6 +382,9 @@ module.exports = {
   poolCardText,
   orderCardText,
   poolKeyboard,
+  mergeChoiceKeyboard,
+  driverMergedText,
+  formatClock,
   orderKeyboard,
   confirmDoneKeyboard,
   declineReasonsKeyboard,

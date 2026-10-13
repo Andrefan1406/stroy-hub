@@ -28,12 +28,14 @@
 // | reassigned               | машину сняли, нужно решение      |                              |
 // | cancelled_by_dispatcher  | отменена + причина               |                              |
 // | cancelled_by_employee    |                                  | заказчик отменил + причина   |
-// | merge_proposed/approved/ | попутчик, совместная поездка     |                              |
-// | dissolved                |                                  |                              |
+// | requests_merged          | B: «вас подвезут попутно»;       | водителю — попутчик и        |
+// |                          | A: «к поездке добавлен попутчик» | обновлённая карточка заказа  |
+// | merge_dissolved          | совместная поездка отменена      |                              |
 //
 // Плюс раз в минуту (checkStale): заявку никто не взял, а до подачи меньше
 // порога подсветки на сайте — диспетчерам, один раз на заявку.
 const { getRow, staleThreshold } = require('../requestView');
+const { mergeCandidates } = require('../mergeApply');
 const { eventStillLogged } = require('../events');
 const { requestedAtMs } = require('../slots');
 const store = require('./store');
@@ -50,7 +52,8 @@ function createNotifier({ getDb, sender, apps = null }) {
     if (!store.isInPool(row)) return;
     for (const { chat_id: chatId, driver_id: driverId } of store.onLineChats(db)) {
       if (store.hasPoolMessage(db, id, chatId)) continue; // уже висит у него в чате
-      const msg = await sender.send(chatId, fmt.poolCardText(row), fmt.poolKeyboard(row));
+      const canMerge = mergeCandidates(db, row, { driverId }).length > 0;
+      const msg = await sender.send(chatId, fmt.poolCardText(row), fmt.poolKeyboard(row, { canMerge }));
       if (msg) store.savePoolMessage(db, { requestId: id, chatId, messageId: msg.message_id, driverId });
     }
   }
@@ -63,7 +66,12 @@ function createNotifier({ getDb, sender, apps = null }) {
     if (store.isInPool(row)) return;
     for (const m of store.takePoolMessages(db, id)) {
       const mine = row && row.driver_id === m.driver_id && ['assigned', 'in_progress'].includes(row.status);
-      const text = mine ? `✅ Заявка №${id} теперь ваша — карточка заказа ниже.` : fmt.unavailableText(id, row);
+      let text = fmt.unavailableText(id, row);
+      if (mine) {
+        text = row.merged_into
+          ? `🔗 Заявка №${id} добавлена попутно к вашему заказу №${row.merged_into}.`
+          : `✅ Заявка №${id} теперь ваша — карточка заказа ниже.`;
+      }
       await sender.edit(m.chat_id, m.message_id, text);
     }
   }
@@ -86,6 +94,8 @@ function createNotifier({ getDb, sender, apps = null }) {
         );
         break;
       case 'request:updated':
+        // О попутчике водитель получает отдельное сообщение (requests_merged).
+        if (payload?.updateReason === 'merge') break;
         if (row && row.driver_id === driverId && ['assigned', 'in_progress'].includes(row.status)) {
           await sender.send(chatId, `🔄 Маршрут заказа №${row.id} изменён.\n\n${fmt.orderCardText(row)}`, fmt.orderKeyboard(row));
         }
@@ -125,11 +135,12 @@ function createNotifier({ getDb, sender, apps = null }) {
         return row.on_hold ? [text.pulled(row, p.reason), fmt.myRequestsKeyboard(apps)] : null;
       case 'cancelled_by_dispatcher':
         return [text.cancelled(row, p.reason)];
-      case 'merge_proposed':
-        return [text.mergeProposed(row), fmt.myRequestsKeyboard(apps)];
-      case 'merge_approved':
-        // Пишется и на A, и на B; пассажиру B — что он теперь в чужой поездке.
-        return p.mergedIntoRequestId && row.merged_into ? [text.merged(row)] : null;
+      case 'requests_merged':
+        // Пишется и на A, и на B: пассажиру B — что его подвезут попутно,
+        // пассажиру A — что к его поездке добавили попутчика.
+        if (p.mergedIntoRequestId) return row.merged_into ? [text.merged(row)] : null;
+        if (p.mergedRequestId) return [text.companionAdded(row, getRow(getDb(), p.mergedRequestId))];
+        return null;
       case 'merge_dissolved':
         return [text.mergeDissolved(row, p.reason)];
       default:
@@ -168,6 +179,15 @@ function createNotifier({ getDb, sender, apps = null }) {
     const forPassenger = event.actorUserId === row.employee_id ? null : passengerMessage(event, row);
     const passengerChat = forPassenger ? store.chatForUser(db, row.employee_id) : null;
     if (passengerChat) await sender.send(passengerChat, forPassenger[0], forPassenger[1]);
+
+    // Водителю — о попутчике в его поездке (кто бы ни объединил).
+    if (event.type === 'requests_merged' && event.payload?.mergedRequestId && row.driver_id) {
+      const driverChat = store.chatForDriver(db, row.driver_id);
+      if (driverChat) {
+        const companion = getRow(db, event.payload.mergedRequestId);
+        await sender.send(driverChat, fmt.driverMergedText(row, companion, event.payload.initiator), fmt.orderKeyboard(row));
+      }
+    }
 
     const forDispatchers = dispatcherMessage(db, event, row);
     if (forDispatchers) {

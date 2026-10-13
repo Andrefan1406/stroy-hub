@@ -9,7 +9,7 @@ import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
 import AdminPanelLinks, { isSiteAdmin } from "../../rides/AdminPanelLinks";
 import MapPicker from "../../rides/MapPicker";
-import { formatRoute, formatEstimate, formatClock } from "../../rides/format";
+import { formatRoute, formatEstimate, formatClock, fitsMergeWindow } from "../../rides/format";
 
 function formatDateTime(value) {
   if (!value) return "—";
@@ -17,6 +17,9 @@ function formatDateTime(value) {
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
+
+// Поездки водителя, к которым заявку из пула можно взять попутно.
+const mergeTargets = (request, current) => current.filter((c) => fitsMergeWindow(request, c));
 
 const STATUS_LABEL = {
   assigned: "Назначен, ожидает выезда",
@@ -117,13 +120,12 @@ export default function DriverDashboardPage() {
       setNotice(`Диспетчер снял с вас заказ #${id}${reason ? `. Причина: ${reason}` : ""}.`);
       ridesApiFetch("/api/v1/drivers/me").then(({ driver: d }) => setDriver(d)).catch(() => {});
     });
-    // Ход согласования объединения заявок (П.6).
-    socket.on("merge:new", () => loadAll());
-    socket.on("merge:updated", (m) => {
-      if (m.status === "approved") setNotice(`Заявка #${m.requestBId} объединена с вашим заказом #${m.requestAId}.`);
-      else if (m.status === "rejected" || m.status === "auto_rejected") {
-        setNotice(`Объединение заявок #${m.requestAId} и #${m.requestBId} не согласовано${m.decisionReason ? `: ${m.decisionReason}` : ""}.`);
-      }
+    // К поездке водителя добавили попутную заявку (он сам — в другой
+    // вкладке или в Telegram — или диспетчер).
+    socket.on("merge:applied", (m) => {
+      setNotice(m.initiator === "dispatcher"
+        ? `Диспетчер добавил попутно заявку #${m.mergedRequestId} к вашему заказу #${m.requestId}.`
+        : `Заявка #${m.mergedRequestId} добавлена попутно к вашему заказу #${m.requestId}.`);
       loadAll();
     });
     // Решение по предложенной этим водителем точке.
@@ -139,12 +141,14 @@ export default function DriverDashboardPage() {
     return () => socket.disconnect();
   }, [loadAll, refreshDriver]);
 
-  const proposeMerge = async (bId, intoRequestId) => {
+  // «Подвезти попутно» — объединение сразу, без согласования.
+  const mergeInto = async (bId, intoRequestId) => {
     setMergeBFor(null);
     setError("");
     try {
       await ridesApiPost(`/api/v1/requests/${bId}/merge`, { intoRequestId });
-      setNotice(`Предложение объединить заявку #${bId} с вашим заказом отправлено на согласование.`);
+      setPool((prev) => prev.filter((r) => r.id !== bId));
+      setNotice(`Заявка #${bId} добавлена попутно к вашему заказу #${intoRequestId}.`);
       loadAll();
     } catch (err) {
       setError(err.message || "Не удалось предложить объединение");
@@ -341,15 +345,7 @@ export default function DriverDashboardPage() {
                         🔗 попутно заявка #{mr.id}: {mr.fromAddress} → {mr.toAddress}
                         {mr.pickupEtaAt && <> · посадка {formatClock(mr.pickupEtaAt)}</>}
                         {mr.employeePhone && <> · <a href={`tel:${mr.employeePhone}`} style={s.phoneLink}>{mr.employeePhone}</a></>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {r.pendingMerges?.length > 0 && (
-                  <div style={s.pendingBox}>
-                    {r.pendingMerges.map((pm) => (
-                      <div key={pm.id}>
-                        🕓 объединение с заявкой #{pm.requestBId === r.id ? pm.requestAId : pm.requestBId}: заказчик {pm.approvedByA ? "✓" : "…"}, диспетчер {pm.approvedByDispatcher ? "✓" : "…"}
+                        {mr.comment && <div>💬 {mr.comment}</div>}
                       </div>
                     ))}
                   </div>
@@ -397,22 +393,27 @@ export default function DriverDashboardPage() {
                   <button style={s.primaryButton} disabled={busyIds.has(r.id) || !driver || driver.status === "offline"} onClick={() => claim(r.id)}>
                     Взять заказ
                   </button>
-                  {current.length > 0 && (
-                    current.length === 1 ? (
-                      <button style={s.secondaryButton} onClick={() => proposeMerge(r.id, current[0].id)}>Подвезти попутно</button>
-                    ) : mergeBFor === r.id ? (
+                  {(() => {
+                    // Только если подача заявки подходит по времени к одной из
+                    // ваших поездок; сервер проверит то же самое при объединении.
+                    const targets = mergeTargets(r, current);
+                    if (!targets.length) return null;
+                    if (targets.length === 1) {
+                      return <button style={s.secondaryButton} onClick={() => mergeInto(r.id, targets[0].id)}>Подвезти попутно</button>;
+                    }
+                    return mergeBFor === r.id ? (
                       <select
                         style={s.mergeSelect}
                         defaultValue=""
-                        onChange={(e) => e.target.value && proposeMerge(r.id, Number(e.target.value))}
+                        onChange={(e) => e.target.value && mergeInto(r.id, Number(e.target.value))}
                       >
                         <option value="">К какому заказу?</option>
-                        {current.map((c) => <option key={c.id} value={c.id}>#{c.id} {formatRoute(c)}</option>)}
+                        {targets.map((c) => <option key={c.id} value={c.id}>#{c.id} {formatRoute(c)}</option>)}
                       </select>
                     ) : (
                       <button style={s.secondaryButton} onClick={() => setMergeBFor(r.id)}>Подвезти попутно</button>
-                    )
-                  )}
+                    );
+                  })()}
                 </div>
               </div>
             ))}

@@ -5,7 +5,7 @@
 const { getWriteDb } = require('./db');
 const { emitToDrivers, emitToDispatcher, emitToDriver } = require('./socket');
 const { logEvent } = require('./events');
-const { dissolveMergesForA, emitDissolvedB } = require('./mergeApply');
+const { dissolveMergesForA, emitDissolvedB, detachCancelledB } = require('./mergeApply');
 const { staleThreshold, getRow, serializeForDispatcher } = require('./requestView');
 const { syncDriverStatus } = require('./driverAvailability');
 
@@ -13,7 +13,7 @@ const { syncDriverStatus } = require('./driverAvailability');
 // (pending_assignment) или водитель уже назначен, но ещё не нажал «В пути»
 // (assigned) — та же граница, что и у диспетчерской отмены: как только
 // поездка реально началась (in_progress), отменить может только диспетчер.
-function cancelOwnRequest({ userId, requestId, reason }) {
+async function cancelOwnRequest({ userId, requestId, reason }) {
   const db = getWriteDb();
   let previousDriverId = null;
   const result = db.transaction(() => {
@@ -39,7 +39,9 @@ function cancelOwnRequest({ userId, requestId, reason }) {
   emitToDrivers('request:removed', { id: requestId });
   emitToDispatcher('request:updated', serializeForDispatcher(result, staleThreshold()));
   if (previousDriverId) emitToDriver(previousDriverId, 'request:removed', { id: requestId });
-  return { request: result };
+  // Заявку везли попутно — убрать её точки из маршрута основной поездки.
+  await detachCancelledB(db, requestId, userId);
+  return { request: getRow(db, requestId) };
 }
 
 module.exports = { cancelOwnRequest };
