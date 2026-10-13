@@ -1,0 +1,189 @@
+/* Форма заявки на бетон: каждая строка заявки — карточка, поля в сетке,
+   которая сама переносится по ширине экрана (16 полей в одну строку
+   таблицы не помещались). Кнопки и модалки — из общего RequestPage.module.css. */
+
+.page {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 20px 24px 32px;
+  box-sizing: border-box;
+}
+
+.title {
+  margin: 0 0 16px;
+  font-size: 22px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #dfe5ec;
+  border-radius: 12px;
+  padding: 14px 16px 16px;
+  margin-bottom: 14px;
+  box-shadow: 0 1px 4px rgba(16, 38, 70, 0.06);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cardTitle {
+  font-weight: 700;
+  font-size: 15px;
+  color: #1f5fa8;
+}
+
+.removeLink {
+  background: none;
+  border: 1px solid #f2b8b5;
+  color: #c62828;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.removeLink:hover {
+  background: #fdecea;
+}
+
+/* Основные поля: столько колонок, сколько влезает (не уже 150px). */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px 12px;
+}
+
+/* Нижний ряд: доверенность и примечание рядом, на узком экране — друг под другом. */
+.bottomRow {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.group {
+  border: 1px solid #cfe0f3;
+  background: #f5f9fe;
+  border-radius: 10px;
+  padding: 8px 12px 12px;
+  margin: 0;
+  min-width: 0;
+}
+
+.groupTitle {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f5fa8;
+  padding: 0 4px;
+}
+
+.groupGrid {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) minmax(130px, 1.3fr) minmax(160px, 2fr);
+  gap: 10px 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #4a5563;
+}
+
+.required {
+  color: #c62828;
+  margin-left: 2px;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #c8d0da;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  background: #fff;
+}
+
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.15);
+}
+
+.input:disabled {
+  background: #f2f4f7;
+  color: #9aa3ad;
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 62px;
+}
+
+.placeholderBox {
+  min-height: 36px;
+  border-radius: 6px;
+  background: #f2f4f7;
+}
+
+.actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 4px 0 24px;
+}
+
+@media (max-width: 900px) {
+  .bottomRow {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 12px 12px 24px;
+  }
+
+  .title {
+    font-size: 18px;
+  }
+
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .groupGrid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  }
+
+  /* ФИО по доверенности — во всю ширину под номером и датой. */
+  .groupGrid > .field:last-child {
+    grid-column: 1 / -1;
+  }
+
+  /* 16px — чтобы Safari на iOS не увеличивал страницу при фокусе. */
+  .input,
+  .textarea {
+    font-size: 16px;
+  }
+
+  .actions > button {
+    flex: 1 1 100%;
+  }
+}
