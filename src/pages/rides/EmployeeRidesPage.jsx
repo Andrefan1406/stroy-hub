@@ -12,6 +12,7 @@ import { formatRoute, formatEstimate, formatClock } from "../../rides/format";
 import MapPicker from "../../rides/MapPicker";
 import CancelRequestModal from "../../rides/CancelRequestModal";
 import TelegramConnect from "../../rides/TelegramConnect";
+import RideHistoryTable from "../../rides/RideHistoryTable";
 import { isTelegramMiniApp, ridesPath } from "../../rides/telegramSession";
 
 const CAN_EDIT_ROUTE = ["pending_assignment", "assigned", "in_progress"];
@@ -510,26 +511,7 @@ export default function EmployeeRidesPage() {
         {history.length === 0 ? (
           <p style={s.muted}>Пока ничего нет.</p>
         ) : (
-          <div style={s.tableWrap}>
-            <table style={s.table}>
-              <thead>
-                <tr>
-                  <th style={s.th}>Дата</th>
-                  <th style={s.th}>Маршрут</th>
-                  <th style={s.th}>Статус</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((r) => (
-                  <tr key={r.id}>
-                    <td style={s.td}>{formatDateTime(r.createdAt)}</td>
-                    <td style={s.td}>{formatRoute(r)}</td>
-                    <td style={{ ...s.td, color: statusColor(r.status) }}>{statusLabel(r)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <RideHistoryTable rows={history} />
         )}
       </section>
     </div>

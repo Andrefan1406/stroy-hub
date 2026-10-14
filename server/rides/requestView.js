@@ -84,8 +84,24 @@ function getMergedRequests(db, requestId) {
     .all(requestId);
 }
 
+// Фактическое время поездки — по истории статусов: начало — первое «в
+// пути», окончание — «завершена». Попутная заявка сама «в пути» не бывает —
+// её началом считаем начало основной поездки. Время — UTC 'YYYY-MM-DD HH:MM:SS'.
+function getTiming(db, row) {
+  const at = (id, status, order) => db
+    .prepare(`SELECT changed_at FROM request_status_history WHERE request_id = ? AND status = ? ORDER BY id ${order} LIMIT 1`)
+    .get(id, status)?.changed_at || null;
+  let startedAt = at(row.id, 'in_progress', 'ASC');
+  if (!startedAt && row.merged_into) startedAt = at(row.merged_into, 'in_progress', 'ASC');
+  const finishedAt = row.status === 'completed' ? at(row.id, 'completed', 'DESC') : null;
+  const ms = (t) => Date.parse(`${t.replace(' ', 'T')}Z`);
+  const actualMinutes = startedAt && finishedAt ? Math.max(0, Math.round((ms(finishedAt) - ms(startedAt)) / 60000)) : null;
+  return { startedAt, finishedAt, actualMinutes };
+}
+
 function hydrate(db, row) {
   if (!row) return row;
+  row.timing = getTiming(db, row);
   row.stopsFull = getStops(db, row.id); // [{ id, address }] по порядку
   row.stopProposals = getOpenProposals(db, row.id);
   row.mergedRequests = getMergedRequests(db, row.id);
@@ -128,6 +144,10 @@ function baseFields(row) {
     pullReason: row.pull_reason || null,
     mergedInto: row.merged_into ?? null,
     pickupEtaAt: row.pickup_eta_at ?? null,
+    // Фактически: начало, окончание (UTC без зоны) и длительность в минутах.
+    startedAt: row.timing?.startedAt ?? null,
+    finishedAt: row.timing?.finishedAt ?? null,
+    actualMinutes: row.timing?.actualMinutes ?? null,
     // телефон пассажира B из mergedRequests — только водителю (см. serializeForDriver)
     mergedRequests: (row.mergedRequests || []).map(({ employeePhone, ...m }) => m),
   };
@@ -154,7 +174,7 @@ function serializeForDriver(row) {
 }
 
 function serializeForEmployee(row) {
-  return baseFields(row);
+  return { ...baseFields(row), employeeName: row.employee_name };
 }
 
 function serializeForDispatcher(row, staleThresholdMinutes = staleThreshold()) {

@@ -9,6 +9,7 @@ import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
 import AdminPanelLinks, { isSiteAdmin } from "../../rides/AdminPanelLinks";
 import { formatRoute, formatEstimate, formatClock, fitsMergeWindow } from "../../rides/format";
+import RideHistoryTable from "../../rides/RideHistoryTable";
 
 function formatDateTime(value) {
   if (!value) return "—";
@@ -410,28 +411,7 @@ export default function DriverDashboardPage() {
           <input type="date" value={historyTo} onChange={(e) => setHistoryTo(e.target.value)} style={s.dateInput} />
           <button style={s.secondaryButton} onClick={loadHistory}>Показать</button>
         </div>
-        {history.length > 0 && (
-          <div style={s.tableWrap}>
-            <table style={s.table}>
-              <thead>
-                <tr>
-                  <th style={s.th}>Дата</th>
-                  <th style={s.th}>Маршрут</th>
-                  <th style={s.th}>Заказчик</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((r) => (
-                  <tr key={r.id}>
-                    <td style={s.td}>{formatDateTime(r.createdAt)}</td>
-                    <td style={s.td}>{formatRoute(r)}</td>
-                    <td style={s.td}>{r.employeeName}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {history.length > 0 && <RideHistoryTable rows={history} />}
       </section>
 
     </div>

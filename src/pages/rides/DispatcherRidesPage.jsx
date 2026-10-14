@@ -18,6 +18,7 @@ import TelegramConnect from "../../rides/TelegramConnect";
 import { isTelegramMiniApp, ridesPath } from "../../rides/telegramSession";
 import MapPicker from "../../rides/MapPicker";
 import MergeIntoModal from "../../rides/MergeIntoModal";
+import RideHistoryTable from "../../rides/RideHistoryTable";
 import { formatRoute, formatEstimate, formatDelta, formatClock, minutesSince, fitsMergeWindow } from "../../rides/format";
 
 function formatDateTime(value) {
@@ -579,7 +580,7 @@ function HistoryJournal() {
 
   const q = query.trim().toLowerCase();
   const visible = q
-    ? rows.filter((r) => [formatRoute(r), r.employeeName, r.driverName, r.vehiclePlate, r.cancelReason, String(r.id)]
+    ? rows.filter((r) => [formatRoute(r), r.employeeName, r.driverName, r.vehiclePlate, r.cancelReason, r.comment, String(r.id)]
       .some((v) => v && v.toLowerCase().includes(q)))
     : rows;
 
@@ -605,42 +606,7 @@ function HistoryJournal() {
       </div>
       {error && <div style={s.error}>{error}</div>}
       {truncated && <div style={s.muted}>Показаны последние 1000 заявок периода — сузьте период.</div>}
-      <div style={s.tableWrap}>
-        <table style={s.table}>
-          <thead>
-            <tr>
-              <th style={s.th}>№</th>
-              <th style={s.th}>Время</th>
-              <th style={s.th}>Маршрут</th>
-              <th style={s.th}>≈ км / мин</th>
-              <th style={s.th}>Заказчик</th>
-              <th style={s.th}>Водитель</th>
-              <th style={s.th}>Статус</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && <tr><td style={s.td} colSpan={7}>Загрузка...</td></tr>}
-            {!loading && visible.length === 0 && <tr><td style={s.td} colSpan={7}>За период заявок нет</td></tr>}
-            {!loading && visible.map((r) => (
-              <tr key={r.id}>
-                <td style={s.td}>{r.id}</td>
-                <td style={s.td}>{formatDateTime(r.requestedAt)}</td>
-                <td style={s.td}>
-                  {formatRoute(r)}{r.withReturn && <span style={s.returnBadge}> (туда-обратно)</span>}
-                  {r.mergedInto && <span style={s.mergeBadge}>🔗 в составе поездки #{r.mergedInto}</span>}
-                </td>
-                <td style={s.td}>{formatEstimate(r) || "—"}</td>
-                <td style={s.td}>{r.employeeName}</td>
-                <td style={s.td}>{r.driverName ? `${r.driverName}${r.vehiclePlate ? ` (${r.vehiclePlate})` : ""}` : "—"}</td>
-                <td style={s.td}>
-                  <span style={{ color: r.status === "cancelled" ? "#c00" : "#1a7f37" }}>{STATUS_LABEL[r.status] || r.status}</span>
-                  {r.cancelReason && <div style={s.holdNote}>{r.cancelReason}</div>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <RideHistoryTable rows={visible} showId loading={loading} emptyText="За период заявок нет" />
     </section>
   );
 }
