@@ -2,10 +2,11 @@
 // ТЗ доработок). Смонтирован на том же префиксе, что и requestsRouter
 // (Express перебирает роутеры по очереди — пути не пересекаются).
 //
-// Модель: заказчик и водитель ПРЕДЛАГАЮТ точку (add) либо её правку/
-// удаление (edit/remove) — предложение висит pending, пока диспетчер не
-// одобрит/отклонит. Диспетчер и сам заказчик (пока заявка ещё в пуле)
-// применяют сразу. Таймаут 5 минут (proposalTimeout.js) авто-отклоняет.
+// Модель: заказчик ПРЕДЛАГАЕТ добавить точку — всегда на согласование
+// диспетчеру; правку/удаление точки — тоже, кроме заявки ещё в пуле (там
+// сразу). Предложение висит pending, пока диспетчер не решит (таймаут
+// 5 минут, proposalTimeout.js). Диспетчер применяет любые изменения сразу.
+// Водитель маршрут не меняет.
 const express = require('express');
 const { getWriteDb } = require('./db');
 const { requireRideRole } = require('./auth');
@@ -33,8 +34,8 @@ const stopChangeSchema = z
 
 const rejectSchema = z.object({ reason: z.string().trim().min(1, 'Укажите причину отклонения') });
 
-// Кто вправе трогать маршрут этой заявки: диспетчер, её заказчик, либо
-// назначенный на неё водитель.
+// Кто вправе видеть изменения маршрута этой заявки: диспетчер, её
+// заказчик, либо назначенный на неё водитель.
 function canActOnRequest(db, request, rideUser) {
   if (rideUser.role === 'dispatcher') return true;
   if (request.employee_id === rideUser.id) return true;
@@ -113,10 +114,9 @@ router.get('/:id/stop-changes', requireRideRole('employee', 'driver', 'dispatche
   res.json({ proposals: listProposalsForRequest(db, requestId) });
 });
 
-// Предложить изменение маршрута. Диспетчер и заказчик заявки-в-пуле —
-// применяется сразу; водитель и заказчик активной заявки — уходит на
-// модерацию диспетчеру.
-router.post('/:id/stop-changes', requireRideRole('employee', 'driver', 'dispatcher'), validate(stopChangeSchema), async (req, res) => {
+// Изменить маршрут: диспетчер — сразу; заказчик — на согласование
+// диспетчеру (правка/удаление в заявке ещё в пуле — сразу).
+router.post('/:id/stop-changes', requireRideRole('employee', 'dispatcher'), validate(stopChangeSchema), async (req, res) => {
   const db = getWriteDb();
   const requestId = Number(req.params.id);
   const { action, targetStopId, address } = req.body;
@@ -126,7 +126,15 @@ router.post('/:id/stop-changes', requireRideRole('employee', 'driver', 'dispatch
   if (!MUTABLE_STATUSES.includes(request.status)) {
     return res.status(409).json({ error: 'Маршрут этой заявки уже нельзя менять' });
   }
-  if (!canActOnRequest(db, request, req.rideUser)) return res.status(403).json({ error: 'Нет доступа к этой заявке' });
+  const isDispatcher = req.rideUser.role === 'dispatcher' || req.isSiteAdmin;
+  if (!isDispatcher && request.employee_id !== req.rideUser.id) {
+    return res.status(403).json({ error: 'Менять маршрут может только заказчик заявки или диспетчер' });
+  }
+  // Попутную заявку везут в чужой поездке — её точки уже в маршруте
+  // основной заявки; менять их может только диспетчер.
+  if (!isDispatcher && request.merged_into) {
+    return res.status(409).json({ error: `Вас везут попутно в поездке #${request.merged_into} — изменить маршрут может диспетчер` });
+  }
 
   if (action !== 'add') {
     const st = db.prepare('SELECT id FROM request_stops WHERE id = ? AND request_id = ?').get(targetStopId, requestId);
@@ -150,9 +158,10 @@ router.post('/:id/stop-changes', requireRideRole('employee', 'driver', 'dispatch
     estDelta = null;
   }
 
+  // Сразу: диспетчер — всё; заказчик — только правку/удаление, пока заявка
+  // ещё в пуле. Новая точка от заказчика — всегда через диспетчера.
   const autoApprove =
-    req.rideUser.role === 'dispatcher' ||
-    (request.status === 'pending_assignment' && request.employee_id === req.rideUser.id);
+    isDispatcher || (action !== 'add' && request.status === 'pending_assignment');
 
   const pid = db.transaction(() => {
     const info = db
@@ -162,23 +171,20 @@ router.post('/:id/stop-changes', requireRideRole('employee', 'driver', 'dispatch
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(requestId, action, targetStopId ?? null, address ?? null, lat, lng, req.rideUser.id, req.rideUser.role, estDelta);
+    // Применённое сразу — одно событие «Добавлена/изменена/удалена точка»;
+    // на согласование — «Предложена точка».
+    const type = !autoApprove ? 'stop_proposed' : { add: 'stop_added', edit: 'stop_edited', remove: 'stop_removed' }[action];
     logEvent(db, {
       requestId,
-      type: 'stop_proposed',
+      type,
       actorUserId: req.rideUser.id,
-      payload: { action, address, targetStopId: targetStopId ?? null, estDeltaMin: estDelta, auto: autoApprove },
+      payload: { action, address, targetStopId: targetStopId ?? null, estDeltaMin: estDelta, byRole: req.rideUser.role },
     });
     return info.lastInsertRowid;
   })();
 
   if (autoApprove) {
     markDecided(db, pid, 'approved', req.rideUser.id);
-    logEvent(db, {
-      requestId,
-      type: 'stop_approved',
-      actorUserId: req.rideUser.id,
-      payload: { proposalId: pid, action, address, auto: true },
-    });
     await applyApprovedProposal(db, pid, req.rideUser.id);
     const proposal = serializeProposal(db, pid);
     emitToDispatcher('proposal:updated', proposal);

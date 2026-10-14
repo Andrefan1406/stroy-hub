@@ -78,6 +78,7 @@ function setupRidesTestApp({ realSocket = false } = {}) {
   app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'requestsRouter.js')));
   app.use('/api/v1/drivers', require(path.join(RIDES_DIR, 'driversRouter.js')));
   app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'mergeRouter.js')));
+  app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'stopProposalsRouter.js')));
 
   return { app, db, emitted };
 }

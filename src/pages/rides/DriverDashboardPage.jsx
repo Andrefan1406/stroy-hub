@@ -8,7 +8,6 @@ import { ridesApiDelete, ridesApiFetch, ridesApiPatch, ridesApiPost } from "../.
 import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
 import AdminPanelLinks, { isSiteAdmin } from "../../rides/AdminPanelLinks";
-import MapPicker from "../../rides/MapPicker";
 import { formatRoute, formatEstimate, formatClock, fitsMergeWindow } from "../../rides/format";
 
 function formatDateTime(value) {
@@ -37,7 +36,6 @@ export default function DriverDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [proposeFor, setProposeFor] = useState(null); // requestId, для которого открыт выбор точки на карте
   const [mergeBFor, setMergeBFor] = useState(null); // id заявки из пула, которую объединяем (когда текущих заказов несколько)
   const [busyIds, setBusyIds] = useState(new Set());
   const [telegram, setTelegram] = useState(null); // { enabled, username } — подключён ли бот на сервере
@@ -95,7 +93,7 @@ export default function DriverDashboardPage() {
       setCurrent((prev) => (prev.some((r) => r.id === req.id) ? prev : [...prev, req]));
       setPool((prev) => prev.filter((r) => r.id !== req.id));
     });
-    // Маршрут текущего заказа изменился (диспетчер одобрил/добавил точку) —
+    // Маршрут текущего заказа изменился (точку добавил пассажир или диспетчер) —
     // подменяем карточку, чтобы водитель сразу видел новую точку.
     socket.on("request:updated", (req) => {
       setCurrent((prev) => prev.map((r) => (r.id === req.id ? req : r)));
@@ -204,22 +202,6 @@ export default function DriverDashboardPage() {
       setError(err.message || "Не удалось отказаться от заказа");
     } finally {
       setRowBusy(id, false);
-    }
-  };
-
-  const proposeStop = async (requestId, address) => {
-    setProposeFor(null);
-    setError("");
-    try {
-      const { proposal } = await ridesApiPost(`/api/v1/requests/${requestId}/stop-changes`, { action: "add", address });
-      setNotice(
-        proposal.status === "approved"
-          ? `Точка «${address}» добавлена в маршрут.`
-          : `Точка «${address}» отправлена диспетчеру на согласование.`
-      );
-      loadAll();
-    } catch (err) {
-      setError(err.message || "Не удалось предложить точку");
     }
   };
 
@@ -364,7 +346,6 @@ export default function DriverDashboardPage() {
                   {r.status === "in_progress" && (
                     <button style={s.primaryButton} disabled={busyIds.has(r.id)} onClick={() => setStatus(r.id, "completed")}>Завершено</button>
                   )}
-                  <button style={s.secondaryButton} disabled={busyIds.has(r.id)} onClick={() => setProposeFor(r.id)}>Предложить точку</button>
                   <button style={s.dangerButton} disabled={busyIds.has(r.id)} onClick={() => decline(r.id)}>Отказаться</button>
                 </div>
               </div>
@@ -453,12 +434,6 @@ export default function DriverDashboardPage() {
         )}
       </section>
 
-      {proposeFor && (
-        <MapPicker
-          onClose={() => setProposeFor(null)}
-          onSelect={(address) => proposeStop(proposeFor, address)}
-        />
-      )}
     </div>
   );
 }

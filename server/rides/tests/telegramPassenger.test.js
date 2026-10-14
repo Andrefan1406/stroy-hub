@@ -259,3 +259,20 @@ test('объединение диспетчером: уведомления во
   assert.match(toDriver[0].text, /\+7705/, 'водителю — телефон попутчика');
   assert.equal(sentTo(n, DISPATCHER).length, 0, 'диспетчеру о своём действии не пишем');
 });
+
+test('точку пассажира одобрил диспетчер — водителю в Telegram новый маршрут', async () => {
+  await ready;
+  const DRIVER = 401; // привязан в предыдущем тесте
+  const A = insertRequest(db, { employeeId, requestedAt: '2030-06-13T10:00', status: 'assigned', driverId, durationMin: 60 });
+  const proposed = await call('employee@test', 'POST', `/api/v1/requests/${A}/stop-changes`, { action: 'add', address: 'ЦОН, ул. Казахстан 40' });
+  assert.equal(proposed.body.proposal.status, 'pending');
+  await settle();
+  const n = calls.length;
+  const res = await call('dispatcher@test', 'POST', `/api/v1/requests/stop-changes/${proposed.body.proposal.id}/approve`);
+  assert.equal(res.status, 200, res.body.error);
+  await settle();
+  const toDriver = sentTo(n, DRIVER);
+  assert.equal(toDriver.length, 1);
+  assert.match(toDriver[0].text, /Маршрут заказа №\d+ изменён/);
+  assert.match(toDriver[0].text, /Казахстан 40/);
+});

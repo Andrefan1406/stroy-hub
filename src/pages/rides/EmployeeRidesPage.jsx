@@ -224,12 +224,9 @@ export default function EmployeeRidesPage() {
     setProposeFor(null);
     setError("");
     try {
-      const { proposal } = await ridesApiPost(`/api/v1/requests/${requestId}/stop-changes`, { action: "add", address });
-      setNotice(
-        proposal.status === "approved"
-          ? `Точка «${address}» добавлена в маршрут.`
-          : `Точка «${address}» отправлена диспетчеру на согласование.`
-      );
+      // Новая точка от пассажира — всегда на согласование диспетчеру.
+      await ridesApiPost(`/api/v1/requests/${requestId}/stop-changes`, { action: "add", address });
+      setNotice(`Точка «${address}» отправлена диспетчеру на согласование.`);
       load();
     } catch (err) {
       setError(err.message || "Не удалось добавить точку");
