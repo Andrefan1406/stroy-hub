@@ -1,4 +1,4 @@
-import { bindCabins, buildSummary, NO_OBJECT } from "./model";
+import { bindCabins, buildSummary, objectList, NO_OBJECT } from "./model";
 
 const title = (id, text, x, y) => ({ id, type: "title", text, x, y });
 const cabin = (id, size, x, y) => ({ id, type: "cabin", size, x, y, rotation: 0 });
@@ -58,5 +58,24 @@ test("таблица: кол-во одинаковых, разные подпи�
     { object: "Поз. 59", cabinType: "Бытовка 12×2,5", count: 1, content: "кабинет прораба" },
     { object: "Поз. 59", cabinType: "Бытовка 12×2,5", count: 2, content: "склад инструмента" },
     { object: NO_OBJECT, cabinType: "Бытовка 6×2,5", count: 1, content: "—" },
+  ]);
+});
+
+test("таблица одного объекта и список объектов листа", () => {
+  const objects = [
+    title("t2", "Поз. 72", 100, 0),
+    title("t1", "Поз. 59", 0, 0),
+    cabin("c1", "12x2.5", 10, 0),
+    cabin("c2", "6x2.5", 95, 0),
+    cabin("c3", "6x2.5", 0, 300),
+  ];
+  expect(buildSummary(objects, { titleId: "t2" })).toEqual([
+    { object: "Поз. 72", cabinType: "Бытовка 6×2,5", count: 1, content: "—" },
+  ]);
+  expect(buildSummary(objects, { titleId: null }).map((r) => r.object)).toEqual([NO_OBJECT]);
+  expect(objectList(objects)).toEqual([
+    { titleId: "t1", name: "Поз. 59", cabins: 1 },
+    { titleId: "t2", name: "Поз. 72", cabins: 1 },
+    { titleId: null, name: NO_OBJECT, cabins: 1 },
   ]);
 });

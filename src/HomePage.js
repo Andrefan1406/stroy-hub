@@ -57,7 +57,7 @@ const HomePage = () => {
       .catch(() => {});
   }, [currentEmail]);
 
-  // Схемы бытовок — кнопка только тем, кому админ дал доступ (и самому админу).
+  // Схема бытовок — кнопка только тем, кому админ дал доступ (и самому админу).
   const [canSeeLayouts, setCanSeeLayouts] = useState(false);
   useEffect(() => {
     if (!currentEmail) return;
@@ -159,7 +159,7 @@ const HomePage = () => {
 
       {canSeeLayouts && (
         <button onClick={() => navigate('/site-layouts')} style={styles.button}>
-          Схемы бытовок
+          Схема бытовок
         </button>
       )}
 

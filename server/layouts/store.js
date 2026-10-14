@@ -1,4 +1,4 @@
-// Данные схем: список, объекты, проверка и применение правок, редакторы.
+// Данные схемы бытовок: общий лист, объекты, проверка и применение правок, редакторы.
 // Правку присылает браузер целым объектом (upsert) или удалением (delete);
 // всё, что приходит от клиента, проверяется здесь — типы, размеры, длина
 // текста, принадлежность подписи бытовке этой же схемы.
@@ -27,16 +27,6 @@ function toClient(row) {
   };
 }
 
-function listLayouts() {
-  return getLayoutsDb()
-    .prepare(
-      `SELECT l.id, l.name, l.created_by AS createdBy, l.created_at AS createdAt, l.updated_at AS updatedAt,
-              (SELECT COUNT(*) FROM layout_objects o WHERE o.layout_id = l.id AND o.type = 'cabin') AS cabins
-         FROM layouts l ORDER BY l.updated_at DESC, l.id DESC`
-    )
-    .all();
-}
-
 function getLayout(id) {
   const db = getLayoutsDb();
   const layout = db.prepare('SELECT id, name, revision, updated_at AS updatedAt FROM layouts WHERE id = ?').get(id);
@@ -45,22 +35,22 @@ function getLayout(id) {
   return { ...layout, objects };
 }
 
-function cleanName(name) {
-  const value = String(name ?? '').trim().slice(0, 120);
-  return value || null;
-}
-
 function createLayout(name, email) {
   const info = getLayoutsDb().prepare('INSERT INTO layouts (name, created_by) VALUES (?, ?)').run(name, email);
   return Number(info.lastInsertRowid);
 }
 
-function renameLayout(id, name) {
-  return getLayoutsDb().prepare("UPDATE layouts SET name = ?, updated_at = datetime('now') WHERE id = ?").run(name, id).changes > 0;
-}
+// Все объекты (заголовки со своими бытовками) живут на одном общем листе.
+// Лист заводится сам при первом открытии; если в базе уже есть листы —
+// общий тот, что создан первым.
+const MAIN_LAYOUT_NAME = 'Общая схема бытовок';
 
-function deleteLayout(id) {
-  return getLayoutsDb().prepare('DELETE FROM layouts WHERE id = ?').run(id).changes > 0;
+function getOrCreateMainLayoutId(email) {
+  const db = getLayoutsDb();
+  return db.transaction(() => {
+    const row = db.prepare('SELECT id FROM layouts ORDER BY id LIMIT 1').get();
+    return row ? row.id : createLayout(MAIN_LAYOUT_NAME, email);
+  })();
 }
 
 // Проверка объекта из браузера -> строка для базы или { error }.
@@ -138,12 +128,9 @@ function removeEditor(email) {
 module.exports = {
   CABIN_SIZES,
   normRotation,
-  listLayouts,
   getLayout,
-  cleanName,
   createLayout,
-  renameLayout,
-  deleteLayout,
+  getOrCreateMainLayoutId,
   applyOp,
   listEditors,
   isEditor,

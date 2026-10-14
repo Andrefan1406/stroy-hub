@@ -138,11 +138,14 @@ export function cabinLabels(objects, cabinId) {
 // разные подписи — отдельные строки; несколько подписей у одной бытовки —
 // по строке на каждую. Сортировка по алфавиту: объект («Без объекта» —
 // в конце), тип бытовки, содержимое.
-export function buildSummary(objects, limit = LINK_DISTANCE_M) {
-  const binding = bindCabins(objects, limit);
+//
+// titleId — таблица одного объекта (null — бытовки «Без объекта»); не
+// задан — все объекты. binding — уже посчитанная привязка (необязательно).
+export function buildSummary(objects, { titleId, binding = bindCabins(objects) } = {}) {
   const titlesById = Object.fromEntries(objects.filter((o) => o.type === "title").map((t) => [t.id, t]));
   const rows = new Map();
   for (const cabin of objects.filter((o) => o.type === "cabin")) {
+    if (titleId !== undefined && (binding[cabin.id] ?? null) !== titleId) continue;
     const title = titlesById[binding[cabin.id]];
     const object = title ? titleText(title) : NO_OBJECT;
     const cabinType = CABIN_SIZES[cabin.size]?.label || cabin.size;
@@ -161,4 +164,19 @@ export function buildSummary(objects, limit = LINK_DISTANCE_M) {
       collator.compare(a.cabinType, b.cabinType) ||
       collator.compare(a.content, b.content)
   );
+}
+
+// Объекты листа для списка справа: заголовки по алфавиту и, если есть,
+// «Без объекта» в конце. { titleId, name, cabins }.
+export function objectList(objects, binding = bindCabins(objects)) {
+  const counts = {};
+  for (const [cabinId, tid] of Object.entries(binding)) {
+    if (cabinId) counts[tid ?? ""] = (counts[tid ?? ""] || 0) + 1;
+  }
+  const list = objects
+    .filter((o) => o.type === "title")
+    .map((t) => ({ titleId: t.id, name: titleText(t), cabins: counts[t.id] || 0 }))
+    .sort((a, b) => collator.compare(a.name, b.name));
+  if (counts[""]) list.push({ titleId: null, name: NO_OBJECT, cabins: counts[""] });
+  return list;
 }

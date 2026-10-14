@@ -48,6 +48,12 @@ test('правки: проверка объекта, поворот кратно
   assert.match(store.applyOp(id, { kind: 'upsert', object: { id: 'cabin-1', type: 'title', x: 0, y: 0 } }, ADMIN).error, /тип/);
 });
 
+test('общий лист один: создаётся при первом открытии, дальше — тот же', () => {
+  const first = store.getOrCreateMainLayoutId(ADMIN);
+  assert.equal(store.getOrCreateMainLayoutId('editor@test'), first);
+  assert.ok(store.getLayout(first));
+});
+
 test('удаление бытовки удаляет её подписи; ревизия растёт', () => {
   const id = store.createLayout('Площадка 2', ADMIN);
   store.applyOp(id, { kind: 'upsert', object: cabin('cabin-a') }, ADMIN);

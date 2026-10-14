@@ -4,8 +4,15 @@
 // Новые объекты перетаскиваются сюда с панели (HTML5 drag-and-drop).
 //
 // Состоянием объектов холст не владеет: перемещение «на лету» сообщает
-// через onLiveMove, итог — через onCommit(новый, исходный), чтобы страница
-// разослала правку и запомнила её для отмены.
+// через onLiveMove([{ id, x, y | rotation }]), итог — через onCommit, чтобы
+// страница разослала правку и запомнила её для отмены.
+//
+// Перетаскивание с клавишами (решают клавиши в момент отпускания мыши):
+//   Ctrl             — копия (оригинал на месте, копия едет полупрозрачной);
+//   Shift            — за заголовок: весь объект (заголовок и его бытовки);
+//   Ctrl+Shift       — за заголовок: копия всего объекта.
+// Итог: onCommit([{ object, origin }]) — перенос (один объект или группа),
+// onCopy([оригиналы], { dx, dy }) — копия одного объекта или группы.
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { CABIN_SIZES, cabinLabels } from "./model";
 
@@ -44,7 +51,7 @@ function bounds(objects) {
 }
 
 const LayoutCanvas = forwardRef(function LayoutCanvas(
-  { objects, links, selectedId, peers, onSelect, onLiveMove, onCommit, onDropNew, onCursor, onEdit, onRotate },
+  { objects, links, selectedId, peers, onSelect, onLiveMove, onCommit, onCopy, onDropNew, onCursor, onEdit, onRotate },
   ref
 ) {
   const svgRef = useRef(null);
@@ -53,6 +60,7 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   const viewRef = useRef(view);
   viewRef.current = view;
   const drag = useRef(null);
+  const [ghosts, setGhosts] = useState([]); // копии, которые тянут с Ctrl: [{ ...оригинал, x, y }]
   const selectedRef = useRef(selectedId);
   selectedRef.current = selectedId;
   const onRotateRef = useRef(onRotate);
@@ -80,6 +88,11 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
 
   useImperativeHandle(ref, () => ({
     fit: () => fit(objects),
+    // Показать точку (заголовок выбранного объекта) в центре, не меняя масштаб.
+    centerOn: (x, y) => {
+      const v = viewRef.current;
+      setView({ ...v, tx: size.w / 2 - x * v.scale, ty: size.h / 2 - y * v.scale });
+    },
     // Центр видимой области в метрах — куда ставить объект по клику на панели.
     center: () => {
       const v = viewRef.current;
@@ -126,9 +139,16 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   const startMove = (e, obj) => {
     if (e.button !== 0) return;
     e.stopPropagation();
-    onSelect(obj.id);
+    if (!(e.ctrlKey || e.metaKey)) onSelect(obj.id);
     const w = toWorld(e.clientX, e.clientY);
-    drag.current = { kind: "move", id: obj.id, origin: obj, dx: w.x - obj.x, dy: w.y - obj.y, moved: false };
+    // Режим (перенос / копия / весь объект) решается по ходу перетаскивания
+    // и окончательно — по клавишам в момент отпускания (см. dragMode).
+    // Бытовки объекта запоминаем сразу: пока объект едет целиком, его
+    // состав не меняется.
+    const members = obj.type === "title"
+      ? objects.filter((o) => o.type === "cabin" && links[o.id]?.titleId === obj.id)
+      : [];
+    drag.current = { kind: "move", id: obj.id, origin: obj, members, dx: w.x - obj.x, dy: w.y - obj.y, moved: false, delta: { dx: 0, dy: 0 } };
     svgRef.current.setPointerCapture(e.pointerId);
   };
 
@@ -149,20 +169,52 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
       const x = snap(w.x - d.dx);
       const y = snap(w.y - d.dy);
       if (x !== d.origin.x || y !== d.origin.y) d.moved = true;
-      onLiveMove(d.id, { x, y });
+      d.delta = { dx: x - d.origin.x, dy: y - d.origin.y };
+      const { copy, group } = dragMode(d, e);
+      const involved = [d.origin, ...d.members];
+      const shifted = (o) => ({ ...o, x: o.x + d.delta.dx, y: o.y + d.delta.dy });
+      // Что едет «вживую»: при копии — ничего (оригиналы на месте, едут
+      // полупрозрачные копии), при переносе группы — все, иначе — только сам объект.
+      onLiveMove(involved.map((o, i) => {
+        const moving = !copy && (group || i === 0);
+        return { id: o.id, x: moving ? o.x + d.delta.dx : o.x, y: moving ? o.y + d.delta.dy : o.y };
+      }));
+      setGhosts(copy && d.moved ? (group ? involved : [d.origin]).map(shifted) : []);
     } else if (d.kind === "rotate") {
       // Ручка над бытовкой: «вверх» = 0°.
       const rotation = snapAngle((Math.atan2(w.y - d.origin.y, w.x - d.origin.x) * 180) / Math.PI + 90);
       if (rotation !== d.origin.rotation) d.moved = true;
-      onLiveMove(d.id, { rotation });
+      onLiveMove([{ id: d.id, rotation }]);
     }
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e) => {
     const d = drag.current;
     drag.current = null;
-    if (d && (d.kind === "move" || d.kind === "rotate") && d.moved) onCommit(byId[d.id], d.origin);
+    setGhosts([]);
+    if (!d) return;
+    if (d.kind === "rotate") {
+      if (d.moved) onCommit([{ object: byId[d.id], origin: d.origin }]);
+      return;
+    }
+    if (d.kind !== "move") return;
+    if (!d.moved) {
+      onSelect(d.id);
+      return;
+    }
+    const { copy, group } = dragMode(d, e);
+    const involved = group ? [d.origin, ...d.members] : [d.origin];
+    // Сначала всё «живое» — на исходные места: итог применит страница.
+    onLiveMove([d.origin, ...d.members].map((o) => ({ id: o.id, x: o.x, y: o.y })));
+    if (copy) onCopy(involved, d.delta);
+    else onCommit(involved.map((o) => ({ object: { ...o, x: o.x + d.delta.dx, y: o.y + d.delta.dy }, origin: o })));
   };
+
+  // Клавиши решают по состоянию на этот момент (и при отпускании мыши).
+  // Весь объект — только при перетаскивании заголовка.
+  function dragMode(d, e) {
+    return { copy: e.ctrlKey || e.metaKey, group: e.shiftKey && d.origin.type === "title" };
+  }
 
   const onDrop = (e) => {
     const kind = e.dataTransfer.getData(DRAG_KIND);
@@ -178,15 +230,18 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   const selected = byId[selectedId];
   const peerSelections = peers.filter((p) => p.selectedId && byId[p.selectedId]);
 
-  const renderCabin = (c) => {
+  // ghost — полупрозрачная копия под мышью: без выделения и обработчиков,
+  // подписи — от оригинала.
+  const renderCabin = (c, ghostOf = null) => {
     const dims = CABIN_SIZES[c.size] || CABIN_SIZES["6x2.5"];
-    const labels = cabinLabels(objects, c.id).map((l) => l.text).filter((t) => t && t.trim());
+    const labels = cabinLabels(objects, ghostOf || c.id).map((l) => l.text).filter((t) => t && t.trim());
     const maxChars = Math.max(4, Math.floor(dims.w / (LABEL_FONT * 0.58)));
     const upsideDown = c.rotation > 90 && c.rotation <= 270; // подписи всегда читаются не вверх ногами
-    const isSelected = c.id === selectedId;
-    const peerSel = peerSelections.find((p) => p.selectedId === c.id);
+    const isSelected = !ghostOf && c.id === selectedId;
+    const peerSel = !ghostOf && peerSelections.find((p) => p.selectedId === c.id);
     return (
-      <g key={c.id} transform={`translate(${c.x} ${c.y}) rotate(${c.rotation})`} style={{ cursor: "move" }}
+      <g key={ghostOf ? `ghost-${ghostOf}` : c.id} transform={`translate(${c.x} ${c.y}) rotate(${c.rotation})`}
+        style={ghostOf ? { opacity: 0.55, pointerEvents: "none" } : { cursor: "move" }}
         onPointerDown={(e) => startMove(e, c)} onDoubleClick={() => onEdit(c.id)}>
         <rect x={-dims.w / 2} y={-dims.h / 2} width={dims.w} height={dims.h} rx={0.15}
           fill={c.size === "12x2.5" ? "#e6f0fb" : "#eaf6ec"}
@@ -218,12 +273,13 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
     );
   };
 
-  const renderTitle = (t) => {
-    const isSelected = t.id === selectedId;
-    const peerSel = peerSelections.find((p) => p.selectedId === t.id);
+  const renderTitle = (t, ghostOf = null) => {
+    const isSelected = !ghostOf && t.id === selectedId;
+    const peerSel = !ghostOf && peerSelections.find((p) => p.selectedId === t.id);
     const width = titleWidth(t.text);
     return (
-      <g key={t.id} transform={`translate(${t.x} ${t.y})`} style={{ cursor: "move" }}
+      <g key={ghostOf ? `ghost-${ghostOf}` : t.id} transform={`translate(${t.x} ${t.y})`}
+        style={ghostOf ? { opacity: 0.55, pointerEvents: "none" } : { cursor: "move" }}
         onPointerDown={(e) => startMove(e, t)} onDoubleClick={() => onEdit(t.id)}>
         <rect x={-width / 2 - 0.5} y={-TITLE_FONT * 0.75} width={width + 1} height={TITLE_FONT * 1.5}
           fill={isSelected ? "rgba(25,118,210,0.06)" : "transparent"}
@@ -257,7 +313,8 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
   }
 
   return (
-    <svg ref={svgRef} width="100%" height="100%" style={{ display: "block", background: "#fff", touchAction: "none", userSelect: "none" }}
+    <svg ref={svgRef} width="100%" height="100%"
+      style={{ display: "block", background: "#fff", touchAction: "none", userSelect: "none", cursor: ghosts.length ? "copy" : undefined }}
       onPointerDown={startPan} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
       onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
       <defs>
@@ -277,8 +334,9 @@ const LayoutCanvas = forwardRef(function LayoutCanvas(
             strokeDasharray={`${px(5)} ${px(4)}`} pointerEvents="none" />
         ))}
 
-        {objects.filter((o) => o.type === "cabin").map(renderCabin)}
-        {objects.filter((o) => o.type === "title").map(renderTitle)}
+        {objects.filter((o) => o.type === "cabin").map((c) => renderCabin(c))}
+        {objects.filter((o) => o.type === "title").map((t) => renderTitle(t))}
+        {ghosts.map((g) => (g.type === "cabin" ? renderCabin(g, g.id) : renderTitle(g, g.id)))}
 
         {peers.filter((p) => p.x != null).map((p) => (
           <g key={p.socketId} transform={`translate(${p.x} ${p.y}) scale(${1 / scale})`} pointerEvents="none">
