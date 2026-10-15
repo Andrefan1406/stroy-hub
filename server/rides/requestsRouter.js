@@ -91,6 +91,11 @@ const holdDecisionSchema = z.object({
 router.post('/', requireRideRole('employee', 'dispatcher'), validate(createRequestSchema), async (req, res) => {
   // Заявки принимаются только в рабочее время (slots.js: SUBMIT_FROM/SUBMIT_TO).
   if (!isSubmissionOpen()) return res.status(403).json({ error: SUBMISSION_CLOSED_MESSAGE });
+  // Главный админ заполняет ФИО и телефон сам (PATCH /users/me) — без
+  // телефона водителю некому позвонить.
+  if (req.isSiteAdmin && !(req.rideUser?.phone || '').trim()) {
+    return res.status(400).json({ error: 'Сначала укажите ваши ФИО и телефон в блоке «Ваши данные для водителя»' });
+  }
   const db = getWriteDb();
   const { fromAddress, toAddress, requestedAt, purpose, passengersCount, withReturn, extraStops, comment } = req.body;
 

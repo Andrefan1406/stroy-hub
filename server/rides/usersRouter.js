@@ -50,6 +50,28 @@ router.get('/me', loadRideUser, (req, res) => {
   res.json({ user: req.rideUser ? serializeUser(req.rideUser) : null });
 });
 
+// Главный админ сам заполняет свои ФИО и телефон — их видит водитель в его
+// заявках. Его карточку диспетчер не ведёт (служебная запись скрыта из
+// списка, rejectSiteAdminTarget), остальным имя и телефон заполняет
+// диспетчер. Объявлено до /:email, иначе 'me' приняли бы за email.
+const ownContactSchema = z.object({
+  name: z.string().trim().min(2, 'Укажите ФИО').max(120),
+  phone: z.string().trim().regex(/^\+?[\d\s()-]{10,20}$/, 'Укажите телефон, например +7 701 123 45 67'),
+});
+
+router.patch('/me', loadRideUser, (req, res) => {
+  if (!req.isSiteAdmin || !req.rideUser) {
+    return res.status(403).json({ error: 'Имя и телефон заполняет диспетчер' });
+  }
+  const result = ownContactSchema.safeParse(req.body);
+  if (!result.success) {
+    return res.status(400).json({ error: result.error.issues[0]?.message || 'Некорректные данные' });
+  }
+  const db = getWriteDb();
+  db.prepare('UPDATE users SET name = ?, phone = ? WHERE id = ?').run(result.data.name, result.data.phone, req.rideUser.id);
+  res.json({ user: serializeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.rideUser.id)) });
+});
+
 // И главному админу (полный список + назначение ролей), и диспетчеру
 // (карточки уже назначенных) нужен один и тот же список пользователей
 // Firebase — различается только то, что каждый из них в ответе видит и

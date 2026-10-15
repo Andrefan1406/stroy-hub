@@ -51,14 +51,16 @@ function setupRidesTestApp({ realSocket = false } = {}) {
   initSchema();
   const db = getWriteDb();
 
+  // admin@test — главный админ сайта (как admin@vkdev.kz в настоящем auth.js).
   const loadUser = (req) => {
     const email = (req.headers['x-test-email'] || '').toLowerCase();
     req.rideUser = db.prepare('SELECT * FROM users WHERE email = ?').get(email) || null;
+    req.isSiteAdmin = email === 'admin@test';
   };
   const requireRideRole = (...roles) => (req, res, next) => {
     loadUser(req);
     if (!req.rideUser) return res.status(403).json({ error: 'not a ride user' });
-    if (!roles.includes(req.rideUser.role)) return res.status(403).json({ error: 'forbidden' });
+    if (!req.isSiteAdmin && !roles.includes(req.rideUser.role)) return res.status(403).json({ error: 'forbidden' });
     next();
   };
   stubModule('auth.js', {
@@ -77,6 +79,7 @@ function setupRidesTestApp({ realSocket = false } = {}) {
   app.use(express.json());
   app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'requestsRouter.js')));
   app.use('/api/v1/drivers', require(path.join(RIDES_DIR, 'driversRouter.js')));
+  app.use('/api/v1/users', require(path.join(RIDES_DIR, 'usersRouter.js')));
   app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'mergeRouter.js')));
   app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'stopProposalsRouter.js')));
 

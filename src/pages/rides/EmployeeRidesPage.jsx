@@ -4,7 +4,7 @@
 // перезагрузки страницы видно, кто именно принял заказ.
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ridesApiFetch, ridesApiPost } from "../../rides/api";
+import { ridesApiFetch, ridesApiPatch, ridesApiPost } from "../../rides/api";
 import { createRidesSocket } from "../../rides/socket";
 import LogoutButton from "../../rides/LogoutButton";
 import AdminPanelLinks from "../../rides/AdminPanelLinks";
@@ -81,6 +81,10 @@ export default function EmployeeRidesPage() {
   const [form, setForm] = useState(emptyForm);
   const [mapPickerTarget, setMapPickerTarget] = useState(null); // "fromAddress" | "toAddress" | { stopIndex } | null
   const [role, setRole] = useState(null); // диспетчер, зашедший сюда сам себе заказать машину, видит ссылку назад на /dispatcher
+  // Главный админ: свои ФИО и телефон для водителя заполняет сам (у остальных — диспетчер).
+  const [contact, setContact] = useState({ name: "", phone: "" });
+  const [savedPhone, setSavedPhone] = useState("");
+  const [contactSaving, setContactSaving] = useState(false);
   const [cancelTargetId, setCancelTargetId] = useState(null); // id заявки, для которой открыта модалка отмены
   const [proposeFor, setProposeFor] = useState(null); // id заявки, для которой добавляем точку через карту
   const [notice, setNotice] = useState("");
@@ -143,7 +147,11 @@ export default function EmployeeRidesPage() {
     : null;
 
   useEffect(() => {
-    ridesApiFetch("/api/v1/users/me").then(({ user }) => setRole(user?.role || null)).catch(() => {});
+    ridesApiFetch("/api/v1/users/me").then(({ user }) => {
+      setRole(user?.role || null);
+      setContact({ name: user?.name || "", phone: user?.phone || "" });
+      setSavedPhone(user?.phone || "");
+    }).catch(() => {});
   }, []);
 
   const loadFleet = useCallback(() => {
@@ -234,6 +242,25 @@ export default function EmployeeRidesPage() {
     }
   };
 
+  const isSiteAdminUser = role === "admin";
+  const needsContact = isSiteAdminUser && !savedPhone.trim();
+
+  const saveContact = async (e) => {
+    e.preventDefault();
+    setContactSaving(true);
+    setError("");
+    try {
+      const { user } = await ridesApiPatch("/api/v1/users/me", contact);
+      setContact({ name: user.name, phone: user.phone });
+      setSavedPhone(user.phone);
+      setNotice("Ваши ФИО и телефон сохранены — их увидит водитель.");
+    } catch (err) {
+      setError(err.message || "Не удалось сохранить данные");
+    } finally {
+      setContactSaving(false);
+    }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.fromAddress.trim() || !form.toAddress.trim() || !form.requestedAt || !form.purpose.trim()) {
@@ -285,6 +312,18 @@ export default function EmployeeRidesPage() {
       {error && <div style={s.error}>{error}</div>}
       {notice && <div style={s.notice} onClick={() => setNotice("")}>{notice}</div>}
       <TelegramConnect hint="Узнавайте в Telegram, кто вас везёт: водитель назначен, машина в пути, поездка завершена." />
+
+      {isSiteAdminUser && (
+        <form onSubmit={saveContact} style={needsContact ? { ...s.contactBox, ...s.contactBoxAlert } : s.contactBox}>
+          <div style={s.contactTitle}>Ваши данные для водителя</div>
+          {needsContact && <div style={s.contactHint}>Укажите ФИО и телефон — без них заявку подать нельзя: водитель должен знать, кого везёт и куда звонить.</div>}
+          <div style={s.contactRow}>
+            <input style={s.contactInput} value={contact.name} onChange={(e) => setContact({ ...contact, name: e.target.value })} placeholder="ФИО" />
+            <input style={s.contactInput} value={contact.phone} onChange={(e) => setContact({ ...contact, phone: e.target.value })} placeholder="+7 701 123 45 67" inputMode="tel" />
+            <button type="submit" style={s.primaryButton} disabled={contactSaving}>Сохранить</button>
+          </div>
+        </form>
+      )}
 
       {fleet && (
         fleet.hasFree ? (
@@ -409,7 +448,7 @@ export default function EmployeeRidesPage() {
         <label style={s.label}>Комментарий
           <textarea style={{ ...s.input, minHeight: "60px" }} value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
         </label>
-        <button type="submit" style={s.primaryButton} disabled={submitting || selectedSlotUnavailable || !submission.open}>Подать заявку</button>
+        <button type="submit" style={s.primaryButton} disabled={submitting || selectedSlotUnavailable || !submission.open || needsContact}>Подать заявку</button>
       </form>
 
       {mapPickerTarget && (
@@ -537,6 +576,12 @@ const s = {
   cardActions: { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px" },
   pendingBox: { marginTop: "8px", background: "#fffdf6", border: "1px solid #f0d9a8", borderRadius: "8px", padding: "8px 10px", fontSize: "12px", color: "#8a6d2f" },
   addPointButton: { background: "none", border: "1px dashed #1976d2", color: "#1976d2", borderRadius: "6px", padding: "8px 12px", cursor: "pointer", fontSize: "13px" },
+  contactBox: { background: "#f4f9ff", border: "1px solid #cfe3f7", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px" },
+  contactBoxAlert: { background: "#fff7e6", border: "1px solid #f0c48a" },
+  contactTitle: { fontWeight: 700, fontSize: "13px", marginBottom: "6px" },
+  contactHint: { fontSize: "12px", color: "#8a5a00", marginBottom: "8px" },
+  contactRow: { display: "flex", gap: "8px", flexWrap: "wrap" },
+  contactInput: { flex: "1 1 200px", minWidth: 0, padding: "8px 10px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", boxSizing: "border-box" },
   cardHold: { border: "1px solid #f0c48a", background: "#fffaf3" },
   holdBox: { marginTop: "8px", background: "#fff3e0", border: "1px solid #f0c48a", borderRadius: "8px", padding: "10px 12px" },
   holdTitle: { fontWeight: 700, fontSize: "13px", color: "#b45309", marginBottom: "4px" },
