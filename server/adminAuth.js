@@ -94,6 +94,24 @@ function requireEmails(allowedEmails) {
   };
 }
 
+// Любой вошедший пользователь (без проверки списка) — для чтения общих
+// справочников, например норм подсчёта объёмов (takeoffCatalog.js).
+async function requireUser(req, res, next) {
+  const header = req.headers.authorization || '';
+  const match = header.match(/^Bearer (.+)$/);
+  if (!match) {
+    return res.status(401).json({ error: 'Не передан токен авторизации' });
+  }
+
+  try {
+    const decoded = await getAuth().verifyIdToken(match[1]);
+    req.userEmail = decoded.email || '';
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Недействительный или просроченный токен авторизации' });
+  }
+}
+
 // Для вызовов сервер-сервер (например, от Python-сервиса финплана) —
 // Firebase ID-токен тут неприменим (нет живого пользователя, который бы
 // логинился), поэтому просто общий секрет в заголовке, известный обеим
@@ -110,4 +128,4 @@ function requireInternalApiKey(req, res, next) {
   next();
 }
 
-module.exports = { requireAdmin, requireEmails, requireInternalApiKey, ADMIN_EMAIL };
+module.exports = { requireAdmin, requireEmails, requireUser, requireInternalApiKey, ADMIN_EMAIL };

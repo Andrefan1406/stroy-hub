@@ -29,3 +29,33 @@ export async function renderPage(pdf, pageNumber, canvas) {
   const task = page.render({ canvasContext: ctx, viewport });
   return { width: base.width, height: base.height, task };
 }
+
+// Лист для подсветки изменений между редакциями: линии чертежа одним цветом
+// (rgb), белое — прозрачное. Два таких слоя (старый красный, новый синий)
+// в режиме multiply: совпавшее — тёмное, только в старом — красное,
+// только в новом — синее. Разрешение ниже основного — это слой для сравнения.
+const TINT_MAX_SIDE_PX = 3500;
+
+export async function renderTinted(pdf, pageNumber, [r, g, b]) {
+  const page = await pdf.getPage(pageNumber);
+  const base = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale: Math.min(2.5, TINT_MAX_SIDE_PX / Math.max(base.width, base.height)) });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(viewport.width);
+  canvas.height = Math.floor(viewport.height);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const ink = 255 - (d[i] + d[i + 1] + d[i + 2]) / 3; // тёмное — сильнее
+    d[i] = r;
+    d[i + 1] = g;
+    d[i + 2] = b;
+    d[i + 3] = Math.min(255, ink * 1.6);
+  }
+  ctx.putImageData(img, 0, 0);
+  return { canvas, width: base.width, height: base.height };
+}
