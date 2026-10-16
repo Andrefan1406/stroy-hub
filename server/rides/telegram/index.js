@@ -13,6 +13,12 @@
 //
 // Один токен нельзя одновременно использовать в webhook и polling: для
 // локальной проверки заведите отдельного тестового бота.
+//
+// Защита от перехвата: polling снимает вебхук, и боевой бот на хостинге
+// замолкает. Поэтому polling не запускается, если у токена уже стоит
+// вебхук (значит, этот бот работает на сервере) — разве что явно
+// TELEGRAM_FORCE_POLLING=1. А сервер в режиме webhook раз в 5 минут
+// проверяет, что вебхук на месте, и ставит его обратно, если его сняли.
 const { ridesBus, emitToDriver } = require('../socket');
 const { requestEvents } = require('../events');
 const { createApi } = require('./api');
@@ -26,6 +32,7 @@ const WEBHOOK_PATH = '/api/telegram/webhook';
 // ставятся команды их роли (bot.js: COMMANDS).
 const DEFAULT_COMMANDS = [{ command: 'help', description: 'Как подключить бота' }];
 const STALE_CHECK_MS = 60 * 1000;
+const WEBHOOK_CHECK_MS = 5 * 60 * 1000;
 
 const state = { enabled: false, username: null, webApp: false };
 
@@ -112,16 +119,30 @@ function initTelegram({ app, getDb, env = process.env }) {
     });
   }
 
+  const webhookUrl = mode === 'webhook' ? `${env.PUBLIC_BASE_URL.replace(/\/$/, '')}${WEBHOOK_PATH}` : null;
+  const setWebhook = () => api.call('setWebhook', {
+    url: webhookUrl,
+    secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+    allowed_updates: ['message', 'callback_query'],
+  });
+
   (async () => {
     try {
       state.username = (await api.call('getMe')).username;
+      if (mode === 'polling') {
+        const info = await api.call('getWebhookInfo');
+        if (info.url && env.TELEGRAM_FORCE_POLLING !== '1') {
+          state.enabled = false;
+          unsubscribe();
+          console.error(`[telegram] у бота @${state.username} стоит вебхук (${info.url.replace(/^(https?:\/\/[^/]+).*/, '$1')}) — он работает на сервере. `
+            + 'Локальный polling не запущен, чтобы не отключить его. Для проверки заведите тестового бота '
+            + '(или TELEGRAM_FORCE_POLLING=1, если точно нужно перехватить).');
+          return;
+        }
+      }
       await api.call('setMyCommands', { commands: DEFAULT_COMMANDS });
       if (mode === 'webhook') {
-        await api.call('setWebhook', {
-          url: `${env.PUBLIC_BASE_URL.replace(/\/$/, '')}${WEBHOOK_PATH}`,
-          secret_token: env.TELEGRAM_WEBHOOK_SECRET,
-          allowed_updates: ['message', 'callback_query'],
-        });
+        await setWebhook();
       } else {
         await api.call('deleteWebhook', { drop_pending_updates: false });
         pollLoop(api, bot);
@@ -137,6 +158,22 @@ function initTelegram({ app, getDb, env = process.env }) {
   setInterval(() => {
     try { store.pruneOldUpdates(getDb()); } catch (err) { console.error('[telegram] очистка:', err.message); }
   }, 6 * 3600 * 1000).unref();
+
+  // Вебхук сняли (например, кто-то запустил этот токен в polling) — вернуть.
+  if (mode === 'webhook') {
+    setInterval(async () => {
+      if (!state.enabled) return;
+      try {
+        const info = await api.call('getWebhookInfo');
+        if (info.url !== webhookUrl) {
+          await setWebhook();
+          console.warn(`[telegram] вебхук был ${info.url ? 'изменён' : 'снят'} — восстановлен`);
+        }
+      } catch (err) {
+        console.error('[telegram] проверка вебхука:', err.message);
+      }
+    }, WEBHOOK_CHECK_MS).unref();
+  }
 
   // «Заявку никто не взял, подача скоро» — диспетчерам.
   setInterval(() => {
