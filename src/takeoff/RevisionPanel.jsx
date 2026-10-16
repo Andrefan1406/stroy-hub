@@ -5,14 +5,14 @@ import React from "react";
 import { angleOf, isIdentity, pageMapConflicts, scaleOf } from "./revision";
 
 const ALIGN_STEPS = [
-  "1) Щёлкните точку на старом: угол замера (прилипает) или, например, пересечение осей А/1 на красном слое.",
-  "2) Щёлкните ту же точку на новом чертеже (синий слой).",
-  "3) Вторая точка на старом — подальше от первой, например пересечение осей Г/5.",
-  "4) Та же вторая точка на новом чертеже.",
+  "1) Точка на СТАРОМ (красный чертёж или угол замера — прилипает), например пересечение осей А/1.",
+  "2) Та же точка на НОВОМ (синий чертёж).",
+  "3) Вторая точка на СТАРОМ (красный) — подальше от первой, например пересечение осей Г/5.",
+  "4) Та же вторая точка на НОВОМ (синий).",
 ];
 const fmt = (v, d = 3) => v.toLocaleString("ru-RU", { maximumFractionDigits: d, minimumFractionDigits: d });
 
-export default function RevisionPanel({ rev, oldFileName, counts, setRev, onApply, onCancel }) {
+export default function RevisionPanel({ rev, oldFileName, counts, setRev, onMapPage, onApply, onCancel }) {
   const pages = Object.keys(rev.pageMap).map(Number).sort((a, b) => a - b);
   const conflicts = pageMapConflicts(rev.pageMap);
   const t = rev.transforms[rev.oldPage];
@@ -23,8 +23,8 @@ export default function RevisionPanel({ rev, oldFileName, counts, setRev, onAppl
       <div style={s.title}>Замена чертежа — новая редакция</div>
       <div style={s.muted}>Было: {oldFileName}<br />Стало: <b>{rev.file.name}</b> ({rev.numPages} л.)</div>
       <div style={s.hint}>
-        Замеры, калибровка, этажи и проёмы перейдут на новый чертёж. Проверьте каждый лист: замеры (полупрозрачные) должны лечь на новый чертёж.
-        Если лист сдвинут или в другом масштабе — «Совместить по двум точкам».
+        Замеры, калибровка, этажи и проёмы перейдут на новый чертёж. Проверьте каждый лист: красный (старый) чертёж
+        и замеры должны лечь точно на синий (новый). Не легли — «Совместить по двум точкам».
       </div>
 
       <div style={s.blockTitle}>Листы</div>
@@ -34,12 +34,16 @@ export default function RevisionPanel({ rev, oldFileName, counts, setRev, onAppl
           <div key={p} style={{ ...s.pageRow, ...(p === rev.oldPage ? s.pageActive : null) }} onClick={() => set({ oldPage: p, align: null })}>
             <div style={{ flex: 1 }}>
               <b>Лист {p}</b> <span style={s.muted}>({counts[p] || 0} зам.)</span>
-              <div style={s.small}>{tp && !isIdentity(tp) ? `совмещён: ×${fmt(scaleOf(tp))}, ${fmt(angleOf(tp), 1)}°` : "без сдвига"}</div>
+              <div style={s.small}>
+                {tp && tp === rev.auto?.[p]
+                  ? `подогнан по размеру листа: ×${fmt(scaleOf(tp))} — проверьте`
+                  : tp && !isIdentity(tp) ? `совмещён: ×${fmt(scaleOf(tp))}, ${fmt(angleOf(tp), 1)}°` : "без сдвига"}
+              </div>
             </div>
             <span>→</span>
             <select style={{ ...s.input, width: 92, ...(conflicts.includes(rev.pageMap[p]) ? s.bad : null) }} value={rev.pageMap[p] ?? ""}
               onClick={(e) => e.stopPropagation()}
-              onChange={(e) => set({ pageMap: { ...rev.pageMap, [p]: e.target.value ? Number(e.target.value) : null }, oldPage: p, align: null })}>
+              onChange={(e) => onMapPage(p, e.target.value ? Number(e.target.value) : null)}>
               <option value="">не переносить</option>
               {Array.from({ length: rev.numPages }, (_, i) => <option key={i + 1} value={i + 1}>лист {i + 1}</option>)}
             </select>

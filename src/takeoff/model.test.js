@@ -5,7 +5,7 @@ import {
   buildMasonryStatement, effectiveHeight, importOpenings, masonryMeasure, materialUse, placeRect, rectQuantity, wallQuantity,
 } from "./masonry";
 import {
-  angleOf, applyT, invertT, pageMapConflicts, scaleOf, similarityFromPairs, transferProject,
+  angleOf, applyT, guessTransform, invertT, pageMapConflicts, scaleOf, similarityFromPairs, transferProject, transformedBounds,
 } from "./revision";
 
 const sq = (s) => [{ x: 0, y: 0 }, { x: s, y: 0 }, { x: s, y: s }, { x: 0, y: s }];
@@ -201,4 +201,12 @@ test("перенос на новую редакцию: объёмы и метр�
   expect(masonryMeasure(byId.s, { metersPerUnit: 0.01 / 0.5 }).quantity).toBeCloseTo(1.0647, 10);
   expect(placeRect(byId.s.channels[0], [{ ...byId.s, channels: [] }])).toEqual({ channelOf: "s" }); // канал остался внутри
   expect(pageMapConflicts({ 1: 2, 3: 2, 4: null })).toEqual([2]);
+});
+
+test("начальное совмещение по размеру листа: тот же чертёж на листе другого формата", () => {
+  const t = guessTransform({ width: 842, height: 595 }, { width: 303.12, height: 214.2 });
+  expect(scaleOf(t)).toBeCloseTo(0.36, 3);
+  expect(guessTransform({ width: 842, height: 595 }, { width: 842, height: 595 })).toBeNull(); // тот же размер
+  expect(guessTransform({ width: 842, height: 595 }, { width: 595, height: 842 })).toBeNull(); // другие пропорции
+  expect(transformedBounds({ width: 100, height: 50 }, t)).toEqual({ x0: 0, y0: 0, x1: 100 * t.a, y1: 50 * t.a });
 });

@@ -59,3 +59,9 @@ export async function renderTinted(pdf, pageNumber, [r, g, b]) {
   ctx.putImageData(img, 0, 0);
   return { canvas, width: base.width, height: base.height };
 }
+
+// Размер страницы в единицах PDF (без отрисовки).
+export async function pageSize(pdf, pageNumber) {
+  const vp = (await pdf.getPage(pageNumber)).getViewport({ scale: 1 });
+  return { width: vp.width, height: vp.height };
+}

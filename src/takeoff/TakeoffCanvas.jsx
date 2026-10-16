@@ -54,7 +54,7 @@ function lineLabelPoint(points) {
 const TakeoffCanvas = forwardRef(function TakeoffCanvas(
   {
     pdf, pageNumber, measurements, selectedId, mode, deduct, metersPerUnit, labelFor, colorFor, onSelect, onFinish, onCalibrated, onStatus,
-    onEdit, revisionView, compareLayers, alignSnap, onAlignClick, marks,
+    onEdit, revisionView, compareLayers, alignSnap, onAlignClick, marks, extent,
   },
   ref
 ) {
@@ -70,13 +70,27 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
   const pan = useRef(null);
   const drag = useRef(null); // перетаскивание точки выделенного замера
 
+  // «Весь лист»; extent — что ещё должно попасть в кадр (при замене чертежа —
+  // старый лист после совмещения, он может быть крупнее нового).
+  const extentRef = useRef(extent);
+  extentRef.current = extent;
   const fit = useCallback((size = page) => {
     const box = boxRef.current;
     if (!box || !size) return;
     const pad = 20;
-    const k = clampK(Math.min((box.clientWidth - pad * 2) / size.width, (box.clientHeight - pad * 2) / size.height));
-    setView({ k, tx: (box.clientWidth - size.width * k) / 2, ty: (box.clientHeight - size.height * k) / 2 });
+    const e = extentRef.current;
+    const x0 = Math.min(0, e?.x0 ?? 0);
+    const y0 = Math.min(0, e?.y0 ?? 0);
+    const w = Math.max(size.width, e?.x1 ?? 0) - x0;
+    const h = Math.max(size.height, e?.y1 ?? 0) - y0;
+    const k = clampK(Math.min((box.clientWidth - pad * 2) / w, (box.clientHeight - pad * 2) / h));
+    setView({ k, tx: (box.clientWidth - w * k) / 2 - x0 * k, ty: (box.clientHeight - h * k) / 2 - y0 * k });
   }, [page]);
+  const extentKey = extent ? [extent.x0, extent.y0, extent.x1, extent.y1].map((v) => Math.round(v)).join(",") : "";
+  useEffect(() => {
+    if (extentKey) fit();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extentKey]);
 
   useImperativeHandle(ref, () => ({ fit: () => fit() }), [fit]);
 

@@ -102,3 +102,26 @@ export function pageMapConflicts(pageMap) {
   }
   return [...new Set(conflicts)];
 }
+
+// Начальное совмещение по размеру листа: тот же чертёж, выгруженный на лист
+// другого формата или в другом масштабе, — пропорции листа те же, размеры
+// в k раз другие. Тогда старый лист сразу подгоняется × k (от левого
+// верхнего угла); дальше при необходимости уточняется по двум точкам.
+// null — размеры совпадают или пропорции разные (подгонять нечего / нельзя).
+export function guessTransform(oldSize, newSize) {
+  if (!oldSize || !newSize) return null;
+  const rx = newSize.width / oldSize.width;
+  const ry = newSize.height / oldSize.height;
+  if (Math.abs(rx / ry - 1) > 0.02 || Math.abs(rx - 1) < 0.005) return null;
+  return { a: (rx + ry) / 2, b: 0, tx: 0, ty: 0 };
+}
+
+// Габарит листа после совмещения — чтобы на экране был виден весь старый
+// чертёж с замерами, а не только новый лист.
+export function transformedBounds(size, t) {
+  const pts = [{ x: 0, y: 0 }, { x: size.width, y: 0 }, { x: size.width, y: size.height }, { x: 0, y: size.height }].map((p) => applyT(t, p));
+  return {
+    x0: Math.min(...pts.map((p) => p.x)), y0: Math.min(...pts.map((p) => p.y)),
+    x1: Math.max(...pts.map((p) => p.x)), y1: Math.max(...pts.map((p) => p.y)),
+  };
+}

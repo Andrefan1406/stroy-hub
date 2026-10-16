@@ -20,7 +20,7 @@
 // изменения между редакциями.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { openPdf } from "../takeoff/pdf";
+import { openPdf, pageSize } from "../takeoff/pdf";
 import TakeoffCanvas from "../takeoff/TakeoffCanvas";
 import CatalogEditor from "../takeoff/CatalogEditor";
 import MeasurementProps from "../takeoff/MeasurementProps";
@@ -28,7 +28,8 @@ import StatementPanel from "../takeoff/StatementPanel";
 import { FloorsPanel, OpeningsPanel } from "../takeoff/ProjectPanels";
 import RevisionPanel, { Legend } from "../takeoff/RevisionPanel";
 import {
-  IDENTITY, applyT, invertT, pagesToMap, scaleOf, similarityFromPairs, transferProject, transformMeasurement,
+  IDENTITY, applyT, guessTransform, invertT, pagesToMap, scaleOf, similarityFromPairs, transferProject, transformMeasurement,
+  transformedBounds,
 } from "../takeoff/revision";
 import { fetchCatalog, markWorkUsed } from "../takeoff/api";
 import { SHOW_CATALOG_EDITOR } from "../takeoff/config";
@@ -160,7 +161,17 @@ export default function TakeoffPage() {
     try {
       const doc = await openPdf(f);
       const pageMap = Object.fromEntries(pages.map((p) => [p, p <= doc.numPages ? p : null]));
-      setRev({ file: f, pdf: doc, numPages: doc.numPages, pageMap, transforms: {}, oldPage: pages.includes(pageNumber) ? pageNumber : pages[0], align: null, diff: true });
+      // Лист другого размера при тех же пропорциях — сразу подгоняем масштаб.
+      const oldSizes = {};
+      const transforms = {};
+      const auto = {};
+      for (const p of pages) {
+        oldSizes[p] = await pageSize(pdf, p);
+        if (pageMap[p] == null) continue;
+        const t = guessTransform(oldSizes[p], await pageSize(doc, pageMap[p]));
+        if (t) transforms[p] = auto[p] = t;
+      }
+      setRev({ file: f, pdf: doc, numPages: doc.numPages, pageMap, transforms, auto, oldSizes, oldPage: pages.includes(pageNumber) ? pageNumber : pages[0], align: null, diff: true });
       setSelectedId(null);
       setMode("select");
       setError("");
@@ -169,6 +180,19 @@ export default function TakeoffPage() {
       setError(`Не удалось открыть PDF: ${err.message}`);
       setStatus("");
     }
+  };
+
+  // Сменили лист новой редакции — заново подогнать масштаб по размеру листа.
+  const mapPage = async (oldPage, newPage) => {
+    const t = newPage ? guessTransform(rev.oldSizes[oldPage], await pageSize(rev.pdf, newPage)) : null;
+    setRev((r) => ({
+      ...r,
+      pageMap: { ...r.pageMap, [oldPage]: newPage },
+      transforms: { ...r.transforms, [oldPage]: t },
+      auto: { ...r.auto, [oldPage]: t },
+      oldPage,
+      align: null,
+    }));
   };
 
   const applyRevision = () => {
@@ -204,6 +228,18 @@ export default function TakeoffPage() {
       return [{ x: xs[0], y: ys[0] }, { x: xs[1], y: ys[0] }, { x: xs[1], y: ys[1] }, { x: xs[0], y: ys[1] }];
     })
     : m.points);
+  // В кадре — старый лист после совмещения и все замеры (даже за краем листа).
+  const revExtent = useMemo(() => {
+    if (!rev) return null;
+    const boxes = revShown.flatMap(vertices);
+    const sheet = rev.oldSizes?.[rev.oldPage] ? transformedBounds(rev.oldSizes[rev.oldPage], revT) : null;
+    if (sheet) boxes.push({ x: sheet.x0, y: sheet.y0 }, { x: sheet.x1, y: sheet.y1 });
+    if (!boxes.length) return null;
+    const xs = boxes.map((p) => p.x);
+    const ys = boxes.map((p) => p.y);
+    return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rev?.oldPage, rev?.oldSizes, revShown, revT]);
   const alignSnap = rev?.align ? revShown.flatMap(vertices) : null;
   const alignOrig = rev?.align ? revOld.flatMap(vertices) : null;
   const onAlignClick = ({ point, snapIndex }) => {
@@ -462,7 +498,7 @@ export default function TakeoffPage() {
       <div style={s.body}>
         <aside style={s.left}>
           {rev && (
-            <RevisionPanel rev={rev} oldFileName={file?.name} setRev={setRev} onApply={applyRevision} onCancel={() => setRev(null)}
+            <RevisionPanel rev={rev} oldFileName={file?.name} setRev={setRev} onMapPage={mapPage} onApply={applyRevision} onCancel={() => setRev(null)}
               counts={measurements.reduce((c, m) => ({ ...c, [m.page]: (c[m.page] || 0) + 1 }), {})} />
           )}
           {!rev && (<>
@@ -564,7 +600,8 @@ export default function TakeoffPage() {
                 selectedId={null} mode={rev.align ? "align" : "select"} deduct={false}
                 metersPerUnit={calibrations[rev.oldPage] ? calibrations[rev.oldPage] / scaleOf(revT) : null}
                 labelFor={labelFor} colorFor={colorFor} onSelect={() => {}} onFinish={() => {}} onCalibrated={() => {}} onStatus={setStatus}
-                revisionView compareLayers={compareLayers} alignSnap={alignSnap} onAlignClick={onAlignClick} marks={alignMarks} />
+                revisionView compareLayers={compareLayers} alignSnap={alignSnap} onAlignClick={onAlignClick} marks={alignMarks}
+                extent={revExtent} />
             ) : (
               <div style={s.empty}>Лист {rev.oldPage} не переносится — его замеры будут удалены из новой редакции.</div>
             )
