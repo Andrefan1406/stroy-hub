@@ -48,6 +48,7 @@ import RidesAdminPage from "./pages/rides/RidesAdminPage";
 import TelegramMiniApp, { TelegramMiniAppRoute } from "./pages/rides/TelegramMiniApp";
 import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
+import TakeoffPage from "./pages/TakeoffPage";
 
 
 const Protected = ({ children }) => (
@@ -109,6 +110,9 @@ const App = () => {
 
         {/* Главная */}
         <Route path="/" element={<Protected><HomePage /></Protected>} />
+
+        {/* Подсчёт объёмов отделочных работ по PDF-чертежам — считается в браузере. */}
+        <Route path="/takeoff" element={<Protected><TakeoffPage /></Protected>} />
 
         {/* Заявки */}
         <Route

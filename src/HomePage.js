@@ -147,6 +147,13 @@ const HomePage = () => {
         Графики и отчёты
       </button>
 
+      {/* Подсчёт объёмов по чертежам — пока в разработке, кнопка только у админа. */}
+      {currentEmail === 'admin@vkdev.kz' && (
+        <button onClick={() => navigate('/takeoff')} style={styles.button}>
+          Подсчёт объёмов по чертежам
+        </button>
+      )}
+
       {rideRole && ROLE_HOME_PATH[rideRole] && (
         <button onClick={() => navigate(ROLE_HOME_PATH[rideRole])} style={styles.rideButton}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style={{ verticalAlign: 'middle', marginRight: '8px' }}>
