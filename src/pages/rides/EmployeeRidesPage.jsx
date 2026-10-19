@@ -10,6 +10,7 @@ import LogoutButton from "../../rides/LogoutButton";
 import AdminPanelLinks from "../../rides/AdminPanelLinks";
 import { formatRoute, formatEstimate, formatClock } from "../../rides/format";
 import MapPicker from "../../rides/MapPicker";
+import AddressField, { addressNeedsMap, addressPayload, addressReady, emptyAddress } from "../../rides/AddressField";
 import CancelRequestModal from "../../rides/CancelRequestModal";
 import TelegramConnect from "../../rides/TelegramConnect";
 import RideHistoryTable from "../../rides/RideHistoryTable";
@@ -71,7 +72,9 @@ function statusColor(status) {
   }
 }
 
-const emptyForm = { fromAddress: "", toAddress: "", extraStops: [], requestedAt: "", purpose: "", passengersCount: 1, withReturn: false, comment: "" };
+// Адреса — значения AddressField: текст + точка на карте (обязательна, если
+// адрес не найден точно).
+const emptyForm = { from: emptyAddress, to: emptyAddress, extraStops: [], requestedAt: "", purpose: "", passengersCount: 1, withReturn: false, comment: "" };
 
 export default function EmployeeRidesPage() {
   const [requests, setRequests] = useState([]);
@@ -79,7 +82,6 @@ export default function EmployeeRidesPage() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState(emptyForm);
-  const [mapPickerTarget, setMapPickerTarget] = useState(null); // "fromAddress" | "toAddress" | { stopIndex } | null
   const [role, setRole] = useState(null); // диспетчер, зашедший сюда сам себе заказать машину, видит ссылку назад на /dispatcher
   // Главный админ: свои ФИО и телефон для водителя заполняет сам (у остальных — диспетчер).
   const [contact, setContact] = useState({ name: "", phone: "" });
@@ -229,12 +231,12 @@ export default function EmployeeRidesPage() {
     }
   };
 
-  const proposeStop = async (requestId, address) => {
+  const proposeStop = async (requestId, address, point) => {
     setProposeFor(null);
     setError("");
     try {
       // Новая точка от пассажира — всегда на согласование диспетчеру.
-      await ridesApiPost(`/api/v1/requests/${requestId}/stop-changes`, { action: "add", address });
+      await ridesApiPost(`/api/v1/requests/${requestId}/stop-changes`, { action: "add", address, lat: point?.lat, lng: point?.lng });
       setNotice(`Точка «${address}» отправлена диспетчеру на согласование.`);
       load();
     } catch (err) {
@@ -261,21 +263,63 @@ export default function EmployeeRidesPage() {
     }
   };
 
+  // Адреса без точки на карте: заявку нельзя отправить, пока их не отметят.
+  const addressFields = [
+    { label: "откуда", v: form.from },
+    { label: "куда", v: form.to },
+    ...form.extraStops.map((v, i) => ({ label: `пункт ${i + 1}`, v })),
+  ].filter((f) => f.v.address.trim());
+  const needMap = addressFields.filter((f) => addressNeedsMap(f.v));
+  const checking = addressFields.some((f) => !addressReady(f.v) && !addressNeedsMap(f.v));
+  const addressesReady = !needMap.length && !checking;
+
+  const blockedReason = needsContact
+    ? "Сначала сохраните ваши ФИО и телефон в блоке «Ваши данные для водителя» выше."
+    : !submission.open
+      ? submission.message
+      : selectedSlotUnavailable
+        ? "Выберите другое время подачи."
+        : "";
+  const submitBlocked = submitting || selectedSlotUnavailable || !submission.open || needsContact || !addressesReady;
+
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.fromAddress.trim() || !form.toAddress.trim() || !form.requestedAt || !form.purpose.trim()) {
+    if (!form.from.address.trim() || !form.to.address.trim() || !form.requestedAt || !form.purpose.trim()) {
       setError("Заполните адрес подачи, адрес назначения, время и цель поездки");
       return;
     }
+    if (!addressesReady) return;
     setSubmitting(true);
     setError("");
+    const filledStops = form.extraStops.map((v, i) => i).filter((i) => form.extraStops[i].address.trim());
     try {
-      const payload = { ...form, extraStops: form.extraStops.map((s) => s.trim()).filter(Boolean) };
+      const from = addressPayload(form.from);
+      const to = addressPayload(form.to);
+      const payload = {
+        fromAddress: from.address, fromLat: from.lat, fromLng: from.lng,
+        toAddress: to.address, toLat: to.lat, toLng: to.lng,
+        extraStops: filledStops.map((i) => addressPayload(form.extraStops[i])),
+        requestedAt: form.requestedAt, purpose: form.purpose, passengersCount: form.passengersCount,
+        withReturn: form.withReturn, comment: form.comment,
+      };
       const { request } = await ridesApiPost("/api/v1/requests", payload);
       setRequests((prev) => [request, ...prev]);
       setForm(emptyForm);
     } catch (err) {
       setError(err.message || "Не удалось отправить заявку");
+      // Сервер не нашёл адрес точно — подсветить эти поля (нужна точка на карте).
+      if (err.data?.unresolved) {
+        setForm((f) => {
+          const next = { ...f, extraStops: [...f.extraStops] };
+          for (const u of err.data.unresolved) {
+            const mark = (v) => ({ ...v, point: null, status: ["street", "unavailable"].includes(u.status) ? u.status : "not_found" });
+            if (u.index === 0) next.from = mark(next.from);
+            else if (u.index === 1) next.to = mark(next.to);
+            else if (filledStops[u.index - 2] != null) next.extraStops[filledStops[u.index - 2]] = mark(next.extraStops[filledStops[u.index - 2]]);
+          }
+          return next;
+        });
+      }
     } finally {
       loadSlots(); // и после успеха (слот занят на одну заявку больше), и после отказа "время занято"
 
@@ -350,33 +394,28 @@ export default function EmployeeRidesPage() {
 
       <form onSubmit={submit} style={s.form}>
         <div style={s.formRow}>
-          <label style={s.label}>Откуда
-            <div style={s.addressRow}>
-              <input style={{ ...s.input, flex: 1 }} value={form.fromAddress} onChange={(e) => setForm({ ...form, fromAddress: e.target.value })} />
-              <button type="button" style={s.mapButton} onClick={() => setMapPickerTarget("fromAddress")}>На карте</button>
-            </div>
-          </label>
-          <label style={s.label}>Куда
-            <div style={s.addressRow}>
-              <input style={{ ...s.input, flex: 1 }} value={form.toAddress} onChange={(e) => setForm({ ...form, toAddress: e.target.value })} />
-              <button type="button" style={s.mapButton} onClick={() => setMapPickerTarget("toAddress")}>На карте</button>
-            </div>
-          </label>
+          <div style={s.label}>Откуда
+            <AddressField value={form.from} onChange={(v) => setForm((f) => ({ ...f, from: v }))} inputStyle={s.input} buttonStyle={s.mapButton} mapTitle="Отметьте место подачи" />
+          </div>
+          <div style={s.label}>Куда
+            <AddressField value={form.to} onChange={(v) => setForm((f) => ({ ...f, to: v }))} inputStyle={s.input} buttonStyle={s.mapButton} mapTitle="Отметьте место назначения" />
+          </div>
         </div>
 
         {form.extraStops.map((stop, i) => (
           <div key={i} style={s.stopRow}>
-            <input
-              style={{ ...s.input, flex: 1 }}
-              placeholder={`Ещё пункт назначения ${i + 1}`}
+            <AddressField
               value={stop}
-              onChange={(e) => {
-                const next = [...form.extraStops];
-                next[i] = e.target.value;
-                setForm({ ...form, extraStops: next });
-              }}
+              placeholder={`Ещё пункт назначения ${i + 1}`}
+              inputStyle={s.input}
+              buttonStyle={s.mapButton}
+              mapTitle={`Отметьте пункт назначения ${i + 1}`}
+              onChange={(v) => setForm((f) => {
+                const next = [...f.extraStops];
+                next[i] = v;
+                return { ...f, extraStops: next };
+              })}
             />
-            <button type="button" style={s.mapButton} onClick={() => setMapPickerTarget({ stopIndex: i })}>На карте</button>
             <button
               type="button"
               style={s.removeStopButton}
@@ -389,7 +428,7 @@ export default function EmployeeRidesPage() {
         <button
           type="button"
           style={s.addStopButton}
-          onClick={() => setForm({ ...form, extraStops: [...form.extraStops, ""] })}
+          onClick={() => setForm({ ...form, extraStops: [...form.extraStops, emptyAddress] })}
         >
           + Добавить пункт назначения
         </button>
@@ -438,36 +477,27 @@ export default function EmployeeRidesPage() {
             <input type="number" min={1} max={50} style={s.input} value={form.passengersCount} onChange={(e) => setForm({ ...form, passengersCount: e.target.value })} />
           </label>
         </div>
-        <label style={s.label}>Цель поездки *
+        <label style={{ ...s.label, flex: "none" }}>Цель поездки *
           <input style={s.input} required value={form.purpose} onChange={(e) => setForm({ ...form, purpose: e.target.value })} />
         </label>
         <label style={s.checkboxLabel}>
           <input type="checkbox" checked={form.withReturn} onChange={(e) => setForm({ ...form, withReturn: e.target.checked })} />
           С ожиданием и возвратом (водитель ждёт на месте и везёт обратно)
         </label>
-        <label style={s.label}>Комментарий
+        <label style={{ ...s.label, flex: "none" }}>Комментарий
           <textarea style={{ ...s.input, minHeight: "60px" }} value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
         </label>
-        <button type="submit" style={s.primaryButton} disabled={submitting || selectedSlotUnavailable || !submission.open || needsContact}>Подать заявку</button>
+        {needMap.length > 0 && (
+          <div style={s.slotWarning}>
+            Укажите на карте: {needMap.map((f) => `«${f.v.address.trim()}» (${f.label})`).join(", ")} — для точного расчёта времени в пути и километража.
+          </div>
+        )}
+        <button type="submit" style={submitBlocked ? { ...s.primaryButton, ...s.buttonDisabled } : s.primaryButton} disabled={submitBlocked}>
+          {checking ? "Проверяем адреса…" : submitting ? "Отправляем…" : "Подать заявку"}
+        </button>
+        {/* Почему кнопка неактивна — иначе кажется, что «ничего не происходит». */}
+        {blockedReason && <div style={s.blockedReason}>{blockedReason}</div>}
       </form>
-
-      {mapPickerTarget && (
-        <MapPicker
-          onClose={() => setMapPickerTarget(null)}
-          onSelect={(address) => {
-            if (mapPickerTarget === "fromAddress") setForm((f) => ({ ...f, fromAddress: address }));
-            else if (mapPickerTarget === "toAddress") setForm((f) => ({ ...f, toAddress: address }));
-            else {
-              setForm((f) => {
-                const next = [...f.extraStops];
-                next[mapPickerTarget.stopIndex] = address;
-                return { ...f, extraStops: next };
-              });
-            }
-            setMapPickerTarget(null);
-          }}
-        />
-      )}
 
       <section style={s.section}>
         <h2 style={s.sectionTitle}>Мои активные заявки</h2>
@@ -541,7 +571,7 @@ export default function EmployeeRidesPage() {
           <CancelRequestModal onClose={() => setCancelTargetId(null)} onConfirm={cancelRequest} />
         )}
         {proposeFor && (
-          <MapPicker onClose={() => setProposeFor(null)} onSelect={(address) => proposeStop(proposeFor, address)} />
+          <MapPicker title="Отметьте новую точку маршрута" onClose={() => setProposeFor(null)} onSelect={(address, point) => proposeStop(proposeFor, address, point)} />
         )}
       </section>
 
@@ -593,6 +623,8 @@ const s = {
   checkboxLabel: { display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "#444" },
   input: { padding: "8px 10px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", width: "100%", boxSizing: "border-box", minWidth: 0 },
   primaryButton: { alignSelf: "flex-start", background: "#1976d2", color: "#fff", border: "none", borderRadius: "6px", padding: "10px 20px", cursor: "pointer", fontSize: "14px", fontWeight: 600 },
+  buttonDisabled: { background: "#b0bec5", cursor: "not-allowed" },
+  blockedReason: { fontSize: "12px", color: "#b45309", marginTop: "-4px" },
   stopRow: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" },
   addStopButton: { alignSelf: "flex-start", background: "none", border: "1px dashed #1976d2", color: "#1976d2", borderRadius: "6px", padding: "6px 12px", cursor: "pointer", fontSize: "13px" },
   removeStopButton: { background: "#fff0f0", color: "#c00", border: "1px solid #f5b5b5", borderRadius: "6px", padding: "8px 12px", cursor: "pointer", fontSize: "13px" },

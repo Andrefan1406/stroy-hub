@@ -27,7 +27,11 @@ export async function ridesApiFetch(path, options = {}) {
     },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Ошибка сервера (${res.status})`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Ошибка сервера (${res.status})`);
+    err.data = data; // например, unresolved — адреса, которые нужно отметить на карте
+    throw err;
+  }
   return data;
 }
 

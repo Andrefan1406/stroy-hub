@@ -44,6 +44,8 @@ function setupRidesTestApp({ realSocket = false } = {}) {
       perPoint: coords.map((_, i) => ({ index: i, etaMinutes: i * 10 })),
     }),
     estimateRoute: async () => null,
+    // Любой адрес «найден точно» — кроме помеченных в тесте как не найденные.
+    lookupAddress: async (address) => (globalThis.__unresolvedAddresses?.[address] || { status: 'found', lat: 49.95, lng: 82.6 }),
     estimateProposalImpact: async () => null,
   });
 
@@ -82,6 +84,7 @@ function setupRidesTestApp({ realSocket = false } = {}) {
   app.use('/api/v1/users', require(path.join(RIDES_DIR, 'usersRouter.js')));
   app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'mergeRouter.js')));
   app.use('/api/v1/requests', require(path.join(RIDES_DIR, 'stopProposalsRouter.js')));
+  app.use('/api/v1/geocode', require(path.join(RIDES_DIR, 'geocodeRouter.js')));
 
   return { app, db, emitted };
 }

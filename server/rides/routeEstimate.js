@@ -42,6 +42,10 @@ const WAIT_MINUTES = 10;        // посадка/высадка на конеч
 const PER_STOP_MINUTES = 5;     // остановка на каждом промежуточном пункте
 const ROAD_FACTOR = 1.3;        // расстояние по прямой → примерная длина по дорогам
 const GEOCODE_TTL_DAYS = 30;
+// place_rank Nominatim: 26–27 — улица, 28 — дом с номером, 30 — здание,
+// организация. Ниже 28 — найдена только улица (а она бывает в километры
+// длиной), район или город: такую точку для маршрута не берём.
+const PRECISE_PLACE_RANK = 28;
 
 function haversineKm(a, b) {
   const R = 6371;
@@ -67,7 +71,7 @@ async function geocodeRaw(address) {
   if (!res.ok) throw new Error(`Nominatim ${res.status}`);
   const data = await res.json();
   if (!data.length) return null;
-  return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+  return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), precise: Number(data[0].place_rank) >= PRECISE_PLACE_RANK };
 }
 
 // Кэш geocode_cache: свежую запись (в пределах TTL) отдаём сразу, включая
@@ -78,26 +82,41 @@ async function geocodeAddress(address) {
   const key = String(address || '').trim();
   if (!key) return null;
   const db = getWriteDb();
-  const row = db.prepare('SELECT lat, lng, found, fetched_at FROM geocode_cache WHERE address = ?').get(key);
+  const r = await lookupAddress(key);
+  return r.status === 'found' || r.status === 'street' ? { lat: r.lat, lng: r.lng } : null;
+}
+
+// Поиск адреса с кэшем и оценкой точности:
+//   found       — конкретное место (дом, здание, организация);
+//   street      — только улица/район/город — точку нужно отметить на карте;
+//   not_found   — не найдено в окрестностях города;
+//   unavailable — геокодер не ответил (и в кэше ничего) — тоже на карту.
+// lat/lng есть у found и street (street — чтобы открыть карту на этой улице).
+async function lookupAddress(address) {
+  const key = String(address || '').trim();
+  if (!key) return { status: 'not_found' };
+  const db = getWriteDb();
+  const row = db.prepare('SELECT lat, lng, found, precise, fetched_at FROM geocode_cache WHERE address = ?').get(key);
+  const fromRow = (r) => (r.found ? { status: r.precise ? 'found' : 'street', lat: r.lat, lng: r.lng } : { status: 'not_found' });
   if (row) {
     const ageDays = (Date.now() - new Date(row.fetched_at + 'Z').getTime()) / 86400000;
-    if (ageDays < GEOCODE_TTL_DAYS) {
-      return row.found ? { lat: row.lat, lng: row.lng } : null;
-    }
+    // Записи без точности (из кэша до её появления) — переспрашиваем.
+    if (ageDays < GEOCODE_TTL_DAYS && (!row.found || row.precise != null)) return fromRow(row);
   }
   let result;
   try {
     result = await geocodeRaw(key);
   } catch (err) {
-    return row && row.found ? { lat: row.lat, lng: row.lng } : null;
+    if (row && row.found && row.precise != null) return fromRow(row);
+    return row && row.found ? { status: 'street', lat: row.lat, lng: row.lng } : { status: 'unavailable' };
   }
   db.prepare(
-    `INSERT INTO geocode_cache (address, lat, lng, found, fetched_at)
-     VALUES (?, ?, ?, ?, datetime('now'))
+    `INSERT INTO geocode_cache (address, lat, lng, found, precise, fetched_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(address) DO UPDATE SET
-       lat = excluded.lat, lng = excluded.lng, found = excluded.found, fetched_at = excluded.fetched_at`
-  ).run(key, result ? result.lat : null, result ? result.lng : null, result ? 1 : 0);
-  return result;
+       lat = excluded.lat, lng = excluded.lng, found = excluded.found, precise = excluded.precise, fetched_at = excluded.fetched_at`
+  ).run(key, result ? result.lat : null, result ? result.lng : null, result ? 1 : 0, result ? (result.precise ? 1 : 0) : null);
+  return result ? { status: result.precise ? 'found' : 'street', lat: result.lat, lng: result.lng } : { status: 'not_found' };
 }
 
 async function osrmLegKm(points) {
@@ -187,8 +206,19 @@ async function recomputeRequestEstimate(requestId, { actorUserId = null } = {}) 
     .all(requestId);
 
   const addrList = [request.from_address, request.to_address, ...stops.map((st) => st.address)];
+  // Координаты точки, если уже известны (отмечена на карте или найдена при
+  // подаче заявки), — главнее текста адреса: текст — подпись для водителя
+  // («ул. Базовая, склад №2»), а считаем по точке. Нет — ищем по тексту.
+  const stored = [
+    [request.from_lat, request.from_lng],
+    [request.to_lat, request.to_lng],
+    ...stops.map((st) => [st.lat, st.lng]),
+  ];
   const coords = [];
-  for (const addr of addrList) coords.push(await geocodeAddress(addr)); // последовательно — щадим лимит Nominatim
+  for (let i = 0; i < addrList.length; i++) {
+    const [lat, lng] = stored[i];
+    coords.push(lat != null && lng != null ? { lat, lng } : await geocodeAddress(addrList[i])); // последовательно — щадим лимит Nominatim
+  }
 
   const estimate = await estimateFromPoints(coords, !!request.with_return);
 
@@ -324,6 +354,7 @@ module.exports = {
   estimateFromPoints,
   recomputeRequestEstimate,
   geocodeAddress,
+  lookupAddress,
   chooseInsertIndex,
   estimateProposalImpact,
 };

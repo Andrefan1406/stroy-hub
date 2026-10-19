@@ -319,6 +319,12 @@ function migrateSchema(db) {
   const stopColumns = db.prepare("PRAGMA table_info(request_stops)").all().map((c) => c.name);
   if (!stopColumns.includes('lat')) db.exec('ALTER TABLE request_stops ADD COLUMN lat REAL');
   if (!stopColumns.includes('lng')) db.exec('ALTER TABLE request_stops ADD COLUMN lng REAL');
+  // Точность найденного адреса: 1 — конкретное место (дом, здание,
+  // организация), 0 — только улица/район/город (такой точке для расчёта
+  // маршрута верить нельзя, см. routeEstimate.js checkAddress). NULL —
+  // запись из кэша до появления этой колонки: точность неизвестна.
+  const geocodeColumns = db.prepare('PRAGMA table_info(geocode_cache)').all().map((c) => c.name);
+  if (!geocodeColumns.includes('precise')) db.exec('ALTER TABLE geocode_cache ADD COLUMN precise INTEGER');
   if (!stopColumns.includes('merged_from_request_id')) {
     db.exec('ALTER TABLE request_stops ADD COLUMN merged_from_request_id INTEGER');
   }

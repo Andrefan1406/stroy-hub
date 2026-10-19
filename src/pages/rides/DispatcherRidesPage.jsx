@@ -210,11 +210,11 @@ export default function DispatcherRidesPage() {
     }
   };
 
-  const addStop = async (requestId, address) => {
+  const addStop = async (requestId, address, point) => {
     setBusy(true);
     setError("");
     try {
-      await ridesApiPost(`/api/v1/requests/${requestId}/stop-changes`, { action: "add", address });
+      await ridesApiPost(`/api/v1/requests/${requestId}/stop-changes`, { action: "add", address, lat: point?.lat, lng: point?.lng });
       setMapForRequest(null);
     } catch (err) {
       setError(err.message || "Не удалось добавить точку");
@@ -498,8 +498,9 @@ export default function DispatcherRidesPage() {
 
       {mapForRequest && (
         <MapPicker
+          title="Отметьте новую точку маршрута"
           onClose={() => setMapForRequest(null)}
-          onSelect={(address) => addStop(mapForRequest, address)}
+          onSelect={(address, point) => addStop(mapForRequest, address, point)}
         />
       )}
 

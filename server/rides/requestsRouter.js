@@ -21,6 +21,7 @@ const {
 const { findDriverConflict, syncDriverStatus, describeRequest } = require('./driverAvailability');
 const { claimRequest, changeRequestStatus, declineRequest } = require('./driverActions');
 const { cancelOwnRequest } = require('./employeeActions');
+const { resolvePoints, unresolvedMessage } = require('./addressCheck');
 
 const router = express.Router();
 
@@ -36,7 +37,20 @@ const createRequestSchema = z.object({
   purpose: z.string().trim().min(1, 'Укажите цель поездки'),
   passengersCount: z.coerce.number().int().min(1).max(50).default(1),
   withReturn: z.boolean().optional().default(false),
-  extraStops: z.array(z.string().trim().min(1)).max(10, 'Не более 10 доп. пунктов').optional().default([]),
+  // Доп. пункт — строка адреса или { address, lat, lng } с точкой на карте.
+  extraStops: z
+    .array(z.union([
+      z.string().trim().min(1),
+      z.object({ address: z.string().trim().min(1), lat: z.coerce.number().optional(), lng: z.coerce.number().optional() }),
+    ]))
+    .max(10, 'Не более 10 доп. пунктов')
+    .optional()
+    .default([]),
+  // Точки на карте для подачи и назначения (обязательны, если адрес не найден точно).
+  fromLat: z.coerce.number().optional(),
+  fromLng: z.coerce.number().optional(),
+  toLat: z.coerce.number().optional(),
+  toLng: z.coerce.number().optional(),
   comment: z.string().trim().optional().default(''),
 });
 
@@ -97,7 +111,19 @@ router.post('/', requireRideRole('employee', 'dispatcher'), validate(createReque
     return res.status(400).json({ error: 'Сначала укажите ваши ФИО и телефон в блоке «Ваши данные для водителя»' });
   }
   const db = getWriteDb();
-  const { fromAddress, toAddress, requestedAt, purpose, passengersCount, withReturn, extraStops, comment } = req.body;
+  const { fromAddress, toAddress, requestedAt, purpose, passengersCount, withReturn, comment } = req.body;
+  const stopsIn = req.body.extraStops.map((st) => (typeof st === 'string' ? { address: st } : st));
+  const extraStops = stopsIn.map((st) => st.address);
+
+  // Каждый адрес — найден точно или отмечен на карте; иначе заявку не принимаем.
+  const { points, unresolved } = await resolvePoints([
+    { address: fromAddress, lat: req.body.fromLat, lng: req.body.fromLng, label: 'подача' },
+    { address: toAddress, lat: req.body.toLat, lng: req.body.toLng, label: 'назначение' },
+    ...stopsIn.map((st, i) => ({ ...st, label: `доп. пункт ${i + 1}` })),
+  ]);
+  if (unresolved.length) {
+    return res.status(400).json({ error: unresolvedMessage(unresolved), unresolved });
+  }
 
   // Лимит слота проверяется в той же транзакции, что и вставка
   // (better-sqlite3 синхронный) — две одновременные заявки на последнее
@@ -108,14 +134,16 @@ router.post('/', requireRideRole('employee', 'dispatcher'), validate(createReque
     if ((slotCounts(db, slot.slice(0, 10))[slot.slice(11)] || 0) >= capacity) return null;
     const info = db
       .prepare(
-        `INSERT INTO requests (employee_id, from_address, to_address, requested_at, purpose, passengers_count, with_return, comment, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_assignment')`
+        `INSERT INTO requests (employee_id, from_address, to_address, requested_at, purpose, passengers_count, with_return, comment, status,
+                               from_lat, from_lng, to_lat, to_lng)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_assignment', ?, ?, ?, ?)`
       )
       .run(
-        req.rideUser.id, fromAddress, toAddress, requestedAt, purpose, passengersCount, withReturn ? 1 : 0, comment
+        req.rideUser.id, fromAddress, toAddress, requestedAt, purpose, passengersCount, withReturn ? 1 : 0, comment,
+        points[0].lat, points[0].lng, points[1].lat, points[1].lng
       );
-    const insertStop = db.prepare('INSERT INTO request_stops (request_id, address, stop_order) VALUES (?, ?, ?)');
-    extraStops.forEach((address, i) => insertStop.run(info.lastInsertRowid, address, i));
+    const insertStop = db.prepare('INSERT INTO request_stops (request_id, address, stop_order, lat, lng) VALUES (?, ?, ?, ?, ?)');
+    points.slice(2).forEach((p, i) => insertStop.run(info.lastInsertRowid, p.address, i, p.lat, p.lng));
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'pending_assignment', ?)`)
       .run(info.lastInsertRowid, req.rideUser.id);
     logEvent(db, {

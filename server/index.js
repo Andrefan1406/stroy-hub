@@ -38,6 +38,7 @@ const ridesMergeRouter = require('./rides/mergeRouter');
 const ridesEventsRouter = require('./rides/eventsRouter');
 const ridesFleetRouter = require('./rides/fleetRouter');
 const ridesTelegramRouter = require('./rides/telegramRouter');
+const ridesGeocodeRouter = require('./rides/geocodeRouter');
 const { initSocket } = require('./rides/socket');
 const { startProposalTimeoutJob } = require('./rides/proposalTimeout');
 const { startDriverStatusJob } = require('./rides/driverAvailability');
@@ -103,6 +104,7 @@ app.use('/api/v1/requests', ridesMergeRouter);
 app.use('/api/v1/events', ridesEventsRouter);
 app.use('/api/v1/fleet-status', ridesFleetRouter);
 app.use('/api/v1/telegram', ridesTelegramRouter);
+app.use('/api/v1/geocode', ridesGeocodeRouter);
 app.use('/api/internal', internalApiRouter);
 
 initSchema();

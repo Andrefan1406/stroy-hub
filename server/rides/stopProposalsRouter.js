@@ -12,7 +12,8 @@ const { getWriteDb } = require('./db');
 const { requireRideRole } = require('./auth');
 const { emitToDispatcher } = require('./socket');
 const { logEvent } = require('./events');
-const { geocodeAddress, estimateProposalImpact } = require('./routeEstimate');
+const { estimateProposalImpact } = require('./routeEstimate');
+const { resolvePoints, unresolvedMessage } = require('./addressCheck');
 const { validate, z } = require('./requestView');
 const { serializeProposal, listPendingProposals, listProposalsForRequest } = require('./stopProposalView');
 const { markDecided, applyApprovedProposal, notifyProposer } = require('./proposalApply');
@@ -141,14 +142,16 @@ router.post('/:id/stop-changes', requireRideRole('employee', 'dispatcher'), vali
     if (!st) return res.status(404).json({ error: 'Точка маршрута не найдена' });
   }
 
-  // Геокодируем адрес заранее (с кэшем) — нужно и для оценки «+X мин», и
-  // чтобы применить вставку «по ближайшему участку» без ожидания общего
-  // пересчёта.
+  // Точка новой/изменённой остановки: отмечена на карте или найдена точно
+  // (addressCheck.js); иначе не принимаем — без неё не посчитать маршрут.
+  // Координаты нужны и для вставки «по ближайшему участку» без ожидания
+  // общего пересчёта.
   let lat = null;
   let lng = null;
   if (action !== 'remove' && address) {
-    const gc = await geocodeAddress(address).catch(() => null);
-    if (gc) { lat = gc.lat; lng = gc.lng; }
+    const { points, unresolved } = await resolvePoints([{ address, lat: req.body.lat, lng: req.body.lng }]);
+    if (unresolved.length) return res.status(400).json({ error: unresolvedMessage(unresolved), unresolved });
+    ({ lat, lng } = points[0]);
   }
 
   let estDelta = null;

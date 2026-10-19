@@ -38,34 +38,66 @@ async function reverseGeocode(lat, lng) {
   return short || data.display_name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 }
 
-export default function MapPicker({ onSelect, onClose }) {
+// Точка на карте обязательна: по её координатам считаются время в пути и
+// километраж (сервер, routeEstimate.js), текст адреса — подпись для
+// водителя. Если человек уже вписал свой текст («ул. Базовая, склад №2»),
+// клик по карте его не затирает — найденный по точке адрес предлагается
+// подставить отдельной кнопкой.
+//   onSelect(address, { lat, lng }); initialAddress — текст из поля формы;
+//   center — где открыть карту ({ lat, lng }: уже отмеченная точка или
+//   найденная улица); centerIsPoint — это уже отмеченная точка (поставить маркер).
+export default function MapPicker({ onSelect, onClose, initialAddress = "", center = null, centerIsPoint = false, title = "Отметьте точку на карте" }) {
   const mapDivRef = useRef(null);
   const markerRef = useRef(null);
-  const [address, setAddress] = useState("");
+  const [address, setAddress] = useState(initialAddress);
+  const [suggested, setSuggested] = useState(""); // адрес по точке, если поле уже заполнено вручную
+  const [point, setPoint] = useState(centerIsPoint && center ? { lat: center.lat, lng: center.lng } : null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const addressRef = useRef(initialAddress);
+  addressRef.current = address;
+  const autoRef = useRef(""); // последний адрес, подставленный автоматически
 
   useEffect(() => {
-    const map = L.map(mapDivRef.current).setView(DEFAULT_CENTER, 12);
+    const start = center ? [center.lat, center.lng] : DEFAULT_CENTER;
+    const map = L.map(mapDivRef.current).setView(start, center ? 17 : 12);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap contributors",
       maxZoom: 19,
     }).addTo(map);
 
-    map.on("click", async (e) => {
-      const { lat, lng } = e.latlng;
-      if (markerRef.current) markerRef.current.setLatLng(e.latlng);
-      else markerRef.current = L.marker(e.latlng).addTo(map);
-
+    const placed = async (latlng) => {
+      setPoint({ lat: latlng.lat, lng: latlng.lng });
       setLoading(true);
       setError("");
       try {
-        setAddress(await reverseGeocode(lat, lng));
+        const found = await reverseGeocode(latlng.lat, latlng.lng);
+        const current = addressRef.current.trim();
+        if (!current || current === autoRef.current) {
+          autoRef.current = found;
+          setAddress(found);
+          setSuggested("");
+        } else if (found !== current) {
+          setSuggested(found);
+        }
       } catch (err) {
-        setError("Не удалось определить адрес по точке — впишите вручную");
+        if (!addressRef.current.trim()) setError("Не удалось определить адрес по точке — впишите его вручную");
       } finally {
         setLoading(false);
       }
+    };
+    const putMarker = (latlng) => {
+      if (markerRef.current) markerRef.current.setLatLng(latlng);
+      else {
+        markerRef.current = L.marker(latlng, { draggable: true }).addTo(map);
+        markerRef.current.on("dragend", () => placed(markerRef.current.getLatLng()));
+      }
+    };
+    if (centerIsPoint && center) putMarker(start);
+
+    map.on("click", (e) => {
+      putMarker(e.latlng);
+      placed(e.latlng);
     });
 
     // Модалка может открыться в контейнере с ещё не финализированной
@@ -74,32 +106,41 @@ export default function MapPicker({ onSelect, onClose }) {
     setTimeout(() => map.invalidateSize(), 100);
 
     return () => map.remove();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <div style={s.overlay} onClick={onClose}>
       <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ marginTop: 0 }}>Выберите точку на карте</h3>
+        <h3 style={{ margin: "0 0 4px" }}>{title}</h3>
+        <div style={s.hint}>Щёлкните по нужному зданию или въезду — маркер можно перетащить. По этой точке рассчитываются время в пути и километраж.</div>
         <div ref={mapDivRef} style={s.map} />
         {error && <div style={s.error}>{error}</div>}
         <label style={s.label}>
-          Адрес
+          Адрес для водителя
           <input
             style={s.input}
             value={address}
             onChange={(e) => setAddress(e.target.value)}
-            placeholder={loading ? "Определяем адрес..." : "Кликните на карту или впишите вручную"}
+            placeholder={loading ? "Определяем адрес..." : "Например: ул. Базовая, склад №2, въезд со двора"}
           />
         </label>
+        {suggested && (
+          <div style={s.suggest}>
+            По точке на карте: {suggested}{" "}
+            <button type="button" style={s.linkButton} onClick={() => { setAddress(suggested); autoRef.current = suggested; setSuggested(""); }}>Подставить</button>
+          </div>
+        )}
         <div style={s.actions}>
           <button type="button" style={s.secondaryButton} onClick={onClose}>Отмена</button>
           <button
             type="button"
             style={s.primaryButton}
-            disabled={!address.trim()}
-            onClick={() => onSelect(address.trim())}
+            disabled={!point || !address.trim()}
+            title={!point ? "Сначала отметьте точку на карте" : undefined}
+            onClick={() => onSelect(address.trim(), point)}
           >
-            Использовать этот адрес
+            {point ? "Использовать эту точку" : "Отметьте точку на карте"}
           </button>
         </div>
       </div>
@@ -110,7 +151,10 @@ export default function MapPicker({ onSelect, onClose }) {
 const s = {
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 },
   modal: { background: "#fff", borderRadius: "10px", padding: "16px", width: "560px", maxWidth: "92vw", boxSizing: "border-box" },
-  map: { height: "320px", maxWidth: "100%", borderRadius: "8px", marginBottom: "10px" },
+  map: { height: "320px", maxWidth: "100%", borderRadius: "8px", marginBottom: "10px", marginTop: "8px" },
+  hint: { fontSize: "12px", color: "#555", lineHeight: 1.4 },
+  suggest: { fontSize: "12px", color: "#555", marginTop: "6px" },
+  linkButton: { background: "none", border: "none", color: "#1976d2", cursor: "pointer", padding: 0, fontSize: "12px", textDecoration: "underline" },
   label: { display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#444" },
   input: { padding: "8px 10px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", width: "100%", boxSizing: "border-box" },
   error: { background: "#fff0f0", color: "#c00", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px", fontSize: "12px" },
