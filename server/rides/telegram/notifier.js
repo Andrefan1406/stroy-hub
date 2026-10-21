@@ -23,6 +23,7 @@
 // | driver_claimed,          | водитель назначен (телефон,      |                              |
 // | dispatcher_assigned      | машина)                          |                              |
 // | status_changed           | машина в пути / поездка завершена|                              |
+// | passenger_dropped_off    | вы на месте (попутчиков ещё везут)|                             |
 // | driver_declined          | ищем другого водителя            | водитель отказался + причина |
 // | driver_unassigned        | ищем другого водителя            |                              |
 // | reassigned               | машину сняли, нужно решение      |                              |
@@ -125,8 +126,11 @@ function createNotifier({ getDb, sender, apps = null }) {
         return row.status === 'assigned' && row.driver_id === p.driverId ? [text.assigned(row)] : null;
       case 'status_changed':
         if (p.to === 'in_progress' && row.status === 'in_progress') return [text.inProgress(row)];
-        if (p.to === 'completed' && row.status === 'completed') return [text.completed(row)];
+        // Заказчик основной заявки уже получил «вы на месте» при высадке.
+        if (p.to === 'completed' && row.status === 'completed' && !row.dropped_off_at) return [text.completed(row)];
         return null;
+      case 'passenger_dropped_off':
+        return row.dropped_off_at ? [text.droppedOff(row)] : null;
       case 'driver_declined':
         return row.status === 'pending_assignment' ? [text.searching(row, 'Водитель отказался от поездки')] : null;
       case 'driver_unassigned':

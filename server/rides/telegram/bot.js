@@ -14,7 +14,7 @@ const actions = require('../driverActions');
 const { cancelOwnRequest } = require('../employeeActions');
 const { mergeCandidates, driverMerge, TIME_MISMATCH_TEXT } = require('../mergeApply');
 
-const DRIVER_ACTIONS = new Set(['claim', 'go', 'done', 'doneY', 'decl', 'rsn', 'card', 'mrg', 'mrgA', 'pcard']);
+const DRIVER_ACTIONS = new Set(['claim', 'go', 'done', 'doneY', 'drop', 'dropY', 'decl', 'rsn', 'card', 'mrg', 'mrgA', 'pcard']);
 
 // Команды в меню «/» — свои у каждой роли (ставятся чату при привязке).
 const COMMANDS = {
@@ -232,8 +232,27 @@ function createBot({ getDb, sender, apps = null, emitLinked = () => {} }) {
       case 'doneY': {
         const out = await actions.changeRequestStatus({ userId: ctx.user_id, requestId, status: 'completed' });
         if (out.error) return sender.answer(cb.id, out.error, true);
+        // Старая кнопка при попутчиках в машине — высажен только заказчик.
+        if (out.notice) {
+          await editCard(out.request);
+          return sender.answer(cb.id, out.notice, true);
+        }
         await sender.edit(chatId, messageId, `🏁 Заказ №${requestId} завершён.`);
         return sender.answer(cb.id, 'Заказ завершён');
+      }
+      // Совместная поездка: «Высадил» на одного пассажира (extra — его заявка).
+      case 'drop':
+        await sender.edit(chatId, messageId, `Пассажир по заявке №${extra} высажен?`, fmt.confirmDropKeyboard(requestId, extra));
+        return sender.answer(cb.id);
+      case 'dropY': {
+        const out = actions.dropOff({ userId: ctx.user_id, carrierId: requestId, passengerId: Number(extra) });
+        if (out.error) return sender.answer(cb.id, out.error, true);
+        if (out.tripCompleted) {
+          await sender.edit(chatId, messageId, `🏁 Все пассажиры высажены — заказ №${requestId} завершён.`);
+          return sender.answer(cb.id, 'Заказ завершён');
+        }
+        await editCard(out.request);
+        return sender.answer(cb.id, `Пассажир №${extra} высажен`);
       }
       case 'decl':
         await sender.edit(chatId, messageId, `Отказаться от заказа №${requestId}? Выберите причину — её увидит диспетчер.`, fmt.declineReasonsKeyboard(requestId));

@@ -82,10 +82,13 @@ function formatClock(iso) {
   return d.toLocaleTimeString('ru-RU', { timeZone: 'Asia/Almaty', hour: '2-digit', minute: '2-digit' });
 }
 
+const isRiding = (m) => ['assigned', 'in_progress'].includes(m.status);
+
 // Попутные пассажиры в поездке водителя — с телефоном (водителю можно).
 function companionLines(row) {
-  return (row.mergedRequests || []).map((m) => {
+  return (row.mergedRequests || []).filter((m) => m.status !== 'cancelled').map((m) => {
     const eta = formatClock(m.pickupEtaAt);
+    if (!isRiding(m)) return `✅ Попутно №${m.id}: ${esc(m.toAddress)} — высажен`;
     return [
       `🔗 Попутно №${m.id}: ${esc(m.fromAddress)} → ${esc(m.toAddress)}${eta ? `, посадка ≈ ${eta}` : ''}`,
       `   👤 ${esc(m.employeeName)}${m.employeePhone ? `, 📞 ${esc(m.employeePhone)}` : ''}${m.comment ? `\n   💬 ${esc(m.comment)}` : ''}`,
@@ -103,10 +106,21 @@ function orderCardText(row) {
   return [
     `<b>Заказ №${row.id}</b> — ${ORDER_STATUS[row.status] || esc(row.status)}`,
     ...tripLines(row),
-    `👤 Заказчик: ${esc(row.employee_name)}`,
+    `👤 Заказчик: ${esc(row.employee_name)}${row.dropped_off_at ? ' — ✅ высажен' : ''}`,
     `📞 ${esc(row.employee_phone)}`,
     ...companionLines(row),
   ].join('\n');
+}
+
+// Совместная поездка в пути: кого ещё можно высадить — заказчик основной
+// заявки и попутчики, которых ещё везут. Пусто — пассажир один.
+function ridingPassengers(row) {
+  const companions = (row.mergedRequests || []).filter(isRiding);
+  if (row.status !== 'in_progress' || (!companions.length && !row.dropped_off_at)) return [];
+  return [
+    ...(row.dropped_off_at ? [] : [{ id: row.id, name: row.employee_name }]),
+    ...companions.map((m) => ({ id: m.id, name: m.employeeName })),
+  ];
 }
 
 // Яндекс Карты строят маршрут только по координатам; если геокодер точку
@@ -142,10 +156,18 @@ function mergeChoiceKeyboard(bId, trips) {
   };
 }
 
+// В совместной поездке вместо «Завершить» — «Высадил» на каждого пассажира:
+// поездка завершится сама после высадки последнего.
 function orderKeyboard(row) {
-  const rows = row.status === 'assigned'
-    ? [[{ text: '🚀 Выехал', callback_data: `go:${row.id}` }], [{ text: '✖ Отказаться', callback_data: `decl:${row.id}` }]]
-    : [[{ text: '🏁 Завершить', callback_data: `done:${row.id}` }]];
+  const passengers = ridingPassengers(row);
+  let rows;
+  if (row.status === 'assigned') {
+    rows = [[{ text: '🚀 Выехал', callback_data: `go:${row.id}` }], [{ text: '✖ Отказаться', callback_data: `decl:${row.id}` }]];
+  } else if (passengers.length) {
+    rows = passengers.map((p) => [{ text: `🏁 Высадил: ${p.name} (№${p.id})`.slice(0, 60), callback_data: `drop:${row.id}:${p.id}` }]);
+  } else {
+    rows = [[{ text: '🏁 Завершить', callback_data: `done:${row.id}` }]];
+  }
   return { inline_keyboard: withMap(rows, row) };
 }
 
@@ -154,6 +176,15 @@ function confirmDoneKeyboard(id) {
     inline_keyboard: [
       [{ text: '✅ Да, поездка завершена', callback_data: `doneY:${id}` }],
       [{ text: '← Назад', callback_data: `card:${id}` }],
+    ],
+  };
+}
+
+function confirmDropKeyboard(carrierId, passengerId) {
+  return {
+    inline_keyboard: [
+      [{ text: '✅ Да, пассажир высажен', callback_data: `dropY:${carrierId}:${passengerId}` }],
+      [{ text: '← Назад', callback_data: `card:${carrierId}` }],
     ],
   };
 }
@@ -252,6 +283,8 @@ const passenger = {
   ].join('\n'),
   inProgress: (row) => [`🚗 <b>Машина в пути</b> — заявка №${row.id}`, ...driverLines(row)].join('\n'),
   completed: (row) => `🏁 Поездка по заявке №${row.id} завершена. Спасибо!`,
+  // Заказчика основной заявки высадили, водитель развозит попутчиков.
+  droppedOff: (row) => `🏁 Вы на месте — поездка по заявке №${row.id} для вас завершена. Спасибо!`,
   searching: (row, why) => `🔄 ${why} по заявке №${row.id}. Ищем другого водителя — сообщим, когда назначим.`,
   pulled: (row, reason) => [
     `⚠️ <b>Диспетчер снял машину с заявки №${row.id}</b>`,
@@ -349,7 +382,7 @@ const HELP_TEXT = [
   `${MENU.goOnline} — новые заявки начнут приходить сюда.`,
   `${MENU.pool} — свободные заявки, ближайшие по времени подачи.`,
   '«✅ Взять» под заявкой — она ваша, если вас никто не опередил. Телефон заказчика появится в карточке заказа.',
-  `${MENU.orders} — взятые заказы: «🚀 Выехал», «🏁 Завершить», «✖ Отказаться».`,
+  `${MENU.orders} — взятые заказы: «🚀 Выехал», «🏁 Завершить», «✖ Отказаться». С попутчиками — «🏁 Высадил» на каждого пассажира.`,
   `${MENU.goOffline} — заявки перестанут приходить.`,
   '',
   'Всё то же доступно на сайте в кабинете водителя. Отключить бота: /stop',
@@ -387,6 +420,7 @@ module.exports = {
   formatClock,
   orderKeyboard,
   confirmDoneKeyboard,
+  confirmDropKeyboard,
   declineReasonsKeyboard,
   mainMenu,
   unavailableText,

@@ -40,6 +40,17 @@ const ROLE_LABEL = { employee: "заказчик", driver: "водитель", d
 
 const ACTIVE_STATUSES = ["pending_assignment", "assigned", "in_progress"];
 
+// Пассажиры совместной поездки: заказчик основной заявки и попутчики
+// (кроме отменивших) — кто уже высажен, а кого ещё везут.
+function sharedPassengers(r) {
+  return [
+    { id: r.id, name: r.employeeName, to: r.toAddress, dropped: !!r.droppedOffAt },
+    ...(r.mergedRequests || []).filter((m) => m.status !== "cancelled").map((m) => ({
+      id: m.id, name: m.employeeName, to: m.toAddress, dropped: m.status === "completed",
+    })),
+  ];
+}
+
 // requestedAt — местное время подачи "YYYY-MM-DDTHH:MM" без зоны.
 function requestedAtMs(value) {
   return value ? new Date(value.replace(" ", "T")).getTime() : NaN;
@@ -173,6 +184,19 @@ export default function DispatcherRidesPage() {
       setRequests((prev) => prev.filter((r) => r.id !== id)); // ушла в журнал
     } catch (err) {
       setError(err.message || "Не удалось отменить заявку");
+    }
+  };
+
+  // Совместная поездка: водитель забыл нажать «Высадил» — отмечает диспетчер.
+  const dropOff = async (carrierId, passengerId) => {
+    if (!window.confirm(`Отметить, что пассажир по заявке #${passengerId} высажен?`)) return;
+    try {
+      const { request } = await ridesApiPost(`/api/v1/requests/${carrierId}/drop-off`, { passengerId });
+      setRequests((prev) => (ACTIVE_STATUSES.includes(request.status)
+        ? prev.map((x) => (x.id === request.id ? request : x))
+        : prev.filter((x) => x.id !== request.id)));
+    } catch (err) {
+      setError(err.message || "Не удалось отметить высадку");
     }
   };
 
@@ -396,6 +420,18 @@ export default function DispatcherRidesPage() {
                     {r.mergedRequests?.length > 0 && <span style={s.mergeBadge}>🔗 попутно #{r.mergedRequests.map((m) => m.id).join(", #")}</span>}
                     {r.mergedInto && <span style={s.mergeBadge}>🔗 в составе поездки #{r.mergedInto}</span>}
                     {r.comment && <div style={s.commentLine}>💬 {r.comment}</div>}
+                    {r.status === "in_progress" && sharedPassengers(r).length > 1 && (
+                      <div style={s.passengers}>
+                        {sharedPassengers(r).map((p) => (
+                          <div key={p.id}>
+                            {p.dropped ? "✓" : "🚗"} #{p.id} {p.name} → {p.to}
+                            {p.dropped
+                              ? <span style={s.muted}> — высажен</span>
+                              : <button style={{ ...s.linkButton, marginLeft: "6px" }} onClick={() => dropOff(r.id, p.id)}>отметить высадку</button>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </td>
                   <td style={s.td}>{formatEstimate(r) || "—"}</td>
                   <td style={s.td}>
@@ -652,6 +688,7 @@ const s = {
   staleRow: { background: "#fff8e1" },
   staleBadge: { marginLeft: "8px", fontSize: "11px", color: "#b8860b", fontWeight: 700 },
   pendingBadge: { marginLeft: "8px", fontSize: "11px", color: "#e67e22", fontWeight: 700, whiteSpace: "nowrap" },
+  passengers: { marginTop: "4px", fontSize: "12px", lineHeight: 1.6 },
   commentLine: { marginTop: "4px", fontSize: "12px", color: "#7a4b00", background: "#fff6e0", borderRadius: "4px", padding: "2px 6px", display: "inline-block" },
   mergeButton: { background: "#eef6ff", color: "#0b5cad", border: "1px solid #b8d9f7", borderRadius: "6px", padding: "6px 12px", cursor: "pointer", fontSize: "13px", marginRight: "6px" },
   mergeBadge: { marginLeft: "8px", fontSize: "11px", color: "#0b5cad", fontWeight: 700, whiteSpace: "nowrap" },

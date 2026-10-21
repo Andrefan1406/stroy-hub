@@ -12,7 +12,9 @@ const { getWriteDb } = require('./db');
 const { emitToDrivers, emitToDispatcher, emitToEmployee, emitToDriver } = require('./socket');
 const { recomputeRequestEstimate } = require('./routeEstimate');
 const { logEvent } = require('./events');
-const { dissolveMergesForA, cascadeCompleteMergedB, emitDissolvedB } = require('./mergeApply');
+const {
+  dissolveMergesForA, cascadeCompleteMergedB, emitDissolvedB, dropOffPassenger, hasActiveMerged,
+} = require('./mergeApply');
 const { staleThreshold, getRow, serializeForDriver, serializeForEmployee, serializeForDispatcher } = require('./requestView');
 const { findDriverConflict, syncDriverStatus, describeRequest } = require('./driverAvailability');
 
@@ -69,6 +71,16 @@ async function changeRequestStatus({ userId, requestId, status }) {
   if (!driver) return notDriver;
   const allowedFrom = status === 'in_progress' ? 'assigned' : 'in_progress';
 
+  // «Завершить», а попутчики ещё в машине (старая кнопка в Telegram, другая
+  // вкладка) — закрываем не всю поездку, а только высадку заказчика A.
+  if (status === 'completed' && hasActiveMerged(db, requestId)) {
+    const row = db.prepare('SELECT * FROM requests WHERE id = ?').get(requestId);
+    const companions = 'В машине ещё попутные пассажиры — отметьте «Высадил» у каждого, поездка завершится сама';
+    if (row?.dropped_off_at) return { error: companions, status: 409 };
+    const out = dropOffPassenger({ actorUserId: userId, carrierId: requestId, passengerId: requestId, driverId: driver.id });
+    return out.error ? out : { ...out, notice: `Заказчик высажен. ${companions}.` };
+  }
+
   const outcome = db.transaction(() => {
     const upd = db
       .prepare(`UPDATE requests SET status = ? WHERE id = ? AND driver_id = ? AND status = ?`)
@@ -78,7 +90,8 @@ async function changeRequestStatus({ userId, requestId, status }) {
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, ?, ?)`)
       .run(requestId, status, userId);
     logEvent(db, { requestId, type: 'status_changed', actorUserId: userId, payload: { from: allowedFrom, to: status } });
-    // Заявка завершена — попутные (влитые) заявки закрываются вместе с ней.
+    // Попутчиков к этому моменту уже высадили (см. выше); страховка — если
+    // кто-то остался, закрыть вместе с поездкой.
     const completedMergedB = status === 'completed' ? cascadeCompleteMergedB(db, requestId, userId) : [];
     return { completedMergedB };
   })();
@@ -107,6 +120,13 @@ async function changeRequestStatus({ userId, requestId, status }) {
   emitToEmployee(result.employee_id, 'request:status', serializeForEmployee(result));
   emitToDriver(driver.id, 'request:status', serializeForDriver(result));
   return { request: result };
+}
+
+// «Высадил» в совместной поездке — по одному пассажиру (mergeApply.js).
+function dropOff({ userId, carrierId, passengerId }) {
+  const driver = driverByUserId(getWriteDb(), userId);
+  if (!driver) return notDriver;
+  return dropOffPassenger({ actorUserId: userId, carrierId, passengerId, driverId: driver.id });
 }
 
 // Отказ от уже взятого заказа — заявка возвращается в общий пул.
@@ -164,4 +184,4 @@ function setLineStatus({ userId, status }) {
   return { driver: fresh };
 }
 
-module.exports = { claimRequest, changeRequestStatus, declineRequest, setLineStatus };
+module.exports = { claimRequest, changeRequestStatus, dropOff, declineRequest, setLineStatus };

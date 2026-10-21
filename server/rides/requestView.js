@@ -86,14 +86,16 @@ function getMergedRequests(db, requestId) {
 
 // Фактическое время поездки — по истории статусов: начало — первое «в
 // пути», окончание — «завершена». Попутная заявка сама «в пути» не бывает —
-// её началом считаем начало основной поездки. Время — UTC 'YYYY-MM-DD HH:MM:SS'.
+// её началом считаем начало основной поездки. Пассажира основной заявки
+// могли высадить раньше попутчиков — тогда окончание для него — высадка
+// (dropped_off_at), а не завершение всей поездки. Время — UTC 'YYYY-MM-DD HH:MM:SS'.
 function getTiming(db, row) {
   const at = (id, status, order) => db
     .prepare(`SELECT changed_at FROM request_status_history WHERE request_id = ? AND status = ? ORDER BY id ${order} LIMIT 1`)
     .get(id, status)?.changed_at || null;
   let startedAt = at(row.id, 'in_progress', 'ASC');
   if (!startedAt && row.merged_into) startedAt = at(row.merged_into, 'in_progress', 'ASC');
-  const finishedAt = row.status === 'completed' ? at(row.id, 'completed', 'DESC') : null;
+  const finishedAt = row.dropped_off_at || (row.status === 'completed' ? at(row.id, 'completed', 'DESC') : null);
   const ms = (t) => Date.parse(`${t.replace(' ', 'T')}Z`);
   const actualMinutes = startedAt && finishedAt ? Math.max(0, Math.round((ms(finishedAt) - ms(startedAt)) / 60000)) : null;
   return { startedAt, finishedAt, actualMinutes };
@@ -144,6 +146,8 @@ function baseFields(row) {
     pullReason: row.pull_reason || null,
     mergedInto: row.merged_into ?? null,
     pickupEtaAt: row.pickup_eta_at ?? null,
+    // Совместная поездка: заказчик уже высажен, попутчиков ещё везут.
+    droppedOffAt: row.dropped_off_at ?? null,
     // Фактически: начало, окончание (UTC без зоны) и длительность в минутах.
     startedAt: row.timing?.startedAt ?? null,
     finishedAt: row.timing?.finishedAt ?? null,

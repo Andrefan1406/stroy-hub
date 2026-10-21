@@ -150,6 +150,29 @@ test('«Выехал» и «Завершить» с подтверждением
   assert.equal(row(id).status, 'completed');
 });
 
+test('совместная поездка: «Высадил» по одному с подтверждением, поездка завершается после последнего', async () => {
+  const { driverMerge } = require('../mergeApply');
+  const A = newPoolRequest('2030-05-10T16:00');
+  const B = insertRequest(db, { employeeId, requestedAt: '2030-05-10T16:10' });
+  await settle();
+  await press(101, `claim:${A}`);
+  const merged = await driverMerge({ userId: userOf(d1), bId: B, aId: A });
+  assert.ok(!merged.error, merged.error);
+  await press(101, `go:${A}`);
+
+  await press(101, `drop:${A}:${B}`);
+  assert.equal(row(B).status, 'assigned', 'без подтверждения не высажен');
+  await press(101, `dropY:${A}:${B}`);
+  assert.equal(row(B).status, 'completed');
+  assert.equal(row(A).status, 'in_progress');
+
+  const n = calls.length;
+  await press(101, `dropY:${A}:${A}`);
+  assert.equal(row(A).status, 'completed');
+  const edit = callsSince(n).find((c) => c.method === 'editMessageText');
+  assert.match(edit.params.text, /Все пассажиры высажены/);
+});
+
 test('отказ с причиной: заявка в пуле, причина записана, рассылка повторяется', async () => {
   const id = newPoolRequest('2030-05-11T15:00');
   await settle();

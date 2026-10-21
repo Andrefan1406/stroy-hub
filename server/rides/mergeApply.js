@@ -7,8 +7,8 @@
 // попутно»). Ограничение одно — по времени (driverAvailability.fitsMergeWindow):
 // подача B не раньше чем за 15 мин до подачи A и не позже окончания A.
 //
-// Тут же каскады: расформирование при отмене/снятии машины с A, общее
-// завершение, снятие отменённой B с маршрута A.
+// Тут же каскады: расформирование при отмене/снятии машины с A, высадка
+// пассажиров по одному, снятие отменённой B с маршрута A.
 const { getWriteDb } = require('./db');
 const {
   recomputeRequestEstimate, estimateFromPoints, chooseInsertIndex, geocodeAddress,
@@ -19,7 +19,7 @@ const {
   getRow, serializeForDriver, serializeForEmployee, serializeForDispatcher, staleThreshold,
 } = require('./requestView');
 const { requestedAtMs } = require('./slots');
-const { fitsMergeWindow, MERGE_LEAD_MINUTES } = require('./driverAvailability');
+const { fitsMergeWindow, MERGE_LEAD_MINUTES, syncDriverStatus } = require('./driverAvailability');
 
 const MINUTE = 60000;
 
@@ -213,8 +213,9 @@ async function driverMerge({ userId, bId, aId }) {
 // когда A отменяют / водитель отказывается / машину перебрасывают.
 // Синхронно (внутри своей транзакции); эмиты и пересчёт A — на вызывающей
 // стороне через возвращённый список id заявок B.
+// Уже высаженные B (completed) остаются как есть — их поездка состоялась.
 function dissolveMergesForA(db, aId, reason, actorUserId) {
-  const merged = db.prepare("SELECT id FROM requests WHERE merged_into = ?").all(aId).map((r) => r.id);
+  const merged = activeMergedIds(db, aId);
   if (!merged.length) return [];
   db.transaction(() => {
     for (const bId of merged) {
@@ -263,13 +264,18 @@ async function detachCancelledB(db, bId, actorUserId) {
   return aId;
 }
 
-// Заявка A завершена — попутные B завершаются вместе с ней (одна поездка
-// обслужила обе, время не делим). Вызывать ВНУТРИ транзакции /status.
+// Попутные B, которых ещё везут (не высажены и не отменены).
+const activeMergedIds = (db, aId) => db
+  .prepare("SELECT id FROM requests WHERE merged_into = ? AND status IN ('assigned', 'in_progress')")
+  .all(aId)
+  .map((r) => r.id);
+
+// Страховка на случай, если A всё же завершили, пока попутчики в машине:
+// закрыть их вместе с ней. В обычном потоке A завершается только после
+// высадки последнего пассажира (dropOffPassenger), и здесь пусто.
+// Вызывать ВНУТРИ транзакции /status.
 function cascadeCompleteMergedB(db, aId, actorUserId) {
-  const bs = db
-    .prepare("SELECT id FROM requests WHERE merged_into = ? AND status IN ('assigned', 'in_progress')")
-    .all(aId)
-    .map((r) => r.id);
+  const bs = activeMergedIds(db, aId);
   for (const bId of bs) {
     db.prepare("UPDATE requests SET status = 'completed' WHERE id = ?").run(bId);
     db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'completed', ?)`)
@@ -278,6 +284,73 @@ function cascadeCompleteMergedB(db, aId, actorUserId) {
   }
   return bs;
 }
+
+// Высадка одного пассажира совместной поездки A (сайт водителя, Telegram,
+// диспетчер). passengerId — сама A (её заказчик) или попутная B.
+// - B высадили — завершается только B, со своим временем окончания;
+// - пассажира A высадили, а попутчиков ещё везут — A остаётся «в пути»
+//   (водитель занят, маршрут общий), отмечается dropped_off_at;
+// - высадили последнего — A завершается, водитель освобождается.
+// driverId — проверить, что поездка этого водителя (null — диспетчер).
+// Возвращает { request: A, changedIds, tripCompleted } либо { error, status }.
+function dropOffPassenger({ actorUserId, carrierId, passengerId, driverId = null }) {
+  const db = getWriteDb();
+  const outcome = db.transaction(() => {
+    const A = getRequest(db, carrierId);
+    if (!A || A.merged_into || (driverId != null && A.driver_id !== driverId)) {
+      return { error: 'Поездка не найдена или не ваша', status: 404 };
+    }
+    if (A.status !== 'in_progress') {
+      return { error: A.status === 'assigned' ? 'Поездка ещё не начата' : 'Поездка уже не в пути', status: 409 };
+    }
+    const changedIds = [];
+    // Попутная B сама «в пути» не бывает — завершается из 'assigned'.
+    const complete = (row, payload) => {
+      const { id } = row;
+      db.prepare("UPDATE requests SET status = 'completed' WHERE id = ?").run(id);
+      db.prepare(`INSERT INTO request_status_history (request_id, status, changed_by) VALUES (?, 'completed', ?)`)
+        .run(id, actorUserId);
+      logEvent(db, { requestId: id, type: 'status_changed', actorUserId, payload: { from: row.status, to: 'completed', ...payload } });
+      changedIds.push(id);
+    };
+
+    if (passengerId === A.id) {
+      if (A.dropped_off_at) return { error: 'Этот пассажир уже высажен', status: 409 };
+    } else {
+      const B = getRequest(db, passengerId);
+      if (!B || B.merged_into !== A.id) return { error: 'Этого пассажира нет в поездке', status: 404 };
+      if (!['assigned', 'in_progress'].includes(B.status)) return { error: 'Этот пассажир уже высажен', status: 409 };
+      complete(B, { viaDropOff: A.id });
+    }
+
+    const remaining = activeMergedIds(db, A.id).length;
+    const aDropped = passengerId === A.id || !!A.dropped_off_at;
+    if (aDropped && remaining === 0) {
+      complete(A, {});
+      syncDriverStatus(db, A.driver_id);
+    } else if (passengerId === A.id) {
+      db.prepare("UPDATE requests SET dropped_off_at = datetime('now') WHERE id = ?").run(A.id);
+      logEvent(db, { requestId: A.id, type: 'passenger_dropped_off', actorUserId, payload: { remaining } });
+      changedIds.push(A.id);
+    }
+    return { changedIds, tripCompleted: aDropped && remaining === 0 };
+  })();
+  if (outcome.error) return outcome;
+
+  for (const id of outcome.changedIds.filter((x) => x !== carrierId)) {
+    const b = getRow(db, id);
+    emitToEmployee(b.employee_id, 'request:status', serializeForEmployee(b));
+    emitToDispatcher('request:updated', serializeForDispatcher(b, staleThreshold()));
+  }
+  // A — всегда: у неё сменился и список пассажиров (кто уже высажен).
+  const aRow = getRow(db, carrierId);
+  emitToEmployee(aRow.employee_id, 'request:status', serializeForEmployee(aRow));
+  emitToDispatcher('request:updated', serializeForDispatcher(aRow, staleThreshold()));
+  emitToDriver(aRow.driver_id, 'request:status', serializeForDriver(aRow));
+  return { request: aRow, changedIds: outcome.changedIds, tripCompleted: outcome.tripCompleted };
+}
+
+const hasActiveMerged = (db, aId) => activeMergedIds(db, aId).length > 0;
 
 // Эмиты для заявок B, вернувшихся в пул после расформирования.
 function emitDissolvedB(db, restoredIds) {
@@ -303,6 +376,8 @@ module.exports = {
   dissolveMergesForA,
   detachCancelledB,
   cascadeCompleteMergedB,
+  dropOffPassenger,
+  hasActiveMerged,
   emitDissolvedB,
   renumberStops,
 };

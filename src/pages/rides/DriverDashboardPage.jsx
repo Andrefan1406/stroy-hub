@@ -21,6 +21,13 @@ function formatDateTime(value) {
 // Поездки водителя, к которым заявку из пула можно взять попутно.
 const mergeTargets = (request, current) => current.filter((c) => fitsMergeWindow(request, c));
 
+const isRiding = (m) => ["assigned", "in_progress"].includes(m.status);
+// Совместная поездка: попутчики (кроме отменивших). Есть хотя бы один —
+// вместо «Завершено» у каждого пассажира своя «Высадил», поездка
+// завершается после высадки последнего.
+const companionsOf = (r) => (r.mergedRequests || []).filter((m) => m.status !== "cancelled");
+const isShared = (r) => companionsOf(r).length > 0 || !!r.droppedOffAt;
+
 const STATUS_LABEL = {
   assigned: "Назначен, ожидает выезда",
   in_progress: "В пути",
@@ -175,8 +182,9 @@ export default function DriverDashboardPage() {
     setRowBusy(id, true);
     setError("");
     try {
-      const { request } = await ridesApiPost(`/api/v1/requests/${id}/status`, { status });
-      if (status === "completed") {
+      const { request, notice: statusNotice } = await ridesApiPost(`/api/v1/requests/${id}/status`, { status });
+      if (statusNotice) setNotice(statusNotice);
+      if (request.status === "completed") {
         setCurrent((prev) => prev.filter((r) => r.id !== id));
         refreshDriver();
       } else {
@@ -186,6 +194,27 @@ export default function DriverDashboardPage() {
       setError(err.message || "Не удалось сменить статус заказа");
     } finally {
       setRowBusy(id, false);
+    }
+  };
+
+  // «Высадил» одного пассажира совместной поездки (carrierId — основная заявка).
+  const dropOff = async (carrierId, passengerId) => {
+    if (!window.confirm(`Пассажир по заявке #${passengerId} высажен?`)) return;
+    setRowBusy(carrierId, true);
+    setError("");
+    try {
+      const { request, tripCompleted } = await ridesApiPost(`/api/v1/requests/${carrierId}/drop-off`, { passengerId });
+      if (tripCompleted) {
+        setCurrent((prev) => prev.filter((r) => r.id !== carrierId));
+        setNotice(`Все пассажиры высажены — заказ #${carrierId} завершён.`);
+        refreshDriver();
+      } else {
+        setCurrent((prev) => prev.map((r) => (r.id === carrierId ? request : r)));
+      }
+    } catch (err) {
+      setError(err.message || "Не удалось отметить высадку");
+    } finally {
+      setRowBusy(carrierId, false);
     }
   };
 
@@ -321,14 +350,29 @@ export default function DriverDashboardPage() {
                   Заказчик: {r.employeeName} — <a href={`tel:${r.employeePhone}`} style={s.phoneLink}>{r.employeePhone}</a>
                 </div>
                 <div style={s.cardStatus}>{STATUS_LABEL[r.status] || r.status}</div>
-                {r.mergedRequests?.length > 0 && (
+                {isShared(r) && (
                   <div style={s.mergeBox}>
-                    {r.mergedRequests.map((mr) => (
-                      <div key={mr.id}>
-                        🔗 попутно заявка #{mr.id}: {mr.fromAddress} → {mr.toAddress}
-                        {mr.pickupEtaAt && <> · посадка {formatClock(mr.pickupEtaAt)}</>}
-                        {mr.employeePhone && <> · <a href={`tel:${mr.employeePhone}`} style={s.phoneLink}>{mr.employeePhone}</a></>}
-                        {mr.comment && <div>💬 {mr.comment}</div>}
+                    <div style={s.passengerRow}>
+                      <span>👤 {r.employeeName} (заявка #{r.id}) → {r.toAddress}</span>
+                      {r.droppedOffAt ? (
+                        <span style={s.droppedBadge}>✓ высажен</span>
+                      ) : r.status === "in_progress" && (
+                        <button style={s.dropButton} disabled={busyIds.has(r.id)} onClick={() => dropOff(r.id, r.id)}>Высадил</button>
+                      )}
+                    </div>
+                    {companionsOf(r).map((mr) => (
+                      <div key={mr.id} style={s.passengerRow}>
+                        <span>
+                          🔗 попутно заявка #{mr.id}{mr.employeeName ? `, ${mr.employeeName}` : ""}: {mr.fromAddress} → {mr.toAddress}
+                          {isRiding(mr) && mr.pickupEtaAt && <> · посадка {formatClock(mr.pickupEtaAt)}</>}
+                          {isRiding(mr) && mr.employeePhone && <> · <a href={`tel:${mr.employeePhone}`} style={s.phoneLink}>{mr.employeePhone}</a></>}
+                          {isRiding(mr) && mr.comment && <div>💬 {mr.comment}</div>}
+                        </span>
+                        {!isRiding(mr) ? (
+                          <span style={s.droppedBadge}>✓ высажен</span>
+                        ) : r.status === "in_progress" && (
+                          <button style={s.dropButton} disabled={busyIds.has(r.id)} onClick={() => dropOff(r.id, mr.id)}>Высадил</button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -344,7 +388,7 @@ export default function DriverDashboardPage() {
                   {r.status === "assigned" && (
                     <button style={s.primaryButton} disabled={busyIds.has(r.id)} onClick={() => setStatus(r.id, "in_progress")}>В пути</button>
                   )}
-                  {r.status === "in_progress" && (
+                  {r.status === "in_progress" && !isShared(r) && (
                     <button style={s.primaryButton} disabled={busyIds.has(r.id)} onClick={() => setStatus(r.id, "completed")}>Завершено</button>
                   )}
                   <button style={s.dangerButton} disabled={busyIds.has(r.id)} onClick={() => decline(r.id)}>Отказаться</button>
@@ -433,6 +477,9 @@ const s = {
   notice: { background: "#eef6ff", color: "#0b5cad", border: "1px solid #b8d9f7", borderRadius: "8px", padding: "10px 14px", marginBottom: "16px", fontSize: "13px", cursor: "pointer" },
   pendingBox: { marginTop: "8px", background: "#fffdf6", border: "1px solid #f0d9a8", borderRadius: "8px", padding: "8px 10px", fontSize: "12px", color: "#8a6d2f" },
   mergeBox: { marginTop: "8px", background: "#eef6ff", border: "1px solid #b8d9f7", borderRadius: "8px", padding: "8px 10px", fontSize: "12px", color: "#0b5cad" },
+  passengerRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "4px 0" },
+  dropButton: { background: "#1a7f37", color: "#fff", border: "none", borderRadius: "6px", padding: "6px 12px", cursor: "pointer", fontSize: "13px", flexShrink: 0 },
+  droppedBadge: { color: "#1a7f37", fontWeight: 600, whiteSpace: "nowrap" },
   mergeSelect: { padding: "8px 10px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "13px" },
   muted: { color: "#888", fontSize: "14px" },
 

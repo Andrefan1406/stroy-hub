@@ -315,6 +315,13 @@ function migrateSchema(db) {
   if (!requestColumns.includes('pickup_eta_at')) {
     db.exec('ALTER TABLE requests ADD COLUMN pickup_eta_at TEXT');
   }
+  // Совместная поездка: пассажира основной заявки A высадили, а попутчиков
+  // ещё везут — A остаётся «в пути» (машина занята, маршрут общий), а время
+  // высадки её пассажира — здесь (UTC 'YYYY-MM-DD HH:MM:SS'). См.
+  // mergeApply.js dropOffPassenger.
+  if (!requestColumns.includes('dropped_off_at')) {
+    db.exec('ALTER TABLE requests ADD COLUMN dropped_off_at TEXT');
+  }
 
   const stopColumns = db.prepare("PRAGMA table_info(request_stops)").all().map((c) => c.name);
   if (!stopColumns.includes('lat')) db.exec('ALTER TABLE request_stops ADD COLUMN lat REAL');

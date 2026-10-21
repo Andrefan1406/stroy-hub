@@ -9,7 +9,7 @@ const { requireRideRole } = require('./auth');
 const { emitToDrivers, emitToDispatcher, emitToEmployee, emitToDriver } = require('./socket');
 const { recomputeRequestEstimate } = require('./routeEstimate');
 const { logEvent } = require('./events');
-const { dissolveMergesForA, emitDissolvedB, detachCancelledB } = require('./mergeApply');
+const { dissolveMergesForA, emitDissolvedB, detachCancelledB, dropOffPassenger } = require('./mergeApply');
 const {
   FULL_SELECT, validate, staleThreshold, hydrateRows, getRow,
   serializeForDriver, serializeForEmployee, serializeForDispatcher, z,
@@ -19,7 +19,7 @@ const {
   slotCapacity, slotCounts, nextFreeSlot,
 } = require('./slots');
 const { findDriverConflict, syncDriverStatus, describeRequest } = require('./driverAvailability');
-const { claimRequest, changeRequestStatus, declineRequest } = require('./driverActions');
+const { claimRequest, changeRequestStatus, dropOff, declineRequest } = require('./driverActions');
 const { cancelOwnRequest } = require('./employeeActions');
 const { resolvePoints, unresolvedMessage } = require('./addressCheck');
 
@@ -80,6 +80,10 @@ const unassignSchema = z.object({
 
 const statusSchema = z.object({
   status: z.enum(['in_progress', 'completed']),
+});
+
+const dropOffSchema = z.object({
+  passengerId: z.coerce.number().int().positive(),
 });
 
 // Экстренная переброска машины (П.4). reason обязателен — заказчик увидит
@@ -326,7 +330,21 @@ router.post('/:id/decline', requireRideRole('driver'), validate(declineSchema), 
 router.post('/:id/status', requireRideRole('driver'), validate(statusSchema), async (req, res) => {
   const out = await changeRequestStatus({ userId: req.rideUser.id, requestId: Number(req.params.id), status: req.body.status });
   if (out.error) return res.status(out.status).json({ error: out.error });
-  res.json({ request: serializeForDriver(out.request) });
+  // notice — «Завершить» при попутчиках в машине: высажен только заказчик.
+  res.json({ request: serializeForDriver(out.request), notice: out.notice || null });
+});
+
+// Совместная поездка: высадка одного пассажира (:id — основная заявка,
+// passengerId — она сама или попутная). Водитель — в своей поездке,
+// диспетчер — в любой (если водитель забыл нажать).
+router.post('/:id/drop-off', requireRideRole('driver', 'dispatcher'), validate(dropOffSchema), (req, res) => {
+  const args = { carrierId: Number(req.params.id), passengerId: req.body.passengerId };
+  const out = req.rideUser.role === 'driver'
+    ? dropOff({ userId: req.rideUser.id, ...args })
+    : dropOffPassenger({ actorUserId: req.rideUser.id, ...args });
+  if (out.error) return res.status(out.status).json({ error: out.error });
+  const serialize = req.rideUser.role === 'driver' ? serializeForDriver : serializeForDispatcher;
+  res.json({ request: serialize(out.request), tripCompleted: out.tripCompleted });
 });
 
 // Диспетчер: принудительное назначение — исключение, а не основной

@@ -51,6 +51,8 @@ function formatDateTime(value) {
 }
 
 function statusLabel(r) {
+  // Совместная поездка: вас уже высадили, водитель развозит попутчиков.
+  if (r.droppedOffAt && r.status === "in_progress") return "Вы на месте — поездка для вас завершена";
   switch (r.status) {
     case "pending_assignment": return "Ищем водителя...";
     case "assigned": return `Заказ принял ${r.driverName || "водитель"}${r.vehiclePlate ? ` (${r.vehiclePlate})` : ""}`;
@@ -532,7 +534,7 @@ export default function EmployeeRidesPage() {
                     </div>
                   </div>
                 ) : (
-                  <div style={{ ...s.cardStatus, color: statusColor(r.status) }}>{statusLabel(r)}</div>
+                  <div style={{ ...s.cardStatus, color: statusColor(r.droppedOffAt ? "completed" : r.status) }}>{statusLabel(r)}</div>
                 )}
 
                 {r.mergedRequests?.length > 0 && (
