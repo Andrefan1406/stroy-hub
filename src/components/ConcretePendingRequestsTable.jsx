@@ -62,7 +62,8 @@ const formatResponsible = (name, phone) => {
 
 // showGeoColumn — только для бетона: согласование геодезистов имеет смысл
 // для конструктива, у раствора (кладка/штукатурка) такого требования нет —
-// ни колонки, ни сортировки по этому признаку в таблице раствора.
+// ни колонки, ни сортировки по этому признаку в таблице раствора. Тот же
+// флаг включает и колонку согласования энергетиков (прогрев бетона зимой).
 const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDeleteClick }) => (
   <div style={{ marginBottom: "32px" }}>
     <h4 style={{ textAlign: "center" }}>{title}</h4>
@@ -80,6 +81,7 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
             <th>Плановая дата</th>
             <th>Подача заявки</th>
             {showGeoColumn && <th>Геодезисты</th>}
+            {showGeoColumn && <th>Энергетики</th>}
             <th>Примечание</th>
             <th>Ответственный</th>
             {canDeleteRows && <th>Действия</th>}
@@ -96,6 +98,7 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
               <td>{row.planned_delivery_date || "—"}</td>
               <td>{formatSubmittedAt(row.submitted_at)}</td>
               {showGeoColumn && <td>{row.geo_approved ? "Согласовано" : "—"}</td>}
+              {showGeoColumn && <td>{row.energy_approved ? "Согласовано" : "—"}</td>}
               <td>{row.note || "—"}</td>
               <td>{formatResponsible(row.responsible_name, row.responsible_phone)}</td>
               {canDeleteRows && (
