@@ -45,8 +45,9 @@ async function reverseGeocode(lat, lng) {
 // подставить отдельной кнопкой.
 //   onSelect(address, { lat, lng }); initialAddress — текст из поля формы;
 //   center — где открыть карту ({ lat, lng }: уже отмеченная точка или
-//   найденная улица); centerIsPoint — это уже отмеченная точка (поставить маркер).
-export default function MapPicker({ onSelect, onClose, initialAddress = "", center = null, centerIsPoint = false, title = "Отметьте точку на карте" }) {
+//   найденная улица); centerIsPoint — это уже отмеченная точка (поставить маркер);
+//   cityCenter — центр выбранного населённого пункта, если точки ещё нет.
+export default function MapPicker({ onSelect, onClose, initialAddress = "", center = null, centerIsPoint = false, cityCenter = null, title = "Отметьте точку на карте" }) {
   const mapDivRef = useRef(null);
   const markerRef = useRef(null);
   const [address, setAddress] = useState(initialAddress);
@@ -59,8 +60,8 @@ export default function MapPicker({ onSelect, onClose, initialAddress = "", cent
   const autoRef = useRef(""); // последний адрес, подставленный автоматически
 
   useEffect(() => {
-    const start = center ? [center.lat, center.lng] : DEFAULT_CENTER;
-    const map = L.map(mapDivRef.current).setView(start, center ? 17 : 12);
+    const start = center ? [center.lat, center.lng] : cityCenter ? [cityCenter.lat, cityCenter.lng] : DEFAULT_CENTER;
+    const map = L.map(mapDivRef.current).setView(start, center ? 17 : cityCenter ? 13 : 12);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: "© OpenStreetMap contributors",
       maxZoom: 19,

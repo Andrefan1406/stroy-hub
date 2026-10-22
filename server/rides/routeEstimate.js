@@ -18,9 +18,12 @@
 // светофоров) — для внутригородских служебных поездок это заметно
 // оптимистичнее реальности, поэтому время считаем сами: расстояние (из
 // фактической геометрии маршрута, ему доверяем) делим на среднюю скорость
-// по городу с поправкой на пробки и добавляем буфер на посадку/высадку.
+// по городу с поправкой на пробки (на длинных участках между населёнными
+// пунктами — на скорость по трассе, см. legDriveMinutes) и добавляем буфер
+// на посадку/высадку.
 const { getWriteDb } = require('./db');
 const { logEvent } = require('./events');
+const { KNOWN, splitSettlement, normalize } = require('./settlements');
 
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving';
@@ -29,15 +32,20 @@ const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving';
 // названия улиц встречаются в разных городах Казахстана (например,
 // "Крылова" есть и в Усть-Каменогорске, и в Алматы) — Nominatim иногда
 // выбирал совсем не тот город, и маршрут "разъезжался" на сотни-тысячи км
-// вместо пары километров внутри города. viewbox+bounded=1 жёстко
-// ограничивает поиск окрестностями Усть-Каменогорска (где работает
-// компания, см. MapPicker.jsx) — адрес вне него просто не найдётся (null),
-// это безопаснее, чем тихо посчитать маршрут до другого города.
+// вместо пары километров внутри города. Поэтому улица ищется только внутри
+// населённого пункта, указанного в начале адреса («г. Семей, ул. Ленина,
+// 5», см. settlements.js): viewbox+bounded=1 — его граница. Адрес без
+// населённого пункта (старые заявки) — в окрестностях Усть-Каменогорска.
+// Не нашлось — null: безопаснее, чем тихо посчитать маршрут до другого города.
 const GEOCODE_COUNTRY_CODES = process.env.RIDES_GEOCODE_COUNTRY_CODES || 'kz';
-// left,bottom,right,top — ~60×55 км вокруг Усть-Каменогорска (49.948, 82.628).
-const GEOCODE_VIEWBOX = process.env.RIDES_GEOCODE_VIEWBOX || '82.20,49.70,83.05,50.20';
 
 const AVERAGE_SPEED_KMH = 40;   // средняя по городу с поправкой на пробки
+// Между населёнными пунктами (Семей, Риддер, Новая Бухтарма) — трасса.
+// Город от трассы по координатам не отличаем, поэтому по длине участка:
+// первые CITY_PART_KM каждого участка — по городу (выезд/въезд), остальное —
+// по трассе. Поездка по городу (участки до 10 км) считается как раньше.
+const HIGHWAY_SPEED_KMH = 80;
+const CITY_PART_KM = 10;
 const WAIT_MINUTES = 10;        // посадка/высадка на конечной точке
 const PER_STOP_MINUTES = 5;     // остановка на каждом промежуточном пункте
 const ROAD_FACTOR = 1.3;        // расстояние по прямой → примерная длина по дорогам
@@ -46,6 +54,12 @@ const GEOCODE_TTL_DAYS = 30;
 // организация. Ниже 28 — найдена только улица (а она бывает в километры
 // длиной), район или город: такую точку для маршрута не берём.
 const PRECISE_PLACE_RANK = 28;
+
+// Время в пути по одному участку маршрута, минуты (без ожидания).
+function legDriveMinutes(km) {
+  const city = Math.min(km, CITY_PART_KM);
+  return (city / AVERAGE_SPEED_KMH) * 60 + ((km - city) / HIGHWAY_SPEED_KMH) * 60;
+}
 
 function haversineKm(a, b) {
   const R = 6371;
@@ -58,13 +72,13 @@ function haversineKm(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-async function geocodeRaw(address) {
+async function geocodeRaw(address, viewbox) {
   const params = new URLSearchParams({
     q: address,
     format: 'jsonv2',
     limit: '1',
     countrycodes: GEOCODE_COUNTRY_CODES,
-    viewbox: GEOCODE_VIEWBOX,
+    viewbox,
     bounded: '1',
   });
   const res = await fetch(`${NOMINATIM_URL}?${params.toString()}`, { headers: { 'User-Agent': 'my-first-site-rides/1.0' } });
@@ -86,6 +100,23 @@ async function geocodeAddress(address) {
   return r.status === 'found' || r.status === 'street' ? { lat: r.lat, lng: r.lng } : null;
 }
 
+// Что и где искать по тексту адреса: { cacheKey, queries, viewbox } либо
+// { status } — населённый пункт не найден / карта не ответила.
+//   «г. Семей, ул. Ленина, 5» — улица в границах Семея: сначала вместе с
+//   названием города (точнее), затем без него (в сёлах дома на карте часто
+//   без привязки к селу);
+//   без населённого пункта (старые заявки) — как раньше, в Усть-Каменогорске.
+// Ключ кэша — с населённым пунктом: та же улица в другом городе — другая
+// точка, а записи до появления поля (искались в Усть-Каменогорске, в том
+// числе ошибочно — «г. Шемонаиха, ...») не подхватываются.
+async function searchPlan(address) {
+  const split = await splitSettlement(address);
+  if (!split) return { cacheKey: address, queries: [address], viewbox: KNOWN[0].box };
+  const s = split.settlement;
+  if (s.status !== 'found') return { status: s.status === 'unavailable' ? 'unavailable' : 'not_found' };
+  return { cacheKey: `${normalize(s.name)}|${split.rest}`, queries: [`${split.rest}, ${s.query}`, split.rest], viewbox: s.box };
+}
+
 // Поиск адреса с кэшем и оценкой точности:
 //   found       — конкретное место (дом, здание, организация);
 //   street      — только улица/район/город — точку нужно отметить на карте;
@@ -93,8 +124,11 @@ async function geocodeAddress(address) {
 //   unavailable — геокодер не ответил (и в кэше ничего) — тоже на карту.
 // lat/lng есть у found и street (street — чтобы открыть карту на этой улице).
 async function lookupAddress(address) {
-  const key = String(address || '').trim();
-  if (!key) return { status: 'not_found' };
+  const text = String(address || '').trim();
+  if (!text) return { status: 'not_found' };
+  const plan = await searchPlan(text);
+  if (plan.status) return { status: plan.status };
+  const key = plan.cacheKey;
   const db = getWriteDb();
   const row = db.prepare('SELECT lat, lng, found, precise, fetched_at FROM geocode_cache WHERE address = ?').get(key);
   const fromRow = (r) => (r.found ? { status: r.precise ? 'found' : 'street', lat: r.lat, lng: r.lng } : { status: 'not_found' });
@@ -103,9 +137,14 @@ async function lookupAddress(address) {
     // Записи без точности (из кэша до её появления) — переспрашиваем.
     if (ageDays < GEOCODE_TTL_DAYS && (!row.found || row.precise != null)) return fromRow(row);
   }
-  let result;
+  let result = null;
   try {
-    result = await geocodeRaw(key);
+    // До первого точного (дом, здание); иначе — первое неточное (улица).
+    for (const q of plan.queries) {
+      const r = await geocodeRaw(q, plan.viewbox); // последовательно — щадим лимит Nominatim
+      if (r && (r.precise || !result)) result = r;
+      if (result?.precise) break;
+    }
   } catch (err) {
     if (row && row.found && row.precise != null) return fromRow(row);
     return row && row.found ? { status: 'street', lat: row.lat, lng: row.lng } : { status: 'unavailable' };
@@ -175,16 +214,15 @@ async function estimateFromPoints(coords, withReturn) {
   const distanceKm = Math.round(totalKm * 10) / 10;
 
   const perPoint = [{ index: 0, etaMinutes: 0 }];
-  let cumKm = 0;
+  let cumMin = 0;
   for (let i = 0; i < forwardLegCount; i++) {
-    cumKm += legKm[i];
-    const drive = (cumKm / AVERAGE_SPEED_KMH) * 60;
+    cumMin += legDriveMinutes(legKm[i]);
     const wait = WAIT_MINUTES + PER_STOP_MINUTES * i;
-    perPoint.push({ index: i + 1, etaMinutes: Math.round(drive + wait) });
+    perPoint.push({ index: i + 1, etaMinutes: Math.round(cumMin + wait) });
   }
 
   const durationMin =
-    Math.round((totalKm / AVERAGE_SPEED_KMH) * 60) +
+    Math.round(legKm.reduce((s, km) => s + legDriveMinutes(km), 0)) +
     WAIT_MINUTES +
     PER_STOP_MINUTES * Math.max(0, forwardLegCount - 1);
 

@@ -10,7 +10,7 @@ import LogoutButton from "../../rides/LogoutButton";
 import AdminPanelLinks from "../../rides/AdminPanelLinks";
 import { formatRoute, formatEstimate, formatClock } from "../../rides/format";
 import MapPicker from "../../rides/MapPicker";
-import AddressField, { addressNeedsMap, addressPayload, addressReady, emptyAddress } from "../../rides/AddressField";
+import AddressField, { addressNeedsMap, addressPayload, addressReady, cityProblem, emptyAddress } from "../../rides/AddressField";
 import CancelRequestModal from "../../rides/CancelRequestModal";
 import TelegramConnect from "../../rides/TelegramConnect";
 import RideHistoryTable from "../../rides/RideHistoryTable";
@@ -272,8 +272,10 @@ export default function EmployeeRidesPage() {
     ...form.extraStops.map((v, i) => ({ label: `пункт ${i + 1}`, v })),
   ].filter((f) => f.v.address.trim());
   const needMap = addressFields.filter((f) => addressNeedsMap(f.v));
-  const checking = addressFields.some((f) => !addressReady(f.v) && !addressNeedsMap(f.v));
-  const addressesReady = !needMap.length && !checking;
+  // Вписанный вручную населённый пункт не найден (или ещё не вписан).
+  const badCity = addressFields.filter((f) => cityProblem(f.v));
+  const checking = addressFields.some((f) => !addressReady(f.v) && !addressNeedsMap(f.v) && !cityProblem(f.v));
+  const addressesReady = !needMap.length && !badCity.length && !checking;
 
   const blockedReason = needsContact
     ? "Сначала сохраните ваши ФИО и телефон в блоке «Ваши данные для водителя» выше."
@@ -489,6 +491,11 @@ export default function EmployeeRidesPage() {
         <label style={{ ...s.label, flex: "none" }}>Комментарий
           <textarea style={{ ...s.input, minHeight: "60px" }} value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
         </label>
+        {badCity.length > 0 && (
+          <div style={s.slotWarning}>
+            Укажите населённый пункт ({badCity.map((f) => f.label).join(", ")}): выберите из списка или впишите название, найденное на карте.
+          </div>
+        )}
         {needMap.length > 0 && (
           <div style={s.slotWarning}>
             Укажите на карте: {needMap.map((f) => `«${f.v.address.trim()}» (${f.label})`).join(", ")} — для точного расчёта времени в пути и километража.
