@@ -32,7 +32,7 @@ router.get('/pending', (req, res) => {
       SELECT
         co.request_key, co.category, co.object_name, co.block_position, co.material,
         co.grade_class, co.volume_planned_m3, co.planned_delivery_date, co.submitted_at,
-        co.geo_approved, co.responsible_name, co.responsible_phone, co.note
+        co.geo_approved, co.energy_approved, co.responsible_name, co.responsible_phone, co.note
       FROM concrete_orders co
       LEFT JOIN concrete_hidden_requests h ON h.request_key = co.request_key
       WHERE (co.execution_note IS NULL OR co.execution_note = '')
@@ -43,11 +43,13 @@ router.get('/pending', (req, res) => {
 
   const withPriority = rows.map((row) => ({ ...row, priority: priorityFor(row.object_name) }));
 
-  // Уровень 1: плановая дата поставки (раньше — выше). Уровень 2: приоритет
-  // (меньше — выше). Уровень 3: согласование геодезистов — только внутри
-  // бетона (у раствора этого признака нет ни в колонках, ни в сортировке,
-  // см. ConcretePendingRequestsTable.jsx). Уровень 4: дата/время подачи
-  // заявки (раньше — выше). Пустые значения — всегда в конец своей группы.
+  // Уровень 1: плановая дата поставки (раньше — выше). Уровни 2 и 3:
+  // согласование энергетиков, затем геодезистов (согласованные — выше) —
+  // важнее приоритета объекта, только внутри бетона (у раствора этих
+  // признаков нет ни в колонках, ни в сортировке, см.
+  // ConcretePendingRequestsTable.jsx). Уровень 4: приоритет объекта (меньше —
+  // выше). Уровень 5: дата/время подачи заявки (раньше — выше). Пустые
+  // значения — всегда в конец своей группы.
   const compareAsc = (x, y) => {
     if (!x) return 1;
     if (!y) return -1;
@@ -56,10 +58,11 @@ router.get('/pending', (req, res) => {
   withPriority.sort((a, b) => {
     const byPlannedDate = compareAsc(a.planned_delivery_date, b.planned_delivery_date);
     if (byPlannedDate !== 0) return byPlannedDate;
-    if (a.priority !== b.priority) return a.priority - b.priority;
-    if (a.material === 'Бетон' && b.material === 'Бетон' && a.geo_approved !== b.geo_approved) {
-      return b.geo_approved - a.geo_approved;
+    if (a.material === 'Бетон' && b.material === 'Бетон') {
+      if (a.energy_approved !== b.energy_approved) return b.energy_approved - a.energy_approved;
+      if (a.geo_approved !== b.geo_approved) return b.geo_approved - a.geo_approved;
     }
+    if (a.priority !== b.priority) return a.priority - b.priority;
     return compareAsc(a.submitted_at, b.submitted_at);
   });
 

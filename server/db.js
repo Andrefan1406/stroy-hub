@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS concrete_orders (
   submitted_at           TEXT, -- "Дата и время подачи заявки", 'YYYY-MM-DD HH:MM:SS' (может
                                 -- быть NULL у старых строк без этой колонки в исходнике).
   geo_approved           INTEGER DEFAULT 0, -- 1, если "Согласование геодезистов" = "Согласовано".
+  energy_approved        INTEGER DEFAULT 0, -- 1, если "Согласование энергетиков (только в зимний
+                                -- период)" = "Согласовано".
   responsible_name       TEXT, -- "ФИО" заявителя из Google Таблицы.
   responsible_phone      TEXT, -- "Телефон" заявителя из Google Таблицы.
   note                   TEXT, -- "Примечание" заявителя из Google Таблицы.
@@ -371,6 +373,9 @@ function migrateSchema(db) {
   }
   if (!columns.includes('geo_approved')) {
     db.exec('ALTER TABLE concrete_orders ADD COLUMN geo_approved INTEGER DEFAULT 0');
+  }
+  if (!columns.includes('energy_approved')) {
+    db.exec('ALTER TABLE concrete_orders ADD COLUMN energy_approved INTEGER DEFAULT 0');
   }
   if (!columns.includes('request_key')) {
     db.exec('ALTER TABLE concrete_orders ADD COLUMN request_key TEXT');

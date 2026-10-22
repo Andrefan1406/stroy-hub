@@ -95,6 +95,13 @@ function buildRequestKey(row) {
   ].join('|');
 }
 
+// Значение колонки, название которой начинается с prefix (без учёта
+// пробелов/переносов в начале). undefined — такой колонки нет.
+function findColumn(row, prefix) {
+  const key = Object.keys(row).find((k) => k.trim().startsWith(prefix));
+  return key === undefined ? undefined : row[key];
+}
+
 function normalizeRow(row) {
   const base = {
     shipment_date: normalizeDate(row['Дата отгрузки']),
@@ -123,6 +130,9 @@ function normalizeRow(row) {
     submitted_at: normalizeDateTime(row['Дата и время подачи заявки']),
     // 'Согласовано' — единственное непустое значение колонки на практике.
     geo_approved: row['Согласование геодезистов']?.trim() === 'Согласовано' ? 1 : 0,
+    // В шапке листа название с переносом строки — "Согласование энергетиков\n
+    // (только в зимний период)", поэтому ищем колонку по началу названия.
+    energy_approved: findColumn(row, 'Согласование энергетиков')?.trim() === 'Согласовано' ? 1 : 0,
     responsible_name: row['ФИО'] || null,
     responsible_phone: row['Телефон'] || null,
     note: row['Примечание'] || null,
@@ -136,12 +146,12 @@ function syncConcreteData(rows) {
     INSERT INTO concrete_orders (
       shipment_date, shipment_date_raw, category, material, object_name,
       block_position, grade_class, volume_planned_m3, volume_actual_m3, execution_note,
-      planned_delivery_date, submitted_at, geo_approved, responsible_name, responsible_phone,
+      planned_delivery_date, submitted_at, geo_approved, energy_approved, responsible_name, responsible_phone,
       note, request_key
     ) VALUES (
       @shipment_date, @shipment_date_raw, @category, @material, @object_name,
       @block_position, @grade_class, @volume_planned_m3, @volume_actual_m3, @execution_note,
-      @planned_delivery_date, @submitted_at, @geo_approved, @responsible_name, @responsible_phone,
+      @planned_delivery_date, @submitted_at, @geo_approved, @energy_approved, @responsible_name, @responsible_phone,
       @note, @request_key
     )
   `);
