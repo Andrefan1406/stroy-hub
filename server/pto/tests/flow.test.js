@@ -87,7 +87,7 @@ test('загрузка: 202 сразу, разбор в фоне, строки �
   assert.ok(!works.some((w) => w.element === 'Фундамент ФЛм 1'), 'у элемента только с арматурой работ нет — арматура в материалах');
   const wall = works.find((w) => w.name === 'Бетонирование монолитных конструкций' && w.element === 'Стен монолитных См 1 т, См 1 н');
   assert.equal(wall.quantity, 92);
-  assert.match(wall.basisNote, /армирование входит в стоимость бетонирования/);
+  assert.match(wall.basisNote, /армирование и закладные входят в стоимость бетонирования/);
   assert.equal(wall.rate.status, 'suggested');
   assert.equal(wall.rate.name, 'Бетонирование открытых площадок');
   assert.equal(wall.rate.class, 'Расценки из ЕНиР для фирм', 'категория расценки сохранена');
@@ -192,7 +192,7 @@ test('стоимость: материалы по ориентировочным
   assert.equal(fl.missing, 1);
   assert.equal(fl.total, fl.materials + fl.works);
   // стена: бетон 92 м³ (расценка подтверждена, 15 772 ₸) + подготовка 29,3 м³ (предложена, 14 268 ₸);
-  // армирование входит в стоимость бетонирования
+  // армирование и закладные входят в стоимость бетонирования
   const wall = t.rows.find((r) => r.element === 'Стен монолитных См 1 т, См 1 н');
   assert.equal(wall.concreteM3, 121.3);
   assert.equal(wall.materials, Math.round(121.3 * 40000));
