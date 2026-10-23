@@ -60,6 +60,7 @@ let docId;
 
 test('загрузка: 202 сразу, разбор в фоне, строки — «черновик», расценки предложены', async () => {
   await ready;
+  // Блок при загрузке не выбирается (даже если пришёл в запросе — игнорируется): он определяется по чертежам.
   const res = await upload('&position=' + encodeURIComponent('3') + '&block=' + encodeURIComponent('Блок 1'));
   assert.equal(res.status, 202, JSON.stringify(res.body));
   docId = res.body.id;
@@ -68,6 +69,8 @@ test('загрузка: 202 сразу, разбор в фоне, строки �
   assert.equal(doc.object, 'Брик таун 1');
   assert.equal(doc.pageCount, 3);
   assert.equal(doc.fileName, 'KZh.pdf');
+  assert.ok(!('block' in doc), 'у документа блока нет — он у строк');
+  assert.deepEqual(doc.report.blocks, [], 'в этих листах осей блоков нет — здание без блоков');
   assert.deepEqual(doc.report.sheets.map((s) => `${s.page}:${s.kind}`), ['4:steel_summary', '23:specification', '63:specification']);
 
   const items = (await call('GET', `/api/pto/documents/${docId}/items`)).body.items;
@@ -265,7 +268,27 @@ test('сверка со сводной ведомостью: предложен 
   }
 });
 
-test('Excel: листы, итоги, листы-источники, пометки ручных правок', async () => {
+test('блок строки правится вручную (ведомость и работы), можно указать при добавлении', async () => {
+  await ready;
+  const items = (await call('GET', `/api/pto/documents/${docId}/items`)).body.items;
+  const fl = items.find((i) => i.element === 'Фундамент ФЛм 1' && i.name === 'Арматура ∅12');
+  assert.equal(fl.block, null);
+  const upd = await call('PATCH', `/api/pto/items/${fl.id}`, { block: 'Блок 1' });
+  assert.equal(upd.body.item.block, 'Блок 1');
+  assert.equal(upd.body.item.edited, true, 'правка блока — ручная правка');
+  const works = (await call('GET', `/api/pto/documents/${docId}/works`)).body.works;
+  const wall = works.find((w) => w.name === 'Бетонирование монолитных конструкций' && w.element === 'Стен монолитных См 1 т, См 1 н');
+  assert.equal((await call('PATCH', `/api/pto/works/${wall.id}`, { block: 'Блок 2' })).body.work.block, 'Блок 2');
+  const added = await call('POST', `/api/pto/documents/${docId}/items`, { kind: 'concrete', block: 'Блок 2', element: 'Лестница', name: 'Бетон С20/25', unit: 'м³', quantity: 3 });
+  assert.equal(added.body.item.block, 'Блок 2');
+  await call('DELETE', `/api/pto/items/${added.body.item.id}`);
+  // итоги — по блокам и элементам
+  const t = (await call('GET', `/api/pto/documents/${docId}/totals`)).body;
+  assert.ok(t.rows.some((r) => r.block === 'Блок 1' && r.element === 'Фундамент ФЛм 1'));
+  assert.ok(t.rows.some((r) => r.block === 'Блок 2' && r.element === 'Стен монолитных См 1 т, См 1 н'));
+});
+
+test('Excel: листы, итоги, листы-источники, пометки ручных правок, столбец «Блок»', async () => {
   await ready;
   const res = await call('GET', `/api/pto/documents/${docId}/export.xlsx`);
   assert.equal(res.status, 200);
@@ -274,7 +297,7 @@ test('Excel: листы, итоги, листы-источники, пометк
   assert.deepEqual(book.SheetNames, ['Ведомость материалов', 'Виды работ', 'Итого', 'Отчёт разбора']);
   const mat = XLSX.utils.sheet_to_json(book.Sheets['Ведомость материалов'], { header: 1 });
   const head = mat.findIndex((r) => r[0] === '№');
-  // У документа выбран блок — после «№» столбец «Блок».
+  // У строк есть блок — после «№» столбец «Блок».
   assert.deepEqual(mat[head].slice(0, 8), ['№', 'Блок', 'Конструктивный элемент', 'Наименование', 'Марка / класс', 'Ед. изм.', 'Количество', 'Листы-источники']);
   const row = mat.find((r) => r[2] === 'Фундамент ФЛм 1' && r[3] === 'Арматура ∅12');
   assert.equal(row[1], 'Блок 1');
@@ -287,15 +310,18 @@ test('Excel: листы, итоги, листы-источники, пометк
   const sums = XLSX.utils.sheet_to_json(book.Sheets['Итого'], { header: 1 });
   const sumHead = sums.find((r) => r[1] === 'Конструктивный элемент');
   assert.equal(sumHead[0], 'Блок', 'в итогах «Блок» — первый столбец');
-  assert.ok(sums.some((r) => r[1] === 'ИТОГО' && r[0] === 'Блок 1'));
+  assert.ok(sums.some((r) => r[1] === 'ИТОГО'));
+  assert.ok(sums.some((r) => r[0] === 'Блок 1' && r[1] === 'Фундамент ФЛм 1'));
 });
 
 test('Excel: у здания без блоков столбца «Блок» нет', async () => {
   await ready;
   const { buildWorkbook } = require('../excel');
   const doc = service.getDocument(docId);
+  const noBlock = (list) => list.map((x) => ({ ...x, block: null }));
+  const totals = service.totals(docId);
   const book = buildWorkbook({
-    doc: { ...doc, block: null }, items: service.listItems(docId), works: service.listWorks(docId), totals: service.totals(docId),
+    doc, items: noBlock(service.listItems(docId)), works: noBlock(service.listWorks(docId)), totals: { ...totals, rows: noBlock(totals.rows) },
   });
   const mat = XLSX.utils.sheet_to_json(book.Sheets['Ведомость материалов'], { header: 1 });
   assert.deepEqual(mat[mat.findIndex((r) => r[0] === '№')].slice(0, 3), ['№', 'Конструктивный элемент', 'Наименование']);
@@ -338,8 +364,8 @@ test('список документов с фильтром по иерархи�
   await ready;
   const all = (await call('GET', '/api/pto/documents')).body.documents;
   assert.ok(all.length >= 4);
-  const byBlock = (await call('GET', '/api/pto/documents?block=' + encodeURIComponent('Блок 1'))).body.documents;
-  assert.ok(byBlock.length >= 1 && byBlock.every((d) => d.block === 'Блок 1'));
+  const byPosition = (await call('GET', '/api/pto/documents?position=' + encodeURIComponent('3'))).body.documents;
+  assert.ok(byPosition.length >= 1 && byPosition.every((d) => d.position === '3'));
   const del = await call('DELETE', `/api/pto/documents/${docId}`);
   assert.equal(del.status, 200);
   assert.equal((await call('GET', `/api/pto/documents/${docId}`)).status, 404);

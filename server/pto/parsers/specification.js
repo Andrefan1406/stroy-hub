@@ -27,6 +27,10 @@ const SECTION_RE = /^(Детали|Материалы|Изделия закла�
 const CONCRETE_RE = /Бетон\s*(?:кл\.?\s*)?([СCсcВBвb])\s?(\d+(?:[.,]\d+)?(?:\s?\/\s?\d+)?)/;
 const VOLUME_RE = /(\d+(?:[.,]\d+)?)\s*м\s*[³3]/i;
 const TABLE_END_RE = /(Ведомость расхода|Ведомость деталей|Удельные показатели|Спецификация|Расход стали)/i;
+// Перечень элементов («Спецификация к схемам расположения монолитных стен…»): по строке на марку
+// с количеством — материалов в нём нет, но по нему считается число стен в каждом блоке.
+const LAYOUT_LIST_RE = /схем[а-яё]*\s+расположения/i; // \w не знает кириллицу
+const MARK_RE = /См\s*(\d+(?:\.\d+)?)(?:\s*([тн])(?![а-яё]))?/giu;
 const MASS_KG_RE = /(\d[\d\s]*(?:[.,]\d+)?)\s*кг/i;
 
 const cyr = (ch) => ({ C: 'С', c: 'С', с: 'С', B: 'В', b: 'В', b2: 'В', в: 'В' }[ch] || ch);
@@ -105,6 +109,11 @@ function elementLabel(s) {
   return t ? t[0].toUpperCase() + t.slice(1) : '';
 }
 
+// Марки стен в тексте: «См 1 т, См 1 н» -> ['см1т', 'см1н'], «См 5» -> ['см5'].
+function markKeys(text) {
+  return [...String(text || '').matchAll(MARK_RE)].map((m) => `см${m[1]}${m[2] || ''}`);
+}
+
 const massOf = (text) => {
   const m = String(text || '').match(MASS_KG_RE);
   return m ? parseNum(m[1]) : null;
@@ -142,7 +151,7 @@ function parseTable(items, table, pageNo) {
   const rows = [];
   const sheetElement = title || `Лист ${pageNo}`;
 
-  const region = items.filter((it) => it.x >= edges.pos && it.x < table.xRight && it.y < table.yHeader - 24 && it.y > 120);
+  const region = items.filter((it) => it.x >= edges.pos && it.x < table.xRight && it.y < table.yHeader - 24 && it.y > (LAYOUT_LIST_RE.test(title) ? 10 : 120));
   const lines = groupRows(region, 3);
   const consumed = [];
   let prevY = table.yHeader - 24;
@@ -152,6 +161,17 @@ function parseTable(items, table, pageNo) {
     if (TABLE_END_RE.test(text)) break;
     consumed.push({ y: line.y, items: line.items, c: cellsOf(edges, line.items) });
     prevY = line.y;
+  }
+
+  if (LAYOUT_LIST_RE.test(title)) {
+    const entries = [];
+    for (const l of consumed) {
+      const count = parseNum(l.c.kol);
+      const keys = markKeys(l.c.pos || l.c.name);
+      const label = ((l.c.pos || l.c.name).match(new RegExp(MARK_RE.source, 'iu')) || [''])[0].replace(/\s+/g, ' ');
+      if (count > 0 && keys.length === 1) entries.push({ key: keys[0], label, count });
+    }
+    return { rows: [], issues, title, list: { entries } };
   }
 
   // Сноска «Расход в спецификации дан на одну стену» — значения на один элемент,
@@ -291,14 +311,16 @@ function parseTable(items, table, pageNo) {
 // Все спецификации страницы: { rows, issues, tables }.
 function parseSpecifications(page) {
   const tables = findTables(page.items);
-  const out = { rows: [], issues: [], tables: tables.length, titles: [] };
+  const out = { rows: [], issues: [], tables: tables.length, titles: [], lists: [] };
   for (const table of tables) {
     try {
       const r = parseTable(page.items, table, page.page);
+      for (const row of r.rows) row.sheetTitle = r.title; // название листа — по нему определяются марки стен и блок
       out.rows.push(...r.rows);
       out.issues.push(...r.issues);
       out.titles.push(r.title);
-      if (!r.rows.length) out.issues.push({ page: page.page, message: `Спецификация «${r.title || 'без названия'}»: не найдено ни бетона, ни арматуры, ни закладных`, level: 'info' });
+      if (r.list) out.lists.push({ page: page.page, title: r.title, entries: r.list.entries });
+      else if (!r.rows.length) out.issues.push({ page: page.page, message: `Спецификация «${r.title || 'без названия'}»: не найдено ни бетона, ни арматуры, ни закладных`, level: 'info' });
     } catch (err) {
       out.issues.push({ page: page.page, message: `Не удалось разобрать таблицу спецификации: ${err.message}` });
     }
@@ -306,4 +328,4 @@ function parseSpecifications(page) {
   return out;
 }
 
-module.exports = { parseSpecifications, findTables, elementLabel };
+module.exports = { parseSpecifications, findTables, elementLabel, markKeys };

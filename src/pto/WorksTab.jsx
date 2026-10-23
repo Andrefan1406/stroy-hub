@@ -89,7 +89,7 @@ function RatePicker({ work, onClose, onPicked, onError }) {
   );
 }
 
-function WorkRow({ work, block, onChange, onError, onPick }) {
+function WorkRow({ work, showBlock, onChange, onError, onPick }) {
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const run = async (fn) => {
@@ -97,7 +97,7 @@ function WorkRow({ work, block, onChange, onError, onPick }) {
     try { await fn(); } catch (err) { onError(err.message || "Не удалось сохранить"); } finally { setBusy(false); }
   };
   const save = () => run(async () => {
-    await ptoPatch(`/works/${work.id}`, { element: edit.element, name: edit.name, unit: edit.unit, quantity: edit.quantity });
+    await ptoPatch(`/works/${work.id}`, { block: edit.block, element: edit.element, name: edit.name, unit: edit.unit, quantity: edit.quantity });
     setEdit(null);
     onChange();
   });
@@ -110,7 +110,7 @@ function WorkRow({ work, block, onChange, onError, onPick }) {
     const set = (k) => (e) => setEdit((x) => ({ ...x, [k]: e.target.value }));
     return (
       <tr style={{ background: "#fffdf0" }}>
-        {block ? <td style={s.td}>{block}</td> : null}
+        {showBlock ? <td style={s.td}><input style={s.inputSmall} value={edit.block} onChange={set("block")} /></td> : null}
         <td style={s.td}><input style={s.inputSmall} value={edit.element} onChange={set("element")} /></td>
         <td style={s.td}><input style={s.inputSmall} value={edit.name} onChange={set("name")} /></td>
         <td style={s.td}><input style={{ ...s.inputSmall, width: 60 }} value={edit.unit} onChange={set("unit")} /></td>
@@ -126,7 +126,7 @@ function WorkRow({ work, block, onChange, onError, onPick }) {
 
   return (
     <tr>
-      {block ? <td style={s.td}>{block}</td> : null}
+      {showBlock ? <td style={s.td}>{work.block || "—"}</td> : null}
       <td style={s.td}>{work.element || "—"}</td>
       <td style={s.td}>
         {work.name}
@@ -161,7 +161,7 @@ function WorkRow({ work, block, onChange, onError, onPick }) {
         )}
         <button style={s.small} disabled={busy} onClick={() => onPick(work)}>{rate ? "Другая…" : "Подобрать…"}</button>
         {rate && <button style={s.small} disabled={busy} onClick={() => run(async () => { await ptoDelete(`/works/${work.id}/rate`); onChange(); })}>Сбросить</button>}
-        <button style={s.small} disabled={busy} onClick={() => setEdit({ element: work.element, name: work.name, unit: work.unit, quantity: work.quantity == null ? "" : String(work.quantity) })}>Править</button>
+        <button style={s.small} disabled={busy} onClick={() => setEdit({ block: work.block || "", element: work.element, name: work.name, unit: work.unit, quantity: work.quantity == null ? "" : String(work.quantity) })}>Править</button>
         <button style={s.smallDanger} disabled={busy} onClick={() => {
           if (window.confirm(`Удалить работу «${work.name}» (${work.element || "без элемента"})?`)) run(async () => { await ptoDelete(`/works/${work.id}`); onChange(); });
         }}>×</button>
@@ -173,8 +173,9 @@ function WorkRow({ work, block, onChange, onError, onPick }) {
 export default function WorksTab({ doc, works, reload, onError, onNotice }) {
   const [picker, setPicker] = useState(null);
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ element: "", name: "", unit: "м²", quantity: "" });
+  const [form, setForm] = useState({ block: "", element: "", name: "", unit: "м²", quantity: "" });
   const [busy, setBusy] = useState(false);
+  const showBlock = (doc.report && doc.report.blocks && doc.report.blocks.length > 0) || works.some((w) => w.block);
 
   const call = async (fn, done) => {
     setBusy(true);
@@ -187,7 +188,7 @@ export default function WorksTab({ doc, works, reload, onError, onNotice }) {
   const applyRates = () => call(() => ptoPost(`/documents/${doc.id}/rates/apply`), (r) => (r.warning ? onError(r.warning) : onNotice("Расценки подобраны для работ без подтверждённой расценки")));
   const add = (e) => {
     e.preventDefault();
-    return call(() => ptoPost(`/documents/${doc.id}/works`, form), () => { setAdding(false); setForm({ element: "", name: "", unit: "м²", quantity: "" }); });
+    return call(() => ptoPost(`/documents/${doc.id}/works`, form), () => { setAdding(false); setForm({ block: "", element: "", name: "", unit: "м²", quantity: "" }); });
   };
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -208,12 +209,12 @@ export default function WorksTab({ doc, works, reload, onError, onNotice }) {
           <table style={s.table}>
             <thead>
               <tr>
-                {doc.block ? <th style={s.th}>Блок</th> : null}
+                {showBlock ? <th style={s.th}>Блок</th> : null}
                 <th style={s.th}>Конструктивный элемент</th><th style={s.th}>Вид работ</th><th style={s.th}>Ед.</th><th style={s.th}>Объём</th>
                 <th style={s.th}>Расценка</th><th style={s.th}>Цена с НДС</th><th style={s.th}>Стоимость</th><th style={s.th}>Статус</th><th style={s.th} />
               </tr>
             </thead>
-            <tbody>{works.map((w) => <WorkRow key={w.id} work={w} block={doc.block} onChange={reload} onError={onError} onPick={setPicker} />)}</tbody>
+            <tbody>{works.map((w) => <WorkRow key={w.id} work={w} showBlock={showBlock} onChange={reload} onError={onError} onPick={setPicker} />)}</tbody>
           </table>
         </div>
       )}
@@ -226,6 +227,7 @@ export default function WorksTab({ doc, works, reload, onError, onNotice }) {
         {!adding ? <button style={s.secondary} onClick={() => setAdding(true)}>+ Добавить работу</button> : (
           <form onSubmit={add} style={{ ...s.card, background: "#fafafa" }}>
             <div style={s.formGrid}>
+              {showBlock ? <label style={s.label}>Блок<input style={s.input} placeholder="Например, Блок 1" value={form.block} onChange={set("block")} /></label> : null}
               <label style={s.label}>Конструктивный элемент<input style={s.input} value={form.element} onChange={set("element")} /></label>
               <label style={s.label}>Вид работ *<input style={s.input} required value={form.name} onChange={set("name")} placeholder="Например, Устройство опалубки" /></label>
               <label style={s.label}>Ед. изм. *<input style={s.input} required value={form.unit} onChange={set("unit")} /></label>

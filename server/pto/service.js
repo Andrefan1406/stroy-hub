@@ -24,13 +24,13 @@ const parseJson = (s, fallback) => {
 };
 
 const itemOut = (r) => ({
-  id: r.id, documentId: r.document_id, kind: r.kind, element: r.element, name: r.name, markClass: r.mark_class,
+  id: r.id, documentId: r.document_id, kind: r.kind, block: r.block || null, element: r.element, name: r.name, markClass: r.mark_class,
   unit: r.unit, quantity: r.quantity, basis: r.basis, counted: !!r.counted, note: r.note,
   sources: parseJson(r.sources_json, []), status: r.status, edited: !!r.edited, manual: !!r.manual,
 });
 
 const workOut = (r) => ({
-  id: r.id, documentId: r.document_id, element: r.element, name: r.name, unit: r.unit, quantity: r.quantity,
+  id: r.id, documentId: r.document_id, block: r.block || null, element: r.element, name: r.name, unit: r.unit, quantity: r.quantity,
   basisNote: r.basis_note, status: r.status, edited: !!r.edited, manual: !!r.manual,
   rate: r.rate_name ? {
     id: r.rate_id, class: r.rate_class, name: r.rate_name, unit: r.rate_unit, price: r.price,
@@ -40,7 +40,7 @@ const workOut = (r) => ({
 });
 
 const docOut = (r) => ({
-  id: r.id, section: r.section, category: r.category, object: r.object_name, position: r.position, block: r.block,
+  id: r.id, section: r.section, category: r.category, object: r.object_name, position: r.position,
   fileName: r.file_name, fileSize: r.file_size, pageCount: r.page_count, status: r.status, error: r.error,
   uploadedBy: r.uploaded_by, uploadedAt: r.uploaded_at, parsedAt: r.parsed_at, worksStale: !!r.works_stale,
 });
@@ -85,14 +85,15 @@ function createPtoService({ db, rates, extract = extractPages }) {
         sheets: parsed.sheets,
         issues: parsed.issues,
         reconciliation,
+        blocks: parsed.blocks || [],
         stats: { rawRows: parsed.rows.length, items: items.length, works: works.length },
       };
       db.transaction(() => {
         db.prepare('DELETE FROM pto_items WHERE document_id = ?').run(docId);
         db.prepare('DELETE FROM pto_works WHERE document_id = ?').run(docId);
         const ins = db.prepare(
-          `INSERT INTO pto_items (document_id, kind, element, name, mark_class, unit, quantity, basis, counted, note, sources_json, sort)
-           VALUES (@document_id, @kind, @element, @name, @mark_class, @unit, @quantity, @basis, @counted, @note, @sources_json, @sort)`
+          `INSERT INTO pto_items (document_id, kind, block, element, name, mark_class, unit, quantity, basis, counted, note, sources_json, sort)
+           VALUES (@document_id, @kind, @block, @element, @name, @mark_class, @unit, @quantity, @basis, @counted, @note, @sources_json, @sort)`
         );
         for (const it of items) ins.run({ ...it, document_id: docId, sources_json: JSON.stringify(it.sources) });
         insertWorks(docId, works);
@@ -113,12 +114,11 @@ function createPtoService({ db, rates, extract = extractPages }) {
     }
   }
 
-  const listDocuments = ({ object, position, block } = {}) => {
+  const listDocuments = ({ object, position } = {}) => {
     const where = [];
     const args = [];
     if (object) { where.push('object_name = ?'); args.push(object); }
     if (position) { where.push('position = ?'); args.push(position); }
-    if (block) { where.push('block = ?'); args.push(block); }
     const rows = db.prepare(`SELECT * FROM pto_documents ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC`).all(...args);
     return rows.map(docOut);
   };
@@ -156,6 +156,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
     if (!cur) throw new ServiceError('Строка не найдена', 404);
     const next = {};
     let changed = false;
+    if (patch.block !== undefined) { next.block = text(patch.block, 'Блок', { max: 60 }) || null; changed = true; }
     if (patch.element !== undefined) { next.element = text(patch.element, 'Элемент'); changed = true; }
     if (patch.name !== undefined) { next.name = text(patch.name, 'Наименование', { required: true }); changed = true; }
     if (patch.markClass !== undefined) { next.mark_class = text(patch.markClass, 'Марка/класс', { max: 60 }); changed = true; }
@@ -181,9 +182,9 @@ function createPtoService({ db, rates, extract = extractPages }) {
     const kind = ['steel', 'embedded', 'concrete', 'metal'].includes(body.kind) ? body.kind : 'steel';
     const sort = (db.prepare('SELECT COALESCE(MAX(sort), 0) + 1 AS s FROM pto_items WHERE document_id = ?').get(Number(docId)).s);
     const info = db.prepare(
-      `INSERT INTO pto_items (document_id, kind, element, name, mark_class, unit, quantity, basis, counted, note, sources_json, manual, sort)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, '[]', 1, ?)`
-    ).run(Number(docId), kind, text(body.element, 'Элемент'), text(body.name, 'Наименование', { required: true }),
+      `INSERT INTO pto_items (document_id, kind, block, element, name, mark_class, unit, quantity, basis, counted, note, sources_json, manual, sort)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, '[]', 1, ?)`
+    ).run(Number(docId), kind, text(body.block, 'Блок', { max: 60 }) || null, text(body.element, 'Элемент'), text(body.name, 'Наименование', { required: true }),
       text(body.markClass, 'Марка/класс', { max: 60 }), text(body.unit, 'Единица', { required: true, max: 20 }),
       round(num(body.quantity, 'Количество'), 3), body.counted === false ? 0 : 1, text(body.note, 'Примечание', { max: 500 }) || null, sort);
     touch(Number(docId), { staleWorks: true });
@@ -201,12 +202,12 @@ function createPtoService({ db, rates, extract = extractPages }) {
 
   function insertWorks(docId, works) {
     const ins = db.prepare(
-      `INSERT INTO pto_works (document_id, element, name, unit, quantity, basis_note, rate_query, manual, sort)
-       VALUES (@document_id, @element, @name, @unit, @quantity, @basis_note, @rate_query, @manual, @sort)`
+      `INSERT INTO pto_works (document_id, block, element, name, unit, quantity, basis_note, rate_query, manual, sort)
+       VALUES (@document_id, @block, @element, @name, @unit, @quantity, @basis_note, @rate_query, @manual, @sort)`
     );
     for (const w of works) {
       ins.run({
-        document_id: docId, element: w.element, name: w.name, unit: w.unit, quantity: w.quantity,
+        document_id: docId, block: w.block || null, element: w.element, name: w.name, unit: w.unit, quantity: w.quantity,
         basis_note: w.basis_note || null, rate_query: w.query || w.name, manual: w.manual ? 1 : 0, sort: w.sort ?? 0,
       });
     }
@@ -223,7 +224,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
   async function rebuildWorks(docId) {
     const doc = getDoc(docId);
     const items = db.prepare('SELECT * FROM pto_items WHERE document_id = ? ORDER BY sort, id').all(doc.id).map((r) => ({
-      kind: r.kind, element: r.element, name: r.name, quantity: r.quantity, counted: r.counted, unit: r.unit,
+      kind: r.kind, block: r.block, element: r.element, name: r.name, quantity: r.quantity, counted: r.counted, unit: r.unit,
     }));
     const works = SECTIONS[doc.section].deriveWorks(items);
     db.transaction(() => {
@@ -254,6 +255,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
     if (!cur) throw new ServiceError('Работа не найдена', 404);
     const next = {};
     let changed = false;
+    if (patch.block !== undefined) { next.block = text(patch.block, 'Блок', { max: 60 }) || null; changed = true; }
     if (patch.element !== undefined) { next.element = text(patch.element, 'Элемент'); changed = true; }
     if (patch.name !== undefined) { next.name = text(patch.name, 'Наименование', { required: true }); changed = true; }
     if (patch.unit !== undefined) { next.unit = text(patch.unit, 'Единица', { required: true, max: 20 }); changed = true; }
@@ -280,9 +282,9 @@ function createPtoService({ db, rates, extract = extractPages }) {
     const sort = db.prepare('SELECT COALESCE(MAX(sort), 0) + 1 AS s FROM pto_works WHERE document_id = ?').get(Number(docId)).s;
     const name = text(body.name, 'Наименование', { required: true });
     const info = db.prepare(
-      `INSERT INTO pto_works (document_id, element, name, unit, quantity, basis_note, rate_query, manual, sort)
-       VALUES (?, ?, ?, ?, ?, 'добавлено вручную', ?, 1, ?)`
-    ).run(Number(docId), text(body.element, 'Элемент'), name, text(body.unit, 'Единица', { required: true, max: 20 }),
+      `INSERT INTO pto_works (document_id, block, element, name, unit, quantity, basis_note, rate_query, manual, sort)
+       VALUES (?, ?, ?, ?, ?, ?, 'добавлено вручную', ?, 1, ?)`
+    ).run(Number(docId), text(body.block, 'Блок', { max: 60 }) || null, text(body.element, 'Элемент'), name, text(body.unit, 'Единица', { required: true, max: 20 }),
       body.quantity === undefined || body.quantity === '' ? null : round(num(body.quantity, 'Объём'), 3), name, sort);
     touch(Number(docId));
     return workOut(db.prepare('SELECT * FROM pto_works WHERE id = ?').get(Number(info.lastInsertRowid)));
@@ -418,7 +420,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
     // элементов («Элементов: N ×…»): сноска «на одну стену» есть не на всех листах,
     // а коэффициент выведен по всей группе.
     const rows = db.prepare(`SELECT * FROM pto_items WHERE document_id = ? AND basis = 'spec' AND kind IN ('concrete', 'steel', 'metal')`).all(doc.id)
-      .filter((r) => group.spec.test(r.element) && !/^Элементов: /.test(r.note || ''));
+      .filter((r) => group.spec.test(r.element) && !/^(Элементов|Стен в блоке): /.test(r.note || ''));
     db.transaction(() => {
       const upd = db.prepare('UPDATE pto_items SET quantity = ?, sources_json = ?, note = ?, edited = 1 WHERE id = ?');
       for (const r of rows) {
@@ -457,13 +459,14 @@ function createPtoService({ db, rates, extract = extractPages }) {
     const items = db.prepare('SELECT * FROM pto_items WHERE document_id = ? AND counted = 1').all(Number(docId));
     const works = db.prepare('SELECT * FROM pto_works WHERE document_id = ?').all(Number(docId));
     const byEl = new Map();
-    const el = (name) => {
-      const key = name || '—';
-      if (!byEl.has(key)) byEl.set(key, { element: key, steelT: 0, steelCost: 0, concreteM3: 0, concreteCost: 0, materials: 0, works: 0, total: 0, missing: 0 });
+    const el = (name, block) => {
+      const element = name || '—';
+      const key = `${block || ''}|${element}`;
+      if (!byEl.has(key)) byEl.set(key, { block: block || null, element, steelT: 0, steelCost: 0, concreteM3: 0, concreteCost: 0, materials: 0, works: 0, total: 0, missing: 0 });
       return byEl.get(key);
     };
     for (const it of items) {
-      const row = el(it.element);
+      const row = el(it.element, it.block);
       if (it.kind === 'steel' || it.kind === 'embedded') {
         const t = it.unit === 'кг' ? it.quantity / 1000 : it.unit === 'тн' ? it.quantity : 0;
         row.steelT += t;
@@ -474,14 +477,14 @@ function createPtoService({ db, rates, extract = extractPages }) {
       }
     }
     for (const w of works) {
-      const row = el(w.element);
+      const row = el(w.element, w.block);
       if (w.quantity != null && w.price != null) row.works += w.quantity * w.price;
       else row.missing += 1;
     }
     const rows = [...byEl.values()].map((r) => {
       const materials = r.steelCost + r.concreteCost;
       return {
-        element: r.element, steelT: round(r.steelT, 3), steelCost: Math.round(r.steelCost), concreteM3: round(r.concreteM3, 2),
+        block: r.block, element: r.element, steelT: round(r.steelT, 3), steelCost: Math.round(r.steelCost), concreteM3: round(r.concreteM3, 2),
         concreteCost: Math.round(r.concreteCost), materials: Math.round(materials), works: Math.round(r.works),
         total: Math.round(materials + r.works), missing: r.missing,
       };

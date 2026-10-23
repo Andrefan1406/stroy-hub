@@ -32,11 +32,12 @@ function consolidate(rows) {
   for (const r of rows) {
     const element = canon(r.element, r.basis);
     if (!elementOrder.has(element)) elementOrder.set(element, elementOrder.size);
-    const key = [r.kind, element, r.name, r.markClass, r.unit, r.basis].join('\u0001');
+    // Блок — часть ключа: одинаковые позиции разных блоков не складываются.
+    const key = [r.kind, r.block || '', element, r.name, r.markClass, r.unit, r.basis].join('\u0001');
     let item = map.get(key);
     if (!item) {
       item = {
-        kind: r.kind, element, name: r.name, mark_class: r.markClass || '', unit: r.unit, basis: r.basis,
+        kind: r.kind, block: r.block || null, element, name: r.name, mark_class: r.markClass || '', unit: r.unit, basis: r.basis,
         quantity: 0, sources: [], notes: new Set(),
       };
       map.set(key, item);
@@ -53,7 +54,7 @@ function consolidate(rows) {
     if (it.kind === 'metal') counted = 0;
     else if ((it.kind === 'steel' || it.kind === 'embedded') && it.basis === 'spec' && hasSummary) counted = 0;
     return {
-      kind: it.kind, element: it.element, name: it.name, mark_class: it.mark_class, unit: it.unit, basis: it.basis,
+      kind: it.kind, block: it.block, element: it.element, name: it.name, mark_class: it.mark_class, unit: it.unit, basis: it.basis,
       quantity: round(it.quantity, 3), counted,
       note: [...it.notes].join('; ') || null,
       sources: it.sources.sort((a, b) => a.page - b.page),
@@ -62,6 +63,7 @@ function consolidate(rows) {
   items.sort((a, b) =>
     KIND_ORDER[a.kind] - KIND_ORDER[b.kind]
     || b.counted - a.counted
+    || (a.block || '').localeCompare(b.block || '', 'ru', { numeric: true })
     || elementOrder.get(a.element) - elementOrder.get(b.element)
     || a.name.localeCompare(b.name, 'ru', { numeric: true }));
   return items.map((it, i) => ({ ...it, sort: i }));

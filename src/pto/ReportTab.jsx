@@ -14,6 +14,12 @@ export default function ReportTab({ doc }) {
     <div>
       <div style={s.muted}>Листов в файле: {report.pageCount}. Распознано таблиц: {report.sheets.length}. Строк разобрано: {report.stats.rawRows}, позиций в ведомости: {report.stats.items}.</div>
 
+      <div style={{ ...s.muted, marginTop: 6 }}>
+        {report.blocks && report.blocks.length
+          ? `Блоки (секции) по чертежам: ${report.blocks.map((b) => `${b.name} — оси ${b.from}–${b.to}`).join("; ")}. Блок строки определён по осям на листе или по перечню стен.`
+          : "Блоки (секции) в чертежах не найдены — здание считается без блоков."}
+      </div>
+
       <h4 style={{ margin: "16px 0 8px" }}>Что проверить ({warnings.length})</h4>
       {warnings.length === 0 ? <div style={s.notice}>Все найденные таблицы разобраны без замечаний.</div> : warnings.map((i, k) => (
         <div key={k} style={s.warn}>{i.page ? <b>Лист {i.page}: </b> : null}{i.message}</div>

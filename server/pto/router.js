@@ -11,8 +11,8 @@ const taxonomy = require('../../src/data/concreteObjectTaxonomy.json');
 // Лимит загрузки PDF: проектный раздел бывает десятки МБ. Подстроить: PTO_MAX_UPLOAD_MB.
 const MAX_UPLOAD_MB = Number(process.env.PTO_MAX_UPLOAD_MB || 100);
 
-// Иерархия объект → позиция по справочникам сайта. Дом (блок) — произвольный
-// текст: список блоков живёт на фронтенде (positionBlockOptions), его выбирает пользователь.
+// Иерархия объект → позиция по справочникам сайта. Блок (секцию) пользователь не указывает:
+// он определяется по чертежам (parsers/blocks.js) и хранится у каждой строки.
 function validateHierarchy({ category, object, position }) {
   const objects = taxonomy.objectCategoryOptions;
   if (!object) throw new ServiceError('Выберите объект');
@@ -39,7 +39,7 @@ function createPtoRouter({ requireAccess, service }) {
   router.get('/sections', (req, res) => res.json({ sections: sectionList() }));
 
   router.get('/documents', asyncRoute(async (req, res) => {
-    res.json({ documents: service.listDocuments({ object: req.query.object, position: req.query.position, block: req.query.block }) });
+    res.json({ documents: service.listDocuments({ object: req.query.object, position: req.query.position }) });
   }));
 
   // Загрузка: тело запроса — сам PDF (application/pdf), остальное — в query.
@@ -55,7 +55,7 @@ function createPtoRouter({ requireAccess, service }) {
       if (!Buffer.isBuffer(body) || !body.length) throw new ServiceError('Файл не получен');
       if (body.subarray(0, 5).toString('latin1') !== '%PDF-') throw new ServiceError('Это не PDF-файл');
       const id = service.createDocument({
-        section, category: q.category, object: q.object, position: q.position, block: q.block,
+        section, category: q.category, object: q.object, position: q.position,
         fileName: String(q.fileName || 'document.pdf').slice(0, 200), fileSize: body.length, uploadedBy: req.userEmail,
       });
       setImmediate(() => service.processDocument(id, body).catch((err) => console.error('[pto] разбор:', err)));

@@ -85,7 +85,7 @@ export default function DocumentView({ id, onBack }) {
       <div style={{ ...s.header, marginBottom: 8 }}>
         <button style={s.back} onClick={onBack}>← К списку</button>
         <h2 style={{ margin: 0, fontSize: 20 }}>
-          {doc.section}: {[doc.object, doc.position && `поз. ${doc.position}`, doc.block].filter(Boolean).join(" · ")}
+          {doc.section}: {[doc.object, doc.position && `поз. ${doc.position}`].filter(Boolean).join(" · ")}
         </h2>
         <span style={s.chip(st.color, st.bg)}>{st.label}</span>
       </div>

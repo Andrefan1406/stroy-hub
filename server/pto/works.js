@@ -30,14 +30,17 @@ const WORK_RULES = [
 function deriveWorks(items) {
   const works = [];
   for (const rule of WORK_RULES) {
-    const byElement = new Map();
+    // Работа считается отдельно по каждому блоку и элементу (блок — из чертежей, может быть пустым).
+    const groups = new Map();
     for (const it of items.filter(rule.pick)) {
-      byElement.set(it.element, (byElement.get(it.element) || 0) + it.quantity);
+      const key = `${it.block || ''}\u0001${it.element}`;
+      if (!groups.has(key)) groups.set(key, { block: it.block || null, element: it.element, sum: 0 });
+      groups.get(key).sum += it.quantity;
     }
-    for (const [element, sum] of byElement) {
-      const quantity = round(rule.qty(sum), 3);
+    for (const g of groups.values()) {
+      const quantity = round(rule.qty(g.sum), 3);
       if (!(quantity > 0)) continue;
-      works.push({ element, name: rule.name, unit: rule.unit, quantity, basis_note: rule.basis, rule: rule.id, query: rule.query });
+      works.push({ block: g.block, element: g.element, name: rule.name, unit: rule.unit, quantity, basis_note: rule.basis, rule: rule.id, query: rule.query });
     }
   }
   return works.map((w, i) => ({ ...w, sort: i }));

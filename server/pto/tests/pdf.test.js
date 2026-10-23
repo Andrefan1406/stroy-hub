@@ -77,15 +77,31 @@ test('реальный КЖ: ведомость стали, спецификац
   const ppdm = items.find((i) => i.basis === 'spec' && i.element === 'ППдм 1' && i.name === 'Арматура ∅10');
   assert.equal(ppdm.quantity, 70.2);
 
-  // Сверка: плиты сходятся со сводной ведомостью, стены — в ~2 раза больше (две секции).
-  const rec = reconcileKzh(parsed.rows);
-  const slabs = rec.find((r) => r.id === 'slabs');
-  const walls = rec.find((r) => r.id === 'walls');
-  assert.equal(slabs.status, 'ok');
-  assert.equal(walls.status, 'factor');
-  assert.equal(walls.factor, 2);
+  // Блоки (секции) — из чертежей: оси 1-11 и 12-22.
+  assert.deepEqual(parsed.blocks, [{ name: 'Блок 1', from: 1, to: 11 }, { name: 'Блок 2', from: 12, to: 22 }]);
+  const blockSum = (b) => parsed.rows.filter((r) => r.basis === 'spec' && r.kind === 'steel' && /стен/i.test(r.element) && r.block === b)
+    .reduce((s, r) => s + r.quantity, 0);
+  // Стены разложены по блокам по перечням (листы 14 и 19): у каждого блока — своя масса, и обе сопоставимы.
+  assert.ok(blockSum('Блок 1') > 100000 && blockSum('Блок 2') > 100000);
+  assert.ok(Math.abs(blockSum('Блок 1') - blockSum('Блок 2')) / blockSum('Блок 1') < 0.15, 'блоки зеркальны — массы близки');
+  assert.equal(blockSum(null), 0, 'у всех стен блок определён');
+  // Плита ППм 3 с двух листов (75 — оси 1-11, 77 — оси 12-22) попала в разные блоки.
+  const ppm3Concrete = items.filter((i) => i.kind === 'concrete' && i.basis === 'spec' && i.element === 'ППм 3');
+  assert.deepEqual(ppm3Concrete.map((i) => i.block).sort(), ['Блок 1', 'Блок 2']);
+  assert.deepEqual(ppm3Concrete.map((i) => i.sources[0].page).sort((a, b) => a - b), [75, 77]);
+  // Сводная ведомость — на всё здание, без блока.
+  assert.ok(items.filter((i) => i.basis === 'summary').every((i) => i.block === null));
 
-  // Ни один лист не упал; единственное предупреждение — «Итого» на листе 27 (в самом чертеже).
+  // Сверка: плиты сходятся со сводной ведомостью; стены — с расхождением ~9 %: в перечне есть «См 4», а спецификации на неё в PDF нет.
+  const rec = reconcileKzh(parsed.rows);
+  assert.equal(rec.find((r) => r.id === 'slabs').status, 'ok');
+  const walls = rec.find((r) => r.id === 'walls');
+  assert.equal(walls.status, 'mismatch');
+  assert.ok(walls.ratio > 1.05 && walls.ratio < 1.15, `стены: отношение ${walls.ratio}`);
+  assert.equal(walls.factor, null, 'коэффициент не нужен: количество стен посчитано по перечням');
+  assert.ok(parsed.issues.some((i) => /без спецификации: .*См 4/.test(i.message)), 'в отчёте: стена из перечня без спецификации');
+
+  // Ни один лист не упал; предупреждения — «Итого» на листе 27 (в самом чертеже) и стены без спецификации.
   const warnings = parsed.issues.filter((i) => i.level !== 'info');
-  assert.deepEqual(warnings.map((i) => i.page), [27]);
+  assert.deepEqual(warnings.map((i) => i.page), [27, null]);
 });

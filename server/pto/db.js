@@ -7,9 +7,11 @@
 // PTO_DATA_DIR — путь к персистентному диску: на хостинге с эфемерной файловой
 // системой (Render) без него база стирается при каждом деплое.
 //
-// Иерархия — по справочникам сайта (src/data/concreteObjectTaxonomy.json и
-// positionBlockOptions): категория → объект → позиция → дом (блок) → раздел
-// проекта (КЖ, потом АР, КР, ОВ, ВК, ЭОМ). Раздел — просто значение
+// Иерархия — по справочникам сайта (src/data/concreteObjectTaxonomy.json):
+// категория → объект → позиция → раздел проекта (КЖ, потом АР, КР, ОВ, ВК, ЭОМ).
+// Блок (секция) здания пользователь не выбирает: он определяется по чертежам и
+// хранится у каждой строки (pto_items.block, pto_works.block); pto_documents.block
+// остался от первой версии и не используется. Раздел — просто значение
 // pto_documents.section; всё, что зависит от раздела (разбор PDF, виды работ),
 // подключается через реестр server/pto/sections.js.
 const path = require('path');
@@ -58,6 +60,7 @@ CREATE TABLE IF NOT EXISTS pto_items (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   document_id INTEGER NOT NULL REFERENCES pto_documents(id) ON DELETE CASCADE,
   kind        TEXT NOT NULL,
+  block       TEXT,
   element     TEXT NOT NULL DEFAULT '',
   name        TEXT NOT NULL,
   mark_class  TEXT NOT NULL DEFAULT '',
@@ -82,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_pto_items_doc ON pto_items(document_id);
 CREATE TABLE IF NOT EXISTS pto_works (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   document_id    INTEGER NOT NULL REFERENCES pto_documents(id) ON DELETE CASCADE,
+  block          TEXT,
   element        TEXT NOT NULL DEFAULT '',
   name           TEXT NOT NULL,
   unit           TEXT NOT NULL,
@@ -151,9 +155,18 @@ function getDb() {
   return db;
 }
 
+// Колонки, добавленные после первого выпуска: у уже созданной базы их нет, CREATE TABLE IF NOT EXISTS их не добавит.
+function migrate(d) {
+  const has = (table, column) => d.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  for (const table of ['pto_items', 'pto_works']) {
+    if (!has(table, 'block')) d.exec(`ALTER TABLE ${table} ADD COLUMN block TEXT`);
+  }
+}
+
 function initSchema() {
   const d = getDb();
   d.exec(SCHEMA);
+  migrate(d);
   const ins = d.prepare('INSERT OR IGNORE INTO pto_material_prices (kind, name, unit, price, note) VALUES (@kind, @name, @unit, @price, @note)');
   for (const p of DEFAULT_MATERIAL_PRICES) ins.run(p);
   return d;

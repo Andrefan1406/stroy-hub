@@ -7,10 +7,10 @@ import { KIND_TITLE, fmtNum, formatSources } from "./format";
 import { s } from "./styles";
 
 const KIND_ORDER = ["steel", "embedded", "concrete", "metal"];
-const EMPTY_NEW = { kind: "steel", element: "", name: "", markClass: "", unit: "кг", quantity: "" };
+const EMPTY_NEW = { kind: "steel", block: "", element: "", name: "", markClass: "", unit: "кг", quantity: "" };
 
-// block — дом (блок) документа: столбец «Блок» показывается, когда у здания есть блоки.
-function ItemRow({ item, block, onChange, onError }) {
+// showBlock — блоки найдены в чертежах: показываем столбец «Блок» (значение — у каждой строки, его можно поправить).
+function ItemRow({ item, showBlock, onChange, onError }) {
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showSources, setShowSources] = useState(false);
@@ -20,7 +20,7 @@ function ItemRow({ item, block, onChange, onError }) {
     try { await fn(); } catch (err) { onError(err.message || "Не удалось сохранить"); } finally { setBusy(false); }
   };
   const save = () => run(async () => {
-    await ptoPatch(`/items/${item.id}`, { element: edit.element, name: edit.name, markClass: edit.markClass, unit: edit.unit, quantity: edit.quantity, note: edit.note });
+    await ptoPatch(`/items/${item.id}`, { block: edit.block, element: edit.element, name: edit.name, markClass: edit.markClass, unit: edit.unit, quantity: edit.quantity, note: edit.note });
     setEdit(null);
     onChange();
   });
@@ -34,7 +34,7 @@ function ItemRow({ item, block, onChange, onError }) {
     const set = (k) => (e) => setEdit((x) => ({ ...x, [k]: e.target.value }));
     return (
       <tr style={{ background: "#fffdf0" }}>
-        {block ? <td style={s.td}>{block}</td> : null}
+        {showBlock ? <td style={s.td}><input style={s.inputSmall} value={edit.block} onChange={set("block")} /></td> : null}
         <td style={s.td}><input style={s.inputSmall} value={edit.element} onChange={set("element")} /></td>
         <td style={s.td}><input style={s.inputSmall} value={edit.name} onChange={set("name")} /><input style={{ ...s.inputSmall, marginTop: 4 }} placeholder="Примечание" value={edit.note} onChange={set("note")} /></td>
         <td style={s.td}><input style={s.inputSmall} value={edit.markClass} onChange={set("markClass")} /></td>
@@ -51,7 +51,7 @@ function ItemRow({ item, block, onChange, onError }) {
   const muted = !item.counted ? { color: "#888" } : null;
   return (
     <tr style={muted}>
-      {block ? <td style={s.td}>{block}</td> : null}
+      {showBlock ? <td style={s.td}>{item.block || "—"}</td> : null}
       <td style={s.td}>{item.element || "—"}</td>
       <td style={s.td}>
         {item.name}
@@ -81,7 +81,7 @@ function ItemRow({ item, block, onChange, onError }) {
         </div>
       </td>
       <td style={s.td}>
-        <button style={s.small} disabled={busy} onClick={() => setEdit({ element: item.element, name: item.name, markClass: item.markClass, unit: item.unit, quantity: String(item.quantity), note: item.note || "" })}>Править</button>
+        <button style={s.small} disabled={busy} onClick={() => setEdit({ block: item.block || "", element: item.element, name: item.name, markClass: item.markClass, unit: item.unit, quantity: String(item.quantity), note: item.note || "" })}>Править</button>
         <button style={s.small} disabled={busy} onClick={() => patch({ status: item.status === "confirmed" ? "draft" : "confirmed" })}>
           {item.status === "confirmed" ? "В черновик" : "Проверено"}
         </button>
@@ -135,6 +135,7 @@ function ReconciliationBanner({ doc, onApplied, onError }) {
 export default function ItemsTab({ doc, items, reload, onError }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState(EMPTY_NEW);
+  const showBlock = (doc.report && doc.report.blocks && doc.report.blocks.length > 0) || items.some((i) => i.block);
   const [busy, setBusy] = useState(false);
 
   const add = async (e) => {
@@ -167,7 +168,7 @@ export default function ItemsTab({ doc, items, reload, onError }) {
           <table style={s.table}>
             <thead>
               <tr>
-                {doc.block ? <th style={s.th}>Блок</th> : null}
+                {showBlock ? <th style={s.th}>Блок</th> : null}
                 <th style={s.th}>Конструктивный элемент</th><th style={s.th}>Наименование</th><th style={s.th}>Марка / класс</th>
                 <th style={s.th}>Ед.</th><th style={s.th}>Количество</th><th style={s.th}>Листы</th><th style={s.th}>Статус</th><th style={s.th} />
               </tr>
@@ -178,8 +179,8 @@ export default function ItemsTab({ doc, items, reload, onError }) {
                 if (!rows.length) return null;
                 return (
                   <React.Fragment key={kind}>
-                    <tr><td style={s.group} colSpan={doc.block ? 9 : 8}>{KIND_TITLE[kind]}{kind !== "metal" && total(kind) ? <span style={{ fontWeight: 400, marginLeft: 12 }}>в расчёте: {total(kind)}</span> : null}</td></tr>
-                    {rows.map((it) => <ItemRow key={it.id} item={it} block={doc.block} onChange={reload} onError={onError} />)}
+                    <tr><td style={s.group} colSpan={showBlock ? 9 : 8}>{KIND_TITLE[kind]}{kind !== "metal" && total(kind) ? <span style={{ fontWeight: 400, marginLeft: 12 }}>в расчёте: {total(kind)}</span> : null}</td></tr>
+                    {rows.map((it) => <ItemRow key={it.id} item={it} showBlock={showBlock} onChange={reload} onError={onError} />)}
                   </React.Fragment>
                 );
               })}
@@ -200,6 +201,7 @@ export default function ItemsTab({ doc, items, reload, onError }) {
                   {KIND_ORDER.map((k) => <option key={k} value={k}>{KIND_TITLE[k]}</option>)}
                 </select>
               </label>
+              {showBlock ? <label style={s.label}>Блок<input style={s.input} placeholder="Например, Блок 1" value={form.block} onChange={set("block")} /></label> : null}
               <label style={s.label}>Конструктивный элемент<input style={s.input} value={form.element} onChange={set("element")} /></label>
               <label style={s.label}>Наименование *<input style={s.input} required value={form.name} onChange={set("name")} /></label>
               <label style={s.label}>Марка / класс<input style={s.input} value={form.markClass} onChange={set("markClass")} /></label>

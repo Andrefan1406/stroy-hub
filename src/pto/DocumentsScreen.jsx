@@ -2,7 +2,7 @@
 // (справочники сайта — те же, что в заявке на бетон) и список загруженных
 // документов. Пока документ разбирается, список сам обновляется.
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { objectCategoryOptions, objectPositionOptions, positionBlockOptions } from "../data/constructionData";
+import { objectCategoryOptions, objectPositionOptions } from "../data/constructionData";
 import { ptoDelete, ptoGet, ptoUpload } from "./api";
 import { DOC_STATUS, formatDate } from "./format";
 import { s } from "./styles";
@@ -10,7 +10,7 @@ import { s } from "./styles";
 const SECTION_DEFAULT = "КЖ";
 
 function UploadForm({ sections, onUploaded }) {
-  const [form, setForm] = useState({ section: SECTION_DEFAULT, category: "", object: "", position: "", block: "" });
+  const [form, setForm] = useState({ section: SECTION_DEFAULT, category: "", object: "", position: "" });
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -18,7 +18,6 @@ function UploadForm({ sections, onUploaded }) {
 
   const objects = objectCategoryOptions[form.category] || [];
   const positions = objectPositionOptions[form.object] || [];
-  const blocks = positionBlockOptions[form.position] || [];
 
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const submit = async (e) => {
@@ -26,7 +25,6 @@ function UploadForm({ sections, onUploaded }) {
     setError("");
     if (!form.object) return setError("Выберите объект");
     if (positions.length && !form.position) return setError("Выберите позицию");
-    if (blocks.length && !form.block) return setError("Выберите дом (блок)");
     if (!file) return setError("Выберите PDF-файл раздела");
     if (!/\.pdf$/i.test(file.name)) return setError("Нужен файл PDF");
     setBusy(true);
@@ -53,30 +51,22 @@ function UploadForm({ sections, onUploaded }) {
           </select>
         </label>
         <label style={s.label}>Категория
-          <select style={s.input} value={form.category} onChange={(e) => set({ category: e.target.value, object: "", position: "", block: "" })}>
+          <select style={s.input} value={form.category} onChange={(e) => set({ category: e.target.value, object: "", position: "" })}>
             <option value="">— выберите —</option>
             {Object.keys(objectCategoryOptions).map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </label>
         <label style={s.label}>Объект
-          <select style={s.input} value={form.object} disabled={!form.category} onChange={(e) => set({ object: e.target.value, position: "", block: "" })}>
+          <select style={s.input} value={form.object} disabled={!form.category} onChange={(e) => set({ object: e.target.value, position: "" })}>
             <option value="">— выберите —</option>
             {objects.map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
         </label>
         {positions.length > 0 && (
           <label style={s.label}>Позиция
-            <select style={s.input} value={form.position} onChange={(e) => set({ position: e.target.value, block: "" })}>
+            <select style={s.input} value={form.position} onChange={(e) => set({ position: e.target.value })}>
               <option value="">— выберите —</option>
               {positions.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </label>
-        )}
-        {blocks.length > 0 && (
-          <label style={s.label}>Дом (блок)
-            <select style={s.input} value={form.block} onChange={(e) => set({ block: e.target.value })}>
-              <option value="">— выберите —</option>
-              {blocks.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
           </label>
         )}
@@ -89,7 +79,7 @@ function UploadForm({ sections, onUploaded }) {
       </button>
       {file && <span style={{ ...s.muted, marginLeft: 12 }}>{file.name} · {(file.size / 1048576).toFixed(1)} МБ</span>}
       <div style={{ ...s.muted, marginTop: 8 }}>
-        Разбор больших файлов занимает до минуты. Сканы (картинки без текста) не распознаются — для них будет сообщение.
+        Блоки (секции) здания определяются по чертежам автоматически. Разбор больших файлов занимает до минуты. Сканы (картинки без текста) не распознаются — для них будет сообщение.
       </div>
     </form>
   );
@@ -148,7 +138,7 @@ export default function DocumentsScreen({ onOpen }) {
             <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={s.th}>№</th><th style={s.th}>Объект</th><th style={s.th}>Позиция</th><th style={s.th}>Блок</th><th style={s.th}>Раздел</th>
+                  <th style={s.th}>№</th><th style={s.th}>Объект</th><th style={s.th}>Позиция</th><th style={s.th}>Раздел</th>
                   <th style={s.th}>Файл</th><th style={s.th}>Статус</th><th style={s.th}>Загружен</th><th style={s.th} />
                 </tr>
               </thead>
@@ -160,7 +150,6 @@ export default function DocumentsScreen({ onOpen }) {
                       <td style={s.td}>{d.id}</td>
                       <td style={s.td}>{d.object}</td>
                       <td style={s.td}>{d.position || "—"}</td>
-                      <td style={s.td}>{d.block || "—"}</td>
                       <td style={s.td}>{d.section}</td>
                       <td style={s.td}>{d.fileName}{d.pageCount ? <span style={s.tag}>{d.pageCount} л.</span> : null}</td>
                       <td style={s.td}>

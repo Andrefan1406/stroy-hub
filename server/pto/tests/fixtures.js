@@ -111,4 +111,43 @@ function multiElementPage() {
   return { page: 63, items };
 }
 
-module.exports = { it, steelSummaryPage, specPage, multiElementPage };
+// Перечень стен («Спецификация к схемам расположения монолитных стен между осями …», листы 14 и 19):
+// по строке на марку с количеством. axes — оси в названии («1-11»).
+function layoutListPage(page, axes, marks) {
+  const items = [
+    it(`Спецификация к схемам расположения монолитных стен между осями ${axes}/ Б -К ( начало )`, 85, 320, 420),
+    it('Масса', 489, 293, 30), it('Приме -', 533, 293, 40),
+    it('Поз .', 66, 285, 20), it('Обозначение', 150, 285, 60), it('Наименование', 323, 285, 70), it('Кол .', 458, 285, 20),
+    it('ед ., кг', 487, 279, 30), it('чание', 537, 279, 30),
+  ];
+  marks.forEach(([mark, count], i) => {
+    const y = 257 - i * 23;
+    items.push(it(mark, 60, y, 40), it('Листы 1-2', 103, y, 50), it(`Стена монолитная ${mark}`, 273, y, 120), it(String(count), 465, y, 6));
+  });
+  return { page, items };
+}
+
+// Лист элемента с заданным названием спецификации и бетоном; text — прочий текст листа (оси и т.п.).
+function elementSpecPage(page, title, concrete, { text = [], head = null } = {}) {
+  const x0 = 1844;
+  const y = SPEC_HEADER_Y;
+  const items = [
+    it(`Спецификация ${title}`, x0 + 111, y + 43, 300),
+    it('Марка', x0 - 6, y + 6, 30), it('поз', x0, y - 8, 20),
+    it('Обозначение', x0 + 88, y, 60), it('Наименование', x0 + 262, y, 70),
+    it('Кол', x0 + 392, y, 20), it('.', x0 + 407, y, 3),
+    it('Масса', x0 + 421, y + 15, 30), it('ед', x0 + 428, y, 10), it('Примечание', x0 + 464, y, 70),
+    ...text.map((s, i) => it(s, 300, 900 - i * 20, 300)),
+  ];
+  let yy = 1571;
+  const row = (c) => { items.push(...specRow(yy, c)); yy -= 21; };
+  if (head) row({ name: head });
+  row({ name: 'Материалы' });
+  row({ oboz: '(212-101-0901)', name: 'Бетон С 20/25', kol: String(concrete).replace('.', ','), prim: 'м ³' });
+  return { page, items };
+}
+
+// Лист-заполнитель с осями в тексте (нужен, чтобы диапазон осей считался повторяющимся — блоком).
+const axesPage = (page, axes) => ({ page, items: [it(`Схема расположения элементов в осях ${axes}`, 100, 500, 250)] });
+
+module.exports = { it, steelSummaryPage, specPage, multiElementPage, layoutListPage, elementSpecPage, axesPage };

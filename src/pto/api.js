@@ -37,11 +37,10 @@ export const ptoPut = (path, body) => request("PUT", path, body ?? {});
 export const ptoDelete = (path) => request("DELETE", path);
 
 // Загрузка PDF: тело запроса — сам файл, остальное — в адресе. Ответ 202: разбор идёт в фоне.
-export async function ptoUpload(file, { section, category, object, position, block }) {
+export async function ptoUpload(file, { section, category, object, position }) {
   const params = new URLSearchParams({ section, object, fileName: file.name });
   if (category) params.set("category", category);
   if (position) params.set("position", position);
-  if (block) params.set("block", block);
   const headers = await authHeaders();
   const res = await fetch(`${API_URL}/api/pto/documents?${params}`, {
     method: "POST",

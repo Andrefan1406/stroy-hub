@@ -16,12 +16,12 @@ function sheet(rows, widths) {
 // doc — getDocument(), items/works — listItems/listWorks, totals — totals().
 function buildWorkbook({ doc, items, works, totals }) {
   const book = XLSX.utils.book_new();
-  // Столбец «Блок» — когда у здания есть блоки (у документа выбран дом): после «№» в ведомости и работах, первым в итогах.
-  const withBlock = !!doc.block;
+  // Столбец «Блок» — когда блоки найдены в чертежах (хотя бы у одной строки): после «№» в ведомости и работах, первым в итогах.
+  const withBlock = items.some((it) => it.block) || works.some((w) => w.block) || totals.rows.some((r) => r.block);
   const afterNo = (row, value) => (withBlock ? [row[0], value, ...row.slice(1)] : row);
   const first = (row, value) => (withBlock ? [value, ...row] : row);
   const widths = (w, at) => (withBlock ? [...w.slice(0, at), 10, ...w.slice(at)] : w);
-  const title = [`Раздел ${doc.section}`, `${doc.object}${doc.position ? `, ${doc.position}` : ''}${doc.block ? `, ${doc.block}` : ''}`, `Файл: ${doc.fileName}`];
+  const title = [`Раздел ${doc.section}`, `${doc.object}${doc.position ? `, ${doc.position}` : ''}`, `Файл: ${doc.fileName}`];
 
   const itemRows = [
     ['Ведомость материалов'], [title.join(' · ')], [],
@@ -32,7 +32,7 @@ function buildWorkbook({ doc, items, works, totals }) {
     it.sources.length ? it.sources.map((s) => (it.sources.length > 1 ? `${s.page} (${s.quantity})` : s.page)).join(', ') : (it.manual ? 'вручную' : ''),
     it.counted ? 'да' : 'нет (справочно)', STATUS[it.status] || it.status,
     it.manual ? 'добавлена вручную' : it.edited ? 'изменена вручную' : '', it.note || '',
-  ], doc.block)));
+  ], it.block || '')));
   itemRows.push([], ['Итого по учитываемым строкам']);
   for (const kind of Object.keys(KIND_TITLE)) {
     const rows = items.filter((it) => it.kind === kind && it.counted);
@@ -55,7 +55,7 @@ function buildWorkbook({ doc, items, works, totals }) {
       w.rate && w.rate.price != null ? w.rate.price : '', cost, RATE_STATUS[w.rateStatus] || w.rateStatus,
       w.rate && w.rate.confidence != null && w.rateStatus === 'suggested' ? `${Math.round(w.rate.confidence * 100)}%` : '',
       STATUS[w.status] || w.status, w.manual ? 'добавлена вручную' : w.edited ? 'изменена вручную' : '',
-    ], doc.block));
+    ], w.block || ''));
   });
   XLSX.utils.book_append_sheet(book, sheet(workRows, widths([5, 34, 40, 9, 12, 50, 28, 14, 16, 16, 12, 12, 18], 1)), 'Виды работ');
 
@@ -65,9 +65,9 @@ function buildWorkbook({ doc, items, works, totals }) {
     [`Цены на материалы (ориентировочные): арматура ${t.prices.steel} ₸/тн, бетон ${t.prices.concrete} ₸/м³`], [],
     first(['Конструктивный элемент', 'Сталь, тн', 'Сталь, ₸', 'Бетон, м³', 'Бетон, ₸', 'Материалы, ₸', 'Работы, ₸', 'Всего, ₸', 'Работ без расценки'], 'Блок'),
   ];
-  for (const r of t.rows) sumRows.push(first([r.element, r.steelT, r.steelCost, r.concreteM3, r.concreteCost, r.materials, r.works, r.total, r.missing || ''], doc.block));
+  for (const r of t.rows) sumRows.push(first([r.element, r.steelT, r.steelCost, r.concreteM3, r.concreteCost, r.materials, r.works, r.total, r.missing || ''], r.block || ''));
   const g = t.totals;
-  sumRows.push(first(['ИТОГО', g.steelT, '', g.concreteM3, '', g.materials, g.works, g.total, g.missing || ''], doc.block));
+  sumRows.push(first(['ИТОГО', g.steelT, '', g.concreteM3, '', g.materials, g.works, g.total, g.missing || ''], ''));
   if (g.missing) sumRows.push([], [`В итог не вошло работ без расценки: ${g.missing}`]);
   XLSX.utils.book_append_sheet(book, sheet(sumRows, widths([40, 12, 14, 12, 14, 16, 16, 16, 18], 0)), 'Итого');
 
