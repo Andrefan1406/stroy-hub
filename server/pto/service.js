@@ -300,7 +300,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
     const byKey = new Map();
     for (const w of works) {
       const key = workKey(w.name, w.unit);
-      if (!byKey.has(key)) byKey.set(key, { query: w.rate_query || w.name, unit: w.unit, ids: [] });
+      if (!byKey.has(key)) byKey.set(key, { query: w.rate_query || w.name, name: w.name, unit: w.unit, ids: [] });
       byKey.get(key).ids.push(w.id);
     }
     let unavailable = null;
@@ -312,7 +312,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
       }
       if (unavailable) continue;
       try {
-        const { best } = await rates.suggest(g.query, g.unit);
+        const { best } = await rates.suggest(g.query, g.unit, { workName: g.name });
         if (best) applyRateRow(g.ids, best, 'suggested', round(best.score, 3));
       } catch (err) {
         if (err instanceof RatesUnavailable) unavailable = err;

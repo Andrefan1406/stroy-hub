@@ -18,7 +18,9 @@ const TIER_TITLE = { [APPROVED]: 'утверждённые в VK', [ENIR_FIRMS]:
 // Порог уверенности для автоматического предложения (на коротких русских
 // запросах точные совпадения дают ~0.5–0.65, шум ~0.35–0.45).
 const MIN_SCORE = Number(process.env.PTO_RATE_MIN_SCORE || 0.45);
-const PER_TIER = 8;
+// Без арбитра (модель недоступна) автоматически предлагаем только уверенные совпадения.
+const STRICT_SCORE = Number(process.env.PTO_RATE_STRICT_SCORE || 0.65);
+const PER_TIER = 15;
 const VAT = 1.16; // «Цена с НДС 16%» — если в своде есть только цена без НДС
 
 class RatesUnavailable extends Error {}
@@ -101,14 +103,41 @@ function createRates(deps = {}) {
     return out;
   }
 
-  // { best, candidates }: best — предложение (или null), candidates — все найденные.
-  async function suggest(query, unit) {
+  // Арбитр: модель из проекта (Ollama) выбирает расценку именно на эту работу
+  // или «ничего не подходит». Близость по эмбеддингам путает смежное: на
+  // «Бетонирование конструкций» без арбитра предлагалась «армированная
+  // стяжка 50 мм» за 1392 ₸ (уверенность 55 %). Кандидаты — по приоритету
+  // категорий, при равной применимости модель берёт верхнюю.
+  const judge = deps.judge || (async (workName, unit, list) => {
+    const { callOllamaJson } = require('../ollamaClient');
+    const prompt = `Нужна расценка на вид работ: «${workName}», единица измерения: ${unit}.
+Ниже кандидаты из свода расценок (JSON). Выбери ту, что описывает ИМЕННО эту работу, а не смежную
+(например, расценка на стяжку, асфальтирование или кладку не подходит для бетонирования конструкций;
+для «Армирования» подходит «Армирование» в тоннах, а не вязка каркасов в м²).
+Кандидаты упорядочены по приоритету: если подходят несколько одинаково, бери верхнюю.
+Если ни одна не подходит — верни null.
+Кандидаты: ${JSON.stringify(list.map((c) => ({ id: c.id, категория: c.tierTitle, раздел: c.section, работа: c.name, ед: c.unit })))}
+
+Ответь строго JSON: {"id": <id кандидата или null>}`;
+    const out = await callOllamaJson([{ role: 'user', content: prompt }], { format: 'json', temperature: 0, timeoutMs: 20000 });
+    if (!out || !('id' in out)) throw new Error('модель вернула ответ без поля id');
+    return out.id;
+  });
+
+  // { best, candidates, verified }: best — предложение (или null), candidates —
+  // все найденные, verified — выбор подтвердила модель (иначе — строгий порог).
+  async function suggest(query, unit, { workName } = {}) {
     const candidates = await search(query, { unit });
-    for (const tier of TIERS) {
-      const best = candidates.find((c) => c.tier === tier && c.unitMatch && c.price != null && c.score >= MIN_SCORE);
-      if (best) return { best, candidates };
+    const pool = candidates.filter((c) => c.unitMatch && c.price != null && c.score >= MIN_SCORE);
+    if (!pool.length) return { best: null, candidates, verified: false };
+    try {
+      const id = await judge(workName || query, unit, pool.slice(0, 12));
+      const best = id == null ? null : pool.find((c) => String(c.id) === String(id)) || null;
+      return { best, candidates, verified: true };
+    } catch (err) {
+      console.error('[pto] арбитр расценок недоступен, строгий порог:', err.message);
+      return { best: pool.find((c) => c.score >= STRICT_SCORE) || null, candidates, verified: false };
     }
-    return { best: null, candidates };
   }
 
   // Расценка по id — чтобы подтверждать выбранную, а не присланную клиентом.
