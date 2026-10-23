@@ -4,7 +4,10 @@
 // неё с главной через маленькую кнопку «Личный кабинет» (см. HomePage.js).
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import { getAuth } from "firebase/auth";
+import { canUsePto } from "../pto/access";
 
+// visible(email) — карточку видят не все, кто попал в кабинет (ПТО — по списку из pto/access.js).
 const SECTIONS = [
   {
     title: "Управление пользователями",
@@ -54,10 +57,18 @@ const SECTIONS = [
     path: "/admin/financing-resync",
     color: "#7c5cff",
   },
+  {
+    title: "ПТО — ведомости по проекту",
+    description: "Загрузить PDF раздела КЖ → ведомость материалов и работ → расценки → стоимость, выгрузка в Excel",
+    path: "/pto",
+    color: "#0b7285",
+    visible: canUsePto,
+  },
 ];
 
 const AdminDashboardPage = () => {
   const navigate = useNavigate();
+  const email = getAuth().currentUser?.email || "";
 
   return (
     <div style={s.page}>
@@ -67,7 +78,7 @@ const AdminDashboardPage = () => {
       </div>
 
       <div style={s.grid}>
-        {SECTIONS.map((section) => (
+        {SECTIONS.filter((section) => !section.visible || section.visible(email)).map((section) => (
           <button
             key={section.path}
             onClick={() => navigate(section.path)}

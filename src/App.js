@@ -48,6 +48,8 @@ import RidesAdminPage from "./pages/rides/RidesAdminPage";
 import TelegramMiniApp, { TelegramMiniAppRoute } from "./pages/rides/TelegramMiniApp";
 import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
+import PtoPage from "./pages/PtoPage";
+import PtoRoute from "./components/PtoRoute";
 
 
 const Protected = ({ children }) => (
@@ -373,6 +375,20 @@ const App = () => {
             </Protected>
           }
         />
+        {/* ПТО — ведомости по проектной документации; только admin@vkdev.kz (PtoRoute + 403 на сервере). */}
+        {["/pto", "/pto/:docId"].map((path) => (
+          <Route
+            key={path}
+            path={path}
+            element={
+              <Protected>
+                <PtoRoute>
+                  <PtoPage />
+                </PtoRoute>
+              </Protected>
+            }
+          />
+        ))}
         <Route
           path="/smart-request"
           element={
