@@ -50,6 +50,7 @@ import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
 import PtoPage from "./pages/PtoPage";
 import PtoRoute from "./components/PtoRoute";
+import TakeoffPage from "./pages/TakeoffPage";
 
 
 const Protected = ({ children }) => (
@@ -111,6 +112,9 @@ const App = () => {
 
         {/* Главная */}
         <Route path="/" element={<Protected><HomePage /></Protected>} />
+
+        {/* Подсчёт объёмов отделочных работ по PDF-чертежам — считается в браузере. */}
+        <Route path="/takeoff" element={<Protected><TakeoffPage /></Protected>} />
 
         {/* Заявки */}
         <Route

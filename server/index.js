@@ -24,6 +24,9 @@ const rascenkiAdminRouter = require('./rascenkiAdmin');
 const concreteDailyReportRouter = require('./concreteDailyReport');
 const concreteDashboardRouter = require('./concreteDashboard');
 const concreteRequestsBoardRouter = require('./concreteRequestsBoard');
+const { getWriteDb } = require('./db');
+const { requireUser, requireEmails } = require('./adminAuth');
+const { createTakeoffCatalog, takeoffAdminEmails } = require('./takeoffCatalog');
 // Система служебного транспорта (заявки на поездки) — см. server/rides/.
 // Отдельный SQLite-файл и своё Socket.io поверх того же HTTP-сервера
 // (нужен http.createServer вместо app.listen, чтобы Socket.io и Express
@@ -98,6 +101,16 @@ app.use('/api/concrete-board', concreteRequestsBoardRouter);
 // Модуль ПТО (ведомости по проектной документации): только admin@vkdev.kz,
 // см. server/pto/access.js.
 app.use('/api/pto', require('./pto/router').createDefaultPtoRouter());
+// Справочник работ подсчёта объёмов по чертежам: читать — любой вошедший,
+// менять — админ и TAKEOFF_ADMIN_EMAILS (см. server/takeoffCatalog.js).
+const takeoffCatalog = createTakeoffCatalog({
+  getDb: getWriteDb,
+  requireUser,
+  requireAdmin: requireEmails(takeoffAdminEmails()),
+  adminEmails: takeoffAdminEmails(),
+});
+app.use('/api/takeoff', takeoffCatalog.userRouter);
+app.use('/api/admin/takeoff', takeoffCatalog.adminRouter);
 app.use('/api/v1/users', ridesUsersRouter);
 app.use('/api/v1/vehicles', ridesVehiclesRouter);
 app.use('/api/v1/drivers', ridesDriversRouter);
@@ -111,6 +124,7 @@ app.use('/api/v1/geocode', ridesGeocodeRouter);
 app.use('/api/internal', internalApiRouter);
 
 initSchema();
+takeoffCatalog.initCatalogSchema();
 initRidesSchema();
 startProposalTimeoutJob();
 // «Занят» = на заказе прямо сейчас: когда подходит время подачи уже
