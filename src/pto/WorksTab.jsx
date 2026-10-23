@@ -89,7 +89,7 @@ function RatePicker({ work, onClose, onPicked, onError }) {
   );
 }
 
-function WorkRow({ work, onChange, onError, onPick }) {
+function WorkRow({ work, block, onChange, onError, onPick }) {
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const run = async (fn) => {
@@ -110,6 +110,7 @@ function WorkRow({ work, onChange, onError, onPick }) {
     const set = (k) => (e) => setEdit((x) => ({ ...x, [k]: e.target.value }));
     return (
       <tr style={{ background: "#fffdf0" }}>
+        {block ? <td style={s.td}>{block}</td> : null}
         <td style={s.td}><input style={s.inputSmall} value={edit.element} onChange={set("element")} /></td>
         <td style={s.td}><input style={s.inputSmall} value={edit.name} onChange={set("name")} /></td>
         <td style={s.td}><input style={{ ...s.inputSmall, width: 60 }} value={edit.unit} onChange={set("unit")} /></td>
@@ -125,6 +126,7 @@ function WorkRow({ work, onChange, onError, onPick }) {
 
   return (
     <tr>
+      {block ? <td style={s.td}>{block}</td> : null}
       <td style={s.td}>{work.element || "—"}</td>
       <td style={s.td}>
         {work.name}
@@ -206,11 +208,12 @@ export default function WorksTab({ doc, works, reload, onError, onNotice }) {
           <table style={s.table}>
             <thead>
               <tr>
+                {doc.block ? <th style={s.th}>Блок</th> : null}
                 <th style={s.th}>Конструктивный элемент</th><th style={s.th}>Вид работ</th><th style={s.th}>Ед.</th><th style={s.th}>Объём</th>
                 <th style={s.th}>Расценка</th><th style={s.th}>Цена с НДС</th><th style={s.th}>Стоимость</th><th style={s.th}>Статус</th><th style={s.th} />
               </tr>
             </thead>
-            <tbody>{works.map((w) => <WorkRow key={w.id} work={w} onChange={reload} onError={onError} onPick={setPicker} />)}</tbody>
+            <tbody>{works.map((w) => <WorkRow key={w.id} work={w} block={doc.block} onChange={reload} onError={onError} onPick={setPicker} />)}</tbody>
           </table>
         </div>
       )}

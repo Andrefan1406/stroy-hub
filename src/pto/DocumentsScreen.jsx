@@ -148,7 +148,7 @@ export default function DocumentsScreen({ onOpen }) {
             <table style={s.table}>
               <thead>
                 <tr>
-                  <th style={s.th}>№</th><th style={s.th}>Объект / позиция / дом</th><th style={s.th}>Раздел</th>
+                  <th style={s.th}>№</th><th style={s.th}>Объект</th><th style={s.th}>Позиция</th><th style={s.th}>Блок</th><th style={s.th}>Раздел</th>
                   <th style={s.th}>Файл</th><th style={s.th}>Статус</th><th style={s.th}>Загружен</th><th style={s.th} />
                 </tr>
               </thead>
@@ -158,7 +158,9 @@ export default function DocumentsScreen({ onOpen }) {
                   return (
                     <tr key={d.id}>
                       <td style={s.td}>{d.id}</td>
-                      <td style={s.td}>{[d.object, d.position && `поз. ${d.position}`, d.block].filter(Boolean).join(" · ")}</td>
+                      <td style={s.td}>{d.object}</td>
+                      <td style={s.td}>{d.position || "—"}</td>
+                      <td style={s.td}>{d.block || "—"}</td>
                       <td style={s.td}>{d.section}</td>
                       <td style={s.td}>{d.fileName}{d.pageCount ? <span style={s.tag}>{d.pageCount} л.</span> : null}</td>
                       <td style={s.td}>

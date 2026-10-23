@@ -66,6 +66,7 @@ export default function TotalsTab({ doc, version, onError }) {
         <table style={s.table}>
           <thead>
             <tr>
+              {doc.block ? <th style={s.th}>Блок</th> : null}
               <th style={s.th}>Конструктивный элемент</th><th style={s.th}>Сталь, тн</th><th style={s.th}>Сталь, ₸</th>
               <th style={s.th}>Бетон, м³</th><th style={s.th}>Бетон, ₸</th><th style={s.th}>Материалы</th><th style={s.th}>Работы</th><th style={s.th}>Всего</th>
             </tr>
@@ -73,6 +74,7 @@ export default function TotalsTab({ doc, version, onError }) {
           <tbody>
             {data.rows.map((r) => (
               <tr key={r.element}>
+                {doc.block ? <td style={s.td}>{doc.block}</td> : null}
                 <td style={s.td}>{r.element}{r.missing > 0 && <span style={{ ...s.tag, background: "#fff1c9", color: "#8a5a00" }}>работ без расценки: {r.missing}</span>}</td>
                 <td style={s.tdNum}>{fmtNum(r.steelT)}</td><td style={s.tdNum}>{fmtMoney(r.steelCost)}</td>
                 <td style={s.tdNum}>{fmtNum(r.concreteM3)}</td><td style={s.tdNum}>{fmtMoney(r.concreteCost)}</td>
@@ -81,6 +83,7 @@ export default function TotalsTab({ doc, version, onError }) {
               </tr>
             ))}
             <tr style={{ background: "#eef2f7", fontWeight: 700 }}>
+              {doc.block ? <td style={s.td}>{doc.block}</td> : null}
               <td style={s.td}>ИТОГО по разделу</td>
               <td style={s.tdNum}>{fmtNum(g.steelT)}</td><td style={s.tdNum} />
               <td style={s.tdNum}>{fmtNum(g.concreteM3)}</td><td style={s.tdNum} />

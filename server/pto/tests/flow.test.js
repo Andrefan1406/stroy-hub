@@ -274,14 +274,33 @@ test('Excel: листы, итоги, листы-источники, пометк
   assert.deepEqual(book.SheetNames, ['Ведомость материалов', 'Виды работ', 'Итого', 'Отчёт разбора']);
   const mat = XLSX.utils.sheet_to_json(book.Sheets['Ведомость материалов'], { header: 1 });
   const head = mat.findIndex((r) => r[0] === '№');
-  assert.deepEqual(mat[head].slice(0, 7), ['№', 'Конструктивный элемент', 'Наименование', 'Марка / класс', 'Ед. изм.', 'Количество', 'Листы-источники']);
-  const row = mat.find((r) => r[1] === 'Фундамент ФЛм 1' && r[2] === 'Арматура ∅12');
-  assert.equal(row[5], 37300.5);
-  assert.equal(String(row[6]), '4');
+  // У документа выбран блок — после «№» столбец «Блок».
+  assert.deepEqual(mat[head].slice(0, 8), ['№', 'Блок', 'Конструктивный элемент', 'Наименование', 'Марка / класс', 'Ед. изм.', 'Количество', 'Листы-источники']);
+  const row = mat.find((r) => r[2] === 'Фундамент ФЛм 1' && r[3] === 'Арматура ∅12');
+  assert.equal(row[1], 'Блок 1');
+  assert.equal(row[6], 37300.5);
+  assert.equal(String(row[7]), '4');
   assert.match(row.join('|'), /изменена вручную/);
-  assert.ok(mat.some((r) => r[1] === 'Фундамент ФЛм 1' && r[2] === 'Арматура ∅14' && /вручную/.test(r.join('|'))), 'добавленная строка помечена');
+  assert.ok(mat.some((r) => r[2] === 'Фундамент ФЛм 1' && r[3] === 'Арматура ∅14' && /вручную/.test(r.join('|'))), 'добавленная строка помечена');
+  const wk = XLSX.utils.sheet_to_json(book.Sheets['Виды работ'], { header: 1 });
+  assert.deepEqual(wk[wk.findIndex((r) => r[0] === '№')].slice(0, 4), ['№', 'Блок', 'Конструктивный элемент', 'Вид работ']);
   const sums = XLSX.utils.sheet_to_json(book.Sheets['Итого'], { header: 1 });
-  assert.ok(sums.some((r) => r[0] === 'ИТОГО'));
+  const sumHead = sums.find((r) => r[1] === 'Конструктивный элемент');
+  assert.equal(sumHead[0], 'Блок', 'в итогах «Блок» — первый столбец');
+  assert.ok(sums.some((r) => r[1] === 'ИТОГО' && r[0] === 'Блок 1'));
+});
+
+test('Excel: у здания без блоков столбца «Блок» нет', async () => {
+  await ready;
+  const { buildWorkbook } = require('../excel');
+  const doc = service.getDocument(docId);
+  const book = buildWorkbook({
+    doc: { ...doc, block: null }, items: service.listItems(docId), works: service.listWorks(docId), totals: service.totals(docId),
+  });
+  const mat = XLSX.utils.sheet_to_json(book.Sheets['Ведомость материалов'], { header: 1 });
+  assert.deepEqual(mat[mat.findIndex((r) => r[0] === '№')].slice(0, 3), ['№', 'Конструктивный элемент', 'Наименование']);
+  const sums = XLSX.utils.sheet_to_json(book.Sheets['Итого'], { header: 1 });
+  assert.ok(sums.some((r) => r[0] === 'Конструктивный элемент') && sums.some((r) => r[0] === 'ИТОГО'));
 });
 
 test('скан без текстового слоя: понятное сообщение, документ в статусе «ошибка», сервер жив', async () => {

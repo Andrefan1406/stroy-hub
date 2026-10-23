@@ -9,7 +9,8 @@ import { s } from "./styles";
 const KIND_ORDER = ["steel", "embedded", "concrete", "metal"];
 const EMPTY_NEW = { kind: "steel", element: "", name: "", markClass: "", unit: "кг", quantity: "" };
 
-function ItemRow({ item, onChange, onError }) {
+// block — дом (блок) документа: столбец «Блок» показывается, когда у здания есть блоки.
+function ItemRow({ item, block, onChange, onError }) {
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const [showSources, setShowSources] = useState(false);
@@ -33,6 +34,7 @@ function ItemRow({ item, onChange, onError }) {
     const set = (k) => (e) => setEdit((x) => ({ ...x, [k]: e.target.value }));
     return (
       <tr style={{ background: "#fffdf0" }}>
+        {block ? <td style={s.td}>{block}</td> : null}
         <td style={s.td}><input style={s.inputSmall} value={edit.element} onChange={set("element")} /></td>
         <td style={s.td}><input style={s.inputSmall} value={edit.name} onChange={set("name")} /><input style={{ ...s.inputSmall, marginTop: 4 }} placeholder="Примечание" value={edit.note} onChange={set("note")} /></td>
         <td style={s.td}><input style={s.inputSmall} value={edit.markClass} onChange={set("markClass")} /></td>
@@ -49,6 +51,7 @@ function ItemRow({ item, onChange, onError }) {
   const muted = !item.counted ? { color: "#888" } : null;
   return (
     <tr style={muted}>
+      {block ? <td style={s.td}>{block}</td> : null}
       <td style={s.td}>{item.element || "—"}</td>
       <td style={s.td}>
         {item.name}
@@ -164,6 +167,7 @@ export default function ItemsTab({ doc, items, reload, onError }) {
           <table style={s.table}>
             <thead>
               <tr>
+                {doc.block ? <th style={s.th}>Блок</th> : null}
                 <th style={s.th}>Конструктивный элемент</th><th style={s.th}>Наименование</th><th style={s.th}>Марка / класс</th>
                 <th style={s.th}>Ед.</th><th style={s.th}>Количество</th><th style={s.th}>Листы</th><th style={s.th}>Статус</th><th style={s.th} />
               </tr>
@@ -174,8 +178,8 @@ export default function ItemsTab({ doc, items, reload, onError }) {
                 if (!rows.length) return null;
                 return (
                   <React.Fragment key={kind}>
-                    <tr><td style={s.group} colSpan={8}>{KIND_TITLE[kind]}{kind !== "metal" && total(kind) ? <span style={{ fontWeight: 400, marginLeft: 12 }}>в расчёте: {total(kind)}</span> : null}</td></tr>
-                    {rows.map((it) => <ItemRow key={it.id} item={it} onChange={reload} onError={onError} />)}
+                    <tr><td style={s.group} colSpan={doc.block ? 9 : 8}>{KIND_TITLE[kind]}{kind !== "metal" && total(kind) ? <span style={{ fontWeight: 400, marginLeft: 12 }}>в расчёте: {total(kind)}</span> : null}</td></tr>
+                    {rows.map((it) => <ItemRow key={it.id} item={it} block={doc.block} onChange={reload} onError={onError} />)}
                   </React.Fragment>
                 );
               })}
