@@ -10,7 +10,7 @@ function setupPtoEnv() {
 
 // Расценки из «свода»: три кандидата, как отдал бы Qdrant.
 const RATE_BOOK = {
-  rebar: { id: 101, score: 0.62, tier: 'Расценки утверждённые в ТОО VK development group', tierTitle: 'утверждённые в VK', name: 'Армирование', unit: 'тн', price: 250000, priceNoVat: 215517, object: 'Все объекты', unitMatch: true },
+  prep: { id: 101, score: 0.62, tier: 'Расценки утверждённые в ТОО VK development group', tierTitle: 'утверждённые в VK', name: 'Устройство бетонной подготовки', unit: 'м³', price: 14268, priceNoVat: 12300, object: 'Все объекты', unitMatch: true },
   concrete: { id: 102, score: 0.58, tier: 'Расценки из ЕНиР для фирм', tierTitle: 'ЕНиР для фирм', name: 'Бетонирование открытых площадок', unit: 'м³', price: 15772, priceNoVat: 13597, object: null, unitMatch: true },
 };
 
@@ -20,7 +20,7 @@ function stubRates() {
     calls,
     async suggest(query, unit) {
       calls.suggest.push([query, unit]);
-      if (/Армирование/.test(query)) return { best: RATE_BOOK.rebar, candidates: [RATE_BOOK.rebar] };
+      if (/бетонной подготовки/.test(query)) return { best: RATE_BOOK.prep, candidates: [RATE_BOOK.prep] };
       if (/Бетонирование монолитных/.test(query)) return { best: RATE_BOOK.concrete, candidates: [RATE_BOOK.concrete] };
       return { best: null, candidates: [] };
     },

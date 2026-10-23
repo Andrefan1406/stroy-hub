@@ -82,13 +82,20 @@ test('загрузка: 202 сразу, разбор в фоне, строки �
 
   const works = (await call('GET', `/api/pto/documents/${docId}/works`)).body.works;
   assert.ok(works.length >= 3);
-  const rebar = works.find((w) => w.name === 'Армирование монолитных конструкций' && w.element === 'Фундамент ФЛм 1');
-  assert.equal(rebar.quantity, 37.901); // 37223 + 678 кг в тоннах
-  assert.equal(rebar.rate.status, 'suggested');
-  assert.equal(rebar.rate.name, 'Армирование');
-  assert.equal(rebar.rate.class, 'Расценки утверждённые в ТОО VK development group', 'категория расценки сохранена');
-  assert.equal(rebar.rate.price, 250000);
-  assert.equal(rebar.rate.confidence, 0.62);
+  // Армирование отдельной работой не выводится: оно входит в стоимость бетонирования.
+  assert.ok(!works.some((w) => /Армирование/.test(w.name)), 'работы «Армирование» нет');
+  assert.ok(!works.some((w) => w.element === 'Фундамент ФЛм 1'), 'у элемента только с арматурой работ нет — арматура в материалах');
+  const wall = works.find((w) => w.name === 'Бетонирование монолитных конструкций' && w.element === 'Стен монолитных См 1 т, См 1 н');
+  assert.equal(wall.quantity, 92);
+  assert.match(wall.basisNote, /армирование входит в стоимость бетонирования/);
+  assert.equal(wall.rate.status, 'suggested');
+  assert.equal(wall.rate.name, 'Бетонирование открытых площадок');
+  assert.equal(wall.rate.class, 'Расценки из ЕНиР для фирм', 'категория расценки сохранена');
+  assert.equal(wall.rate.price, 15772);
+  assert.equal(wall.rate.confidence, 0.58);
+  const prep = works.find((w) => w.name === 'Устройство бетонной подготовки');
+  assert.equal(prep.rate.price, 14268);
+  assert.equal(prep.rate.class, 'Расценки утверждённые в ТОО VK development group');
 });
 
 test('правка строки: помечается как ручная, работы устаревают, проверенный документ становится черновиком', async () => {
@@ -127,28 +134,27 @@ test('своя строка и пересчёт видов работ: ручн�
   rates.calls.suggest.length = 0;
   const rebuilt = await call('POST', `/api/pto/documents/${docId}/works/rebuild`, {});
   const works = rebuilt.body.works;
-  assert.ok(works.filter((w) => w.name === 'Армирование монолитных конструкций').every((w) => w.rate && w.rate.status === 'suggested'), 'предложенные расценки сохранились при пересчёте');
-  assert.ok(!rates.calls.suggest.some(([q]) => /Армирование|Бетонирование монолитных/.test(q)), 'уже подобранные расценки не искали заново (искали только для работ без расценки)');
+  assert.ok(works.filter((w) => w.name === 'Бетонирование монолитных конструкций').every((w) => w.rate && w.rate.status === 'suggested'), 'предложенные расценки сохранились при пересчёте');
+  assert.ok(!rates.calls.suggest.some(([q]) => /Бетонирование монолитных|бетонной подготовки/.test(q)), 'уже подобранные расценки не искали заново (искали только для работ без расценки)');
+  assert.ok(!works.some((w) => /Армирование/.test(w.name)), 'добавленная строка арматуры работ не порождает');
   assert.ok(works.some((w) => w.name === 'Устройство опалубки' && w.manual), 'ручная работа осталась');
-  const rebar = works.find((w) => w.name === 'Армирование монолитных конструкций' && w.element === 'Фундамент ФЛм 1');
-  assert.equal(rebar.quantity, 38.979); // 37300,5 + 678 + 1000 кг = 38 978,5 кг
   assert.equal((await call('GET', `/api/pto/documents/${docId}`)).body.document.worksStale, false);
 });
 
 test('расценка: подтверждение берёт данные из свода, запоминается и применяется ко всем элементам и к следующим документам', async () => {
   await ready;
   const works = (await call('GET', `/api/pto/documents/${docId}/works`)).body.works;
-  const rebars = works.filter((w) => w.name === 'Армирование монолитных конструкций');
-  assert.ok(rebars.length >= 2);
-  const wrong = await call('POST', `/api/pto/works/${rebars[0].id}/rate`, { rateId: 999999 });
+  const concretes = works.filter((w) => w.name === 'Бетонирование монолитных конструкций');
+  assert.ok(concretes.length >= 2);
+  const wrong = await call('POST', `/api/pto/works/${concretes[0].id}/rate`, { rateId: 999999 });
   assert.equal(wrong.status, 404);
 
   rates.calls.get.length = 0;
-  const ok = await call('POST', `/api/pto/works/${rebars[0].id}/rate`, { rateId: 101 });
+  const ok = await call('POST', `/api/pto/works/${concretes[0].id}/rate`, { rateId: 102 });
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
-  assert.deepEqual(rates.calls.get, [101], 'расценка перечитана из свода, а не взята у клиента');
-  const after = (await call('GET', `/api/pto/documents/${docId}/works`)).body.works.filter((w) => w.name === 'Армирование монолитных конструкций');
-  assert.ok(after.every((w) => w.rate.status === 'confirmed' && w.rate.price === 250000), 'та же работа на других элементах получила ту же расценку');
+  assert.deepEqual(rates.calls.get, [102], 'расценка перечитана из свода, а не взята у клиента');
+  const after = (await call('GET', `/api/pto/documents/${docId}/works`)).body.works.filter((w) => w.name === 'Бетонирование монолитных конструкций');
+  assert.ok(after.every((w) => w.rate.status === 'confirmed' && w.rate.price === 15772), 'та же работа на других элементах получила ту же расценку');
 
   // следующий документ: расценка приходит из запомненных, без обращения к своду
   rates.calls.suggest.length = 0;
@@ -156,18 +162,18 @@ test('расценка: подтверждение берёт данные из 
   const doc2 = await finished(second.body.id);
   assert.equal(doc2.status, 'draft');
   const works2 = (await call('GET', `/api/pto/documents/${doc2.id}/works`)).body.works;
-  const rebar2 = works2.find((w) => w.name === 'Армирование монолитных конструкций');
-  assert.equal(rebar2.rate.status, 'confirmed');
-  assert.equal(rebar2.rate.id, 101);
-  assert.ok(!rates.calls.suggest.some(([q]) => /Армирование/.test(q)), 'подтверждённое соответствие своду не переспрашивали');
   const concrete2 = works2.find((w) => w.name === 'Бетонирование монолитных конструкций');
-  assert.equal(concrete2.rate.status, 'suggested', 'а непотверждённое — только предложено');
+  assert.equal(concrete2.rate.status, 'confirmed');
+  assert.equal(concrete2.rate.id, 102);
+  assert.ok(!rates.calls.suggest.some(([q]) => /Бетонирование монолитных/.test(q)), 'подтверждённое соответствие своду не переспрашивали');
+  const prep2 = works2.find((w) => w.name === 'Устройство бетонной подготовки');
+  assert.equal(prep2.rate.status, 'suggested', 'а неподтверждённое — только предложено');
 
   // свою расценку можно ввести вручную
-  const manual = await call('POST', `/api/pto/works/${concrete2.id}/rate`, { manual: { name: 'Бетонирование по договору', unit: 'м³', price: '20 000'.replace(' ', '') } });
+  const manual = await call('POST', `/api/pto/works/${prep2.id}/rate`, { manual: { name: 'Подготовка по договору', unit: 'м³', price: '20 000'.replace(' ', '') } });
   assert.equal(manual.body.work.rate.manual, true);
   assert.equal(manual.body.work.rate.price, 20000);
-  const cleared = await call('DELETE', `/api/pto/works/${concrete2.id}/rate`);
+  const cleared = await call('DELETE', `/api/pto/works/${prep2.id}/rate`);
   assert.equal(cleared.body.work.rate, null);
 });
 
@@ -178,14 +184,19 @@ test('стоимость: материалы по ориентировочным
 
   const t = (await call('GET', `/api/pto/documents/${docId}/totals`)).body;
   const fl = t.rows.find((r) => r.element === 'Фундамент ФЛм 1');
-  // арматура 37300,5 + 678 + 1000 = 38978,5 кг = 38,979 тн × 400 000 ₸
+  // арматура 37300,5 + 678 + 1000 = 38978,5 кг = 38,979 тн × 400 000 ₸ — в материалах
   assert.equal(fl.steelT, 38.979);
   assert.equal(fl.steelCost, Math.round(38.9785 * 400000));
-  // работы: армирование 38,979 тн (объём округлён до 3 знаков) × 250 000 ₸ (расценка подтверждена);
-  // опалубка без расценки — не в сумме
-  assert.equal(fl.works, Math.round(38.979 * 250000));
+  // армирование отдельно не оплачивается: работ по арматуре нет; опалубка без расценки — не в сумме
+  assert.equal(fl.works, 0);
   assert.equal(fl.missing, 1);
   assert.equal(fl.total, fl.materials + fl.works);
+  // стена: бетон 92 м³ (расценка подтверждена, 15 772 ₸) + подготовка 29,3 м³ (предложена, 14 268 ₸);
+  // армирование входит в стоимость бетонирования
+  const wall = t.rows.find((r) => r.element === 'Стен монолитных См 1 т, См 1 н');
+  assert.equal(wall.concreteM3, 121.3);
+  assert.equal(wall.materials, Math.round(121.3 * 40000));
+  assert.equal(wall.works, Math.round(92 * 15772 + 29.3 * 14268));
   const sum = (k) => t.rows.reduce((s, r) => s + r[k], 0);
   assert.equal(t.totals.total, sum('total'));
   assert.ok(t.totals.concreteM3 > 0);
