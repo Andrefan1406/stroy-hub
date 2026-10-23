@@ -4,6 +4,7 @@
 import React, { useEffect, useState } from "react";
 import { ptoGet, ptoPut } from "./api";
 import { fmtMoney, fmtNum } from "./format";
+import PageLinks from "./PageLinks";
 import { s } from "./styles";
 
 function MaterialPrices({ prices, onSaved, onError }) {
@@ -68,7 +69,7 @@ export default function TotalsTab({ doc, version, onError }) {
             <tr>
               {data.rows.some((r) => r.block) ? <th style={s.th}>Блок</th> : null}
               <th style={s.th}>Конструктивный элемент</th><th style={s.th}>Сталь, тн</th><th style={s.th}>Сталь, ₸</th>
-              <th style={s.th}>Бетон, м³</th><th style={s.th}>Бетон, ₸</th><th style={s.th}>Материалы</th><th style={s.th}>Работы</th><th style={s.th}>Всего</th>
+              <th style={s.th}>Бетон, м³</th><th style={s.th}>Бетон, ₸</th><th style={s.th}>Материалы</th><th style={s.th}>Работы</th><th style={s.th}>Всего</th><th style={s.th}>Листы</th>
             </tr>
           </thead>
           <tbody>
@@ -80,6 +81,7 @@ export default function TotalsTab({ doc, version, onError }) {
                 <td style={s.tdNum}>{fmtNum(r.concreteM3)}</td><td style={s.tdNum}>{fmtMoney(r.concreteCost)}</td>
                 <td style={s.tdNum}>{fmtMoney(r.materials)}</td><td style={s.tdNum}>{fmtMoney(r.works)}</td>
                 <td style={{ ...s.tdNum, fontWeight: 700 }}>{fmtMoney(r.total)}</td>
+                <td style={s.td}><PageLinks docId={doc.id} hasFile={doc.hasFile} pages={r.pages} onError={onError} /></td>
               </tr>
             ))}
             <tr style={{ background: "#eef2f7", fontWeight: 700 }}>
@@ -87,7 +89,7 @@ export default function TotalsTab({ doc, version, onError }) {
               <td style={s.td}>ИТОГО по разделу</td>
               <td style={s.tdNum}>{fmtNum(g.steelT)}</td><td style={s.tdNum} />
               <td style={s.tdNum}>{fmtNum(g.concreteM3)}</td><td style={s.tdNum} />
-              <td style={s.tdNum}>{fmtMoney(g.materials)}</td><td style={s.tdNum}>{fmtMoney(g.works)}</td><td style={s.tdNum}>{fmtMoney(g.total)}</td>
+              <td style={s.tdNum}>{fmtMoney(g.materials)}</td><td style={s.tdNum}>{fmtMoney(g.works)}</td><td style={s.tdNum}>{fmtMoney(g.total)}</td><td style={s.td} />
             </tr>
           </tbody>
         </table>

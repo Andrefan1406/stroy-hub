@@ -3,6 +3,8 @@
 // вызывает отсюда. Зависимости — через createPtoService({ db, rates, extract })
 // — в тестах подставляются своя база, заглушка расценок и заготовленные
 // страницы вместо чтения PDF.
+const fs = require('fs');
+const path = require('path');
 const { extractPages, PdfError } = require('./pdf');
 const { SECTIONS } = require('./sections');
 const { consolidate } = require('./consolidate');
@@ -31,7 +33,7 @@ const itemOut = (r) => ({
 
 const workOut = (r) => ({
   id: r.id, documentId: r.document_id, block: r.block || null, element: r.element, name: r.name, unit: r.unit, quantity: r.quantity,
-  basisNote: r.basis_note, status: r.status, edited: !!r.edited, manual: !!r.manual,
+  basisNote: r.basis_note, pages: parseJson(r.pages_json, []), status: r.status, edited: !!r.edited, manual: !!r.manual,
   rate: r.rate_name ? {
     id: r.rate_id, class: r.rate_class, name: r.rate_name, unit: r.rate_unit, price: r.price,
     confidence: r.confidence, status: r.mapping_status, manual: !!r.manual_rate,
@@ -45,8 +47,11 @@ const docOut = (r) => ({
   uploadedBy: r.uploaded_by, uploadedAt: r.uploaded_at, parsedAt: r.parsed_at, worksStale: !!r.works_stale,
 });
 
-function createPtoService({ db, rates, extract = extractPages }) {
+// filesDir — где лежат загруженные PDF (<id>.pdf): по ним открываются листы из таблиц.
+function createPtoService({ db, rates, extract = extractPages, filesDir = path.join(require('./db').DATA_DIR, 'files') }) {
   const now = () => new Date().toISOString();
+  const filePath = (id) => path.join(filesDir, `${Number(id)}.pdf`);
+  const hasFile = (id) => fs.existsSync(filePath(id));
 
   const getDoc = (id) => {
     const row = db.prepare('SELECT * FROM pto_documents WHERE id = ?').get(Number(id));
@@ -120,17 +125,32 @@ function createPtoService({ db, rates, extract = extractPages }) {
     if (object) { where.push('object_name = ?'); args.push(object); }
     if (position) { where.push('position = ?'); args.push(position); }
     const rows = db.prepare(`SELECT * FROM pto_documents ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY id DESC`).all(...args);
-    return rows.map(docOut);
+    return rows.map((r) => ({ ...docOut(r), hasFile: hasFile(r.id) }));
   };
 
   const getDocument = (id) => {
     const row = getDoc(id);
-    return { ...docOut(row), report: parseJson(row.report_json, null) };
+    return { ...docOut(row), hasFile: hasFile(row.id), report: parseJson(row.report_json, null) };
   };
 
   const deleteDocument = (id) => {
     getDoc(id);
     db.prepare('DELETE FROM pto_documents WHERE id = ?').run(Number(id));
+    fs.rmSync(filePath(id), { force: true });
+  };
+
+  // Сохранить загруженный PDF — для открытия листов из таблиц.
+  const saveFile = (id, buffer) => {
+    getDoc(id);
+    fs.mkdirSync(filesDir, { recursive: true });
+    fs.writeFileSync(filePath(id), buffer);
+  };
+
+  // Путь к PDF документа; у загруженных до появления хранения файла нет.
+  const pdfPath = (id) => {
+    getDoc(id);
+    if (!hasFile(id)) throw new ServiceError('Файл документа не сохранён — загрузите его заново', 404);
+    return filePath(id);
   };
 
   // ---------- ведомость материалов ----------
@@ -202,13 +222,13 @@ function createPtoService({ db, rates, extract = extractPages }) {
 
   function insertWorks(docId, works) {
     const ins = db.prepare(
-      `INSERT INTO pto_works (document_id, block, element, name, unit, quantity, basis_note, rate_query, manual, sort)
-       VALUES (@document_id, @block, @element, @name, @unit, @quantity, @basis_note, @rate_query, @manual, @sort)`
+      `INSERT INTO pto_works (document_id, block, element, name, unit, quantity, basis_note, rate_query, pages_json, manual, sort)
+       VALUES (@document_id, @block, @element, @name, @unit, @quantity, @basis_note, @rate_query, @pages_json, @manual, @sort)`
     );
     for (const w of works) {
       ins.run({
         document_id: docId, block: w.block || null, element: w.element, name: w.name, unit: w.unit, quantity: w.quantity,
-        basis_note: w.basis_note || null, rate_query: w.query || w.name, manual: w.manual ? 1 : 0, sort: w.sort ?? 0,
+        basis_note: w.basis_note || null, rate_query: w.query || w.name, pages_json: JSON.stringify(w.pages || []), manual: w.manual ? 1 : 0, sort: w.sort ?? 0,
       });
     }
   }
@@ -225,6 +245,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
     const doc = getDoc(docId);
     const items = db.prepare('SELECT * FROM pto_items WHERE document_id = ? ORDER BY sort, id').all(doc.id).map((r) => ({
       kind: r.kind, block: r.block, element: r.element, name: r.name, quantity: r.quantity, counted: r.counted, unit: r.unit,
+      sources: parseJson(r.sources_json, []),
     }));
     const works = SECTIONS[doc.section].deriveWorks(items);
     db.transaction(() => {
@@ -462,11 +483,12 @@ function createPtoService({ db, rates, extract = extractPages }) {
     const el = (name, block) => {
       const element = name || '—';
       const key = `${block || ''}|${element}`;
-      if (!byEl.has(key)) byEl.set(key, { block: block || null, element, steelT: 0, steelCost: 0, concreteM3: 0, concreteCost: 0, materials: 0, works: 0, total: 0, missing: 0 });
+      if (!byEl.has(key)) byEl.set(key, { block: block || null, element, steelT: 0, steelCost: 0, concreteM3: 0, concreteCost: 0, materials: 0, works: 0, total: 0, missing: 0, pages: new Set() });
       return byEl.get(key);
     };
     for (const it of items) {
       const row = el(it.element, it.block);
+      for (const s of parseJson(it.sources_json, [])) row.pages.add(s.page);
       if (it.kind === 'steel' || it.kind === 'embedded') {
         const t = it.unit === 'кг' ? it.quantity / 1000 : it.unit === 'тн' ? it.quantity : 0;
         row.steelT += t;
@@ -478,6 +500,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
     }
     for (const w of works) {
       const row = el(w.element, w.block);
+      for (const p of parseJson(w.pages_json, [])) row.pages.add(p);
       if (w.quantity != null && w.price != null) row.works += w.quantity * w.price;
       else row.missing += 1;
     }
@@ -486,7 +509,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
       return {
         block: r.block, element: r.element, steelT: round(r.steelT, 3), steelCost: Math.round(r.steelCost), concreteM3: round(r.concreteM3, 2),
         concreteCost: Math.round(r.concreteCost), materials: Math.round(materials), works: Math.round(r.works),
-        total: Math.round(materials + r.works), missing: r.missing,
+        total: Math.round(materials + r.works), missing: r.missing, pages: [...r.pages].sort((a, b) => a - b),
       };
     });
     const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
@@ -502,7 +525,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
 
   return {
     ServiceError,
-    createDocument, processDocument, listDocuments, getDocument, deleteDocument,
+    createDocument, processDocument, listDocuments, getDocument, deleteDocument, saveFile, pdfPath,
     listItems, updateItem, addItem, deleteItem,
     listWorks, rebuildWorks, updateWork, addWork, deleteWork,
     applyRates, confirmRate, clearRate, searchRates: (q, unit) => rates.search(q, { unit }),

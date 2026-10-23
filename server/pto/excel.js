@@ -46,7 +46,7 @@ function buildWorkbook({ doc, items, works, totals }) {
 
   const workRows = [
     ['Виды работ и расценки (цена с НДС)'], [title.join(' · ')], [],
-    afterNo(['№', 'Конструктивный элемент', 'Вид работ', 'Ед. изм.', 'Объём', 'Расценка', 'Категория расценки', 'Цена с НДС, ₸', 'Стоимость, ₸', 'Расценка (статус)', 'Уверенность', 'Статус', 'Правка'], 'Блок'),
+    afterNo(['№', 'Конструктивный элемент', 'Вид работ', 'Ед. изм.', 'Объём', 'Расценка', 'Категория расценки', 'Цена с НДС, ₸', 'Стоимость, ₸', 'Расценка (статус)', 'Уверенность', 'Статус', 'Правка', 'Листы PDF'], 'Блок'),
   ];
   works.forEach((w, i) => {
     const cost = w.quantity != null && w.rate && w.rate.price != null ? Math.round(w.quantity * w.rate.price) : '';
@@ -55,21 +55,22 @@ function buildWorkbook({ doc, items, works, totals }) {
       w.rate && w.rate.price != null ? w.rate.price : '', cost, RATE_STATUS[w.rateStatus] || w.rateStatus,
       w.rate && w.rate.confidence != null && w.rateStatus === 'suggested' ? `${Math.round(w.rate.confidence * 100)}%` : '',
       STATUS[w.status] || w.status, w.manual ? 'добавлена вручную' : w.edited ? 'изменена вручную' : '',
+      (w.pages || []).join(', '),
     ], w.block || ''));
   });
-  XLSX.utils.book_append_sheet(book, sheet(workRows, widths([5, 34, 40, 9, 12, 50, 28, 14, 16, 16, 12, 12, 18], 1)), 'Виды работ');
+  XLSX.utils.book_append_sheet(book, sheet(workRows, widths([5, 34, 40, 9, 12, 50, 28, 14, 16, 16, 12, 12, 18, 18], 1)), 'Виды работ');
 
   const t = totals;
   const sumRows = [
     ['Стоимость раздела по конструктивным элементам'], [title.join(' · ')],
     [`Цены на материалы (ориентировочные): арматура ${t.prices.steel} ₸/тн, бетон ${t.prices.concrete} ₸/м³`], [],
-    first(['Конструктивный элемент', 'Сталь, тн', 'Сталь, ₸', 'Бетон, м³', 'Бетон, ₸', 'Материалы, ₸', 'Работы, ₸', 'Всего, ₸', 'Работ без расценки'], 'Блок'),
+    first(['Конструктивный элемент', 'Сталь, тн', 'Сталь, ₸', 'Бетон, м³', 'Бетон, ₸', 'Материалы, ₸', 'Работы, ₸', 'Всего, ₸', 'Работ без расценки', 'Листы PDF'], 'Блок'),
   ];
-  for (const r of t.rows) sumRows.push(first([r.element, r.steelT, r.steelCost, r.concreteM3, r.concreteCost, r.materials, r.works, r.total, r.missing || ''], r.block || ''));
+  for (const r of t.rows) sumRows.push(first([r.element, r.steelT, r.steelCost, r.concreteM3, r.concreteCost, r.materials, r.works, r.total, r.missing || '', (r.pages || []).join(', ')], r.block || ''));
   const g = t.totals;
   sumRows.push(first(['ИТОГО', g.steelT, '', g.concreteM3, '', g.materials, g.works, g.total, g.missing || ''], ''));
   if (g.missing) sumRows.push([], [`В итог не вошло работ без расценки: ${g.missing}`]);
-  XLSX.utils.book_append_sheet(book, sheet(sumRows, widths([40, 12, 14, 12, 14, 16, 16, 16, 18], 0)), 'Итого');
+  XLSX.utils.book_append_sheet(book, sheet(sumRows, widths([40, 12, 14, 12, 14, 16, 16, 16, 18, 22], 0)), 'Итого');
 
   const report = doc.report || { issues: [], sheets: [], reconciliation: [] };
   const repRows = [['Отчёт разбора'], [title.join(' · ')], [`Страниц: ${doc.pageCount ?? '—'}`], [], ['Замечания']];

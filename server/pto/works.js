@@ -34,13 +34,14 @@ function deriveWorks(items) {
     const groups = new Map();
     for (const it of items.filter(rule.pick)) {
       const key = `${it.block || ''}\u0001${it.element}`;
-      if (!groups.has(key)) groups.set(key, { block: it.block || null, element: it.element, sum: 0 });
+      if (!groups.has(key)) groups.set(key, { block: it.block || null, element: it.element, sum: 0, pages: new Set() });
       groups.get(key).sum += it.quantity;
+      for (const s of it.sources || []) groups.get(key).pages.add(s.page); // листы PDF — чтобы открыть чертёж из таблицы
     }
     for (const g of groups.values()) {
       const quantity = round(rule.qty(g.sum), 3);
       if (!(quantity > 0)) continue;
-      works.push({ block: g.block, element: g.element, name: rule.name, unit: rule.unit, quantity, basis_note: rule.basis, rule: rule.id, query: rule.query });
+      works.push({ block: g.block, element: g.element, name: rule.name, unit: rule.unit, quantity, basis_note: rule.basis, rule: rule.id, query: rule.query, pages: [...g.pages].sort((a, b) => a - b) });
     }
   }
   return works.map((w, i) => ({ ...w, sort: i }));

@@ -5,6 +5,7 @@
 import React, { useEffect, useState } from "react";
 import { ptoDelete, ptoGet, ptoPatch, ptoPost } from "./api";
 import { RATE_STATUS, fmtMoney, fmtNum } from "./format";
+import PageLinks from "./PageLinks";
 import { s } from "./styles";
 
 function RatePicker({ work, onClose, onPicked, onError }) {
@@ -89,7 +90,7 @@ function RatePicker({ work, onClose, onPicked, onError }) {
   );
 }
 
-function WorkRow({ work, showBlock, onChange, onError, onPick }) {
+function WorkRow({ work, doc, showBlock, onChange, onError, onPick }) {
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const run = async (fn) => {
@@ -115,7 +116,7 @@ function WorkRow({ work, showBlock, onChange, onError, onPick }) {
         <td style={s.td}><input style={s.inputSmall} value={edit.name} onChange={set("name")} /></td>
         <td style={s.td}><input style={{ ...s.inputSmall, width: 60 }} value={edit.unit} onChange={set("unit")} /></td>
         <td style={s.td}><input style={{ ...s.inputSmall, width: 90 }} inputMode="decimal" value={edit.quantity} onChange={set("quantity")} /></td>
-        <td style={s.td} colSpan={4}>
+        <td style={s.td} colSpan={5}>
           <button style={s.smallPrimary} disabled={busy} onClick={save}>Сохранить</button>
           <button style={s.small} onClick={() => setEdit(null)}>Отмена</button>
           <span style={{ ...s.muted, marginLeft: 8 }}>при смене названия или единицы расценка сбрасывается</span>
@@ -136,6 +137,7 @@ function WorkRow({ work, showBlock, onChange, onError, onPick }) {
       </td>
       <td style={s.td}>{work.unit}</td>
       <td style={s.tdNum}>{fmtNum(work.quantity)}</td>
+      <td style={s.td}><PageLinks docId={doc.id} hasFile={doc.hasFile} pages={work.pages} onError={onError} /></td>
       <td style={s.td}>
         {rate ? (
           <>
@@ -210,11 +212,11 @@ export default function WorksTab({ doc, works, reload, onError, onNotice }) {
             <thead>
               <tr>
                 {showBlock ? <th style={s.th}>Блок</th> : null}
-                <th style={s.th}>Конструктивный элемент</th><th style={s.th}>Вид работ</th><th style={s.th}>Ед.</th><th style={s.th}>Объём</th>
+                <th style={s.th}>Конструктивный элемент</th><th style={s.th}>Вид работ</th><th style={s.th}>Ед.</th><th style={s.th}>Объём</th><th style={s.th}>Листы</th>
                 <th style={s.th}>Расценка</th><th style={s.th}>Цена с НДС</th><th style={s.th}>Стоимость</th><th style={s.th}>Статус</th><th style={s.th} />
               </tr>
             </thead>
-            <tbody>{works.map((w) => <WorkRow key={w.id} work={w} showBlock={showBlock} onChange={reload} onError={onError} onPick={setPicker} />)}</tbody>
+            <tbody>{works.map((w) => <WorkRow key={w.id} work={w} doc={doc} showBlock={showBlock} onChange={reload} onError={onError} onPick={setPicker} />)}</tbody>
           </table>
         </div>
       )}

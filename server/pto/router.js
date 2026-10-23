@@ -58,11 +58,19 @@ function createPtoRouter({ requireAccess, service }) {
         section, category: q.category, object: q.object, position: q.position,
         fileName: String(q.fileName || 'document.pdf').slice(0, 200), fileSize: body.length, uploadedBy: req.userEmail,
       });
+      service.saveFile(id, body); // листы открываются из таблиц — нужен сам файл
       setImmediate(() => service.processDocument(id, body).catch((err) => console.error('[pto] разбор:', err)));
       res.status(202).json({ id, status: 'parsing' });
     }));
 
   router.get('/documents/:id', asyncRoute(async (req, res) => res.json({ document: service.getDocument(req.params.id) })));
+  // Сам PDF — для открытия листов из таблиц (токен в заголовке, поэтому клиент берёт файл через fetch).
+  router.get('/documents/:id/pdf', asyncRoute(async (req, res) => {
+    const file = service.pdfPath(req.params.id); // сначала проверка: при ошибке заголовок PDF сломал бы JSON-ответ
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline');
+    res.sendFile(file);
+  }));
   router.delete('/documents/:id', asyncRoute(async (req, res) => { service.deleteDocument(req.params.id); res.json({ deleted: true }); }));
   router.post('/documents/:id/confirm', asyncRoute(async (req, res) => res.json({ document: service.confirmDocument(req.params.id) })));
   router.post('/documents/:id/apply-multiplier', asyncRoute(async (req, res) => {

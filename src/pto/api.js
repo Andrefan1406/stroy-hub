@@ -64,3 +64,37 @@ export async function ptoDownloadExcel(id, fileName) {
   a.remove();
   URL.revokeObjectURL(url);
 }
+
+// ---- Открыть лист PDF ----
+// Файл — под токеном, поэтому берём его через fetch и открываем как blob-адрес с #page=N.
+// Один и тот же blob переиспользуется для всех листов документа (файл большой, качаем один раз за сессию).
+const pdfUrls = new Map();
+
+function pdfBlobUrl(id) {
+  if (!pdfUrls.has(id)) {
+    pdfUrls.set(id, (async () => {
+      const headers = await authHeaders();
+      const res = await fetch(`${API_URL}/api/pto/documents/${id}/pdf`, { headers });
+      if (!res.ok) await parse(res);
+      return URL.createObjectURL(await res.blob());
+    })().catch((err) => {
+      pdfUrls.delete(id);
+      throw err;
+    }));
+  }
+  return pdfUrls.get(id);
+}
+
+export async function ptoOpenPdfPage(id, page) {
+  // Вкладку открываем сразу, по клику: после ожидания загрузки браузер заблокировал бы всплывающее окно.
+  const win = window.open("", "_blank");
+  if (win) win.document.write('<p style="font-family:sans-serif;padding:20px">Загружаем чертёж…</p>');
+  try {
+    const target = `${await pdfBlobUrl(id)}#page=${page}`;
+    if (win) win.location.href = target;
+    else window.open(target, "_blank");
+  } catch (err) {
+    if (win) win.close();
+    throw err;
+  }
+}

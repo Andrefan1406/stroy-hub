@@ -43,6 +43,7 @@ const ENDPOINTS = [
   ['GET', '/api/pto/documents/1/works'],
   ['GET', '/api/pto/documents/1/totals'],
   ['GET', '/api/pto/documents/1/export.xlsx'],
+  ['GET', '/api/pto/documents/1/pdf'],
   ['GET', '/api/pto/material-prices'],
   ['PUT', '/api/pto/material-prices/steel', { price: 1 }],
   ['GET', '/api/pto/rates/search?q=x'],

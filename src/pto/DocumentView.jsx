@@ -1,7 +1,7 @@
 // Открытый документ ПТО: шапка (объект, статус, Excel, подтверждение) и вкладки
 // «Ведомость» / «Виды работ» / «Итого» / «Отчёт разбора».
 import React, { useCallback, useEffect, useState } from "react";
-import { ptoDownloadExcel, ptoGet, ptoPost } from "./api";
+import { ptoDownloadExcel, ptoGet, ptoOpenPdfPage, ptoPost } from "./api";
 import { DOC_STATUS } from "./format";
 import ItemsTab from "./ItemsTab";
 import ReportTab from "./ReportTab";
@@ -94,6 +94,9 @@ export default function DocumentView({ id, onBack }) {
       {error && <div style={s.error}>{error}</div>}
       {notice && <div style={s.notice} onClick={() => setNotice("")}>{notice}</div>}
       {doc.status === "error" && <div style={s.error}>{doc.error}</div>}
+      {doc.status !== "error" && !parsing && !doc.hasFile && (
+        <div style={s.warn}>Файл этого документа не сохранён (он загружен до появления просмотра чертежей) — листы по ссылкам не открыть. Загрузите документ заново.</div>
+      )}
       {parsing && <div style={s.warn}>Документ разбирается — страница обновится сама.</div>}
 
       {doc.status !== "error" && !parsing && (
@@ -103,6 +106,9 @@ export default function DocumentView({ id, onBack }) {
               {doc.status === "confirmed" ? "Ведомость подтверждена ✓" : "Подтвердить ведомость"}
             </button>
             <button style={s.secondary} disabled={busy} onClick={excel}>Скачать Excel</button>
+            {doc.hasFile && (
+              <button style={s.secondary} onClick={() => ptoOpenPdfPage(doc.id, 1).catch((err) => setError(err.message || "Не удалось открыть PDF"))}>Открыть PDF</button>
+            )}
             {doc.status !== "confirmed" && draftCount > 0 && <span style={s.muted}>Строк в статусе «черновик»: {draftCount} — проверьте перед подтверждением</span>}
           </div>
           <div style={s.tabs}>

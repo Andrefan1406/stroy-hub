@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS pto_works (
   quantity       REAL,
   basis_note     TEXT,
   rate_query     TEXT,
+  pages_json     TEXT NOT NULL DEFAULT '[]', -- листы PDF, из которых получена работа ([23, 25])
   rate_id        INTEGER,
   rate_class     TEXT,
   rate_name      TEXT,
@@ -161,6 +162,7 @@ function migrate(d) {
   for (const table of ['pto_items', 'pto_works']) {
     if (!has(table, 'block')) d.exec(`ALTER TABLE ${table} ADD COLUMN block TEXT`);
   }
+  if (!has('pto_works', 'pages_json')) d.exec("ALTER TABLE pto_works ADD COLUMN pages_json TEXT NOT NULL DEFAULT '[]'");
 }
 
 function initSchema() {

@@ -3,17 +3,17 @@
 // можно изменить, подтвердить, удалить, можно добавить свою.
 import React, { useState } from "react";
 import { ptoDelete, ptoPatch, ptoPost } from "./api";
-import { KIND_TITLE, fmtNum, formatSources } from "./format";
+import { KIND_TITLE, fmtNum } from "./format";
+import PageLinks from "./PageLinks";
 import { s } from "./styles";
 
 const KIND_ORDER = ["steel", "embedded", "concrete", "metal"];
 const EMPTY_NEW = { kind: "steel", block: "", element: "", name: "", markClass: "", unit: "кг", quantity: "" };
 
 // showBlock — блоки найдены в чертежах: показываем столбец «Блок» (значение — у каждой строки, его можно поправить).
-function ItemRow({ item, showBlock, onChange, onError }) {
+function ItemRow({ item, doc, showBlock, onChange, onError }) {
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [showSources, setShowSources] = useState(false);
 
   const run = async (fn) => {
     setBusy(true);
@@ -63,12 +63,7 @@ function ItemRow({ item, showBlock, onChange, onError }) {
       <td style={s.td}>{item.unit}</td>
       <td style={s.tdNum}>{fmtNum(item.quantity)}</td>
       <td style={s.td}>
-        {item.sources.length > 1 ? (
-          <button style={{ ...s.small, border: "none", background: "none", color: "#0b5cad", textDecoration: "underline", padding: 0 }} onClick={() => setShowSources((v) => !v)}>
-            {item.sources.length} листов
-          </button>
-        ) : formatSources(item.sources)}
-        {showSources && <div style={{ ...s.muted, fontSize: 12 }}>{formatSources(item.sources)}</div>}
+        <PageLinks docId={doc.id} hasFile={doc.hasFile} pages={item.sources} onError={onError} />
       </td>
       <td style={s.td}>
         <label style={{ fontSize: 12, whiteSpace: "nowrap" }} title="Учитывается в объёмах работ и стоимости">
@@ -180,7 +175,7 @@ export default function ItemsTab({ doc, items, reload, onError }) {
                 return (
                   <React.Fragment key={kind}>
                     <tr><td style={s.group} colSpan={showBlock ? 9 : 8}>{KIND_TITLE[kind]}{kind !== "metal" && total(kind) ? <span style={{ fontWeight: 400, marginLeft: 12 }}>в расчёте: {total(kind)}</span> : null}</td></tr>
-                    {rows.map((it) => <ItemRow key={it.id} item={it} showBlock={showBlock} onChange={reload} onError={onError} />)}
+                    {rows.map((it) => <ItemRow key={it.id} item={it} doc={doc} showBlock={showBlock} onChange={reload} onError={onError} />)}
                   </React.Fragment>
                 );
               })}

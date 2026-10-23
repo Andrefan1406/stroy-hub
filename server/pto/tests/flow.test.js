@@ -5,6 +5,8 @@
 // (настоящая — в access.test.js).
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const XLSX = require('xlsx');
 const { setupPtoEnv, stubRates, listen, until } = require('./helpers');
@@ -70,6 +72,12 @@ test('загрузка: 202 сразу, разбор в фоне, строки �
   assert.equal(doc.pageCount, 3);
   assert.equal(doc.fileName, 'KZh.pdf');
   assert.ok(!('block' in doc), 'у документа блока нет — он у строк');
+  // Файл сохранён — по нему открываются листы из таблиц.
+  assert.equal(doc.hasFile, true);
+  const pdf = await call('GET', `/api/pto/documents/${docId}/pdf`);
+  assert.equal(pdf.status, 200);
+  assert.match(pdf.headers.get('content-type'), /application\/pdf/);
+  assert.deepEqual(pdf.body, PDF);
   assert.deepEqual(doc.report.blocks, [], 'в этих листах осей блоков нет — здание без блоков');
   assert.deepEqual(doc.report.sheets.map((s) => `${s.page}:${s.kind}`), ['4:steel_summary', '23:specification', '63:specification']);
 
@@ -90,6 +98,7 @@ test('загрузка: 202 сразу, разбор в фоне, строки �
   assert.ok(!works.some((w) => w.element === 'Фундамент ФЛм 1'), 'у элемента только с арматурой работ нет — арматура в материалах');
   const wall = works.find((w) => w.name === 'Бетонирование монолитных конструкций' && w.element === 'Стен монолитных См 1 т, См 1 н');
   assert.equal(wall.quantity, 92);
+  assert.deepEqual(wall.pages, [23], 'у работы — лист PDF, с которого взят объём');
   assert.match(wall.basisNote, /армирование и закладные входят в стоимость бетонирования/);
   assert.equal(wall.rate.status, 'suggested');
   assert.equal(wall.rate.name, 'Бетонирование открытых площадок');
@@ -360,6 +369,23 @@ test('PDF не того раздела (нет КЖ): не падаем, зам�
   } finally { pages = [steelSummaryPage(), specPage(), multiElementPage()]; }
 });
 
+test('листы PDF: у итогов по элементу они есть; документ без сохранённого файла — 404 и hasFile = false', async () => {
+  await ready;
+  const t = (await call('GET', `/api/pto/documents/${docId}/totals`)).body;
+  assert.deepEqual(t.rows.find((r) => r.element === 'Стен монолитных См 1 т, См 1 н').pages, [23]);
+  assert.deepEqual(t.rows.find((r) => r.element === 'Фундамент ФЛм 1').pages, [4]);
+
+  const id = (await upload('', PDF, 'old.pdf')).body.id;
+  await finished(id);
+  const { DATA_DIR } = require('../db');
+  fs.rmSync(path.join(DATA_DIR, 'files', `${id}.pdf`)); // как у документа, загруженного до появления хранения файлов
+  const res = await call('GET', `/api/pto/documents/${id}/pdf`);
+  assert.equal(res.status, 404);
+  assert.match(res.body.error, /не сохранён — загрузите его заново/);
+  const listed = (await call('GET', '/api/pto/documents')).body.documents.find((d) => d.id === id);
+  assert.equal(listed.hasFile, false);
+});
+
 test('список документов с фильтром по иерархии и удаление', async () => {
   await ready;
   const all = (await call('GET', '/api/pto/documents')).body.documents;
@@ -370,4 +396,5 @@ test('список документов с фильтром по иерархи�
   assert.equal(del.status, 200);
   assert.equal((await call('GET', `/api/pto/documents/${docId}`)).status, 404);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM pto_items WHERE document_id = ?').get(docId).n, 0, 'строки удалены каскадом');
+  assert.equal(fs.existsSync(path.join(require('../db').DATA_DIR, 'files', `${docId}.pdf`)), false, 'файл удалён вместе с документом');
 });
