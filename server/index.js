@@ -95,6 +95,9 @@ app.use('/api/admin/rascenki', rascenkiAdminRouter);
 app.use('/api/concrete-dashboard', concreteDailyReportRouter);
 app.use('/api/concrete-dashboard', concreteDashboardRouter);
 app.use('/api/concrete-board', concreteRequestsBoardRouter);
+// Модуль ПТО (ведомости по проектной документации): только admin@vkdev.kz,
+// см. server/pto/access.js.
+app.use('/api/pto', require('./pto/router').createDefaultPtoRouter());
 app.use('/api/v1/users', ridesUsersRouter);
 app.use('/api/v1/vehicles', ridesVehiclesRouter);
 app.use('/api/v1/drivers', ridesDriversRouter);

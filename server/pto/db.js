@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS pto_documents (
   report_json  TEXT,
   uploaded_by  TEXT,
   uploaded_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  parsed_at    TEXT
+  parsed_at    TEXT,
+  -- 1: ведомость правили после расчёта видов работ — их стоит пересчитать.
+  works_stale  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_pto_documents_object ON pto_documents(object_name, position, block);
 
@@ -85,6 +87,7 @@ CREATE TABLE IF NOT EXISTS pto_works (
   unit           TEXT NOT NULL,
   quantity       REAL,
   basis_note     TEXT,
+  rate_query     TEXT,
   rate_id        INTEGER,
   rate_class     TEXT,
   rate_name      TEXT,
