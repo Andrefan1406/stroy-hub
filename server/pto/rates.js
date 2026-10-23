@@ -50,6 +50,7 @@ function toCandidate(point, unit) {
     id: p.id ?? point.id,
     score: point.score ?? null,
     tier: p.class,
+    class: p.class,
     tierTitle: TIER_TITLE[p.class] || p.class,
     name: p.name,
     unit: p.unit,
@@ -119,7 +120,7 @@ function createRates(deps = {}) {
 Кандидаты: ${JSON.stringify(list.map((c) => ({ id: c.id, категория: c.tierTitle, раздел: c.section, работа: c.name, ед: c.unit })))}
 
 Ответь строго JSON: {"id": <id кандидата или null>}`;
-    const out = await callOllamaJson([{ role: 'user', content: prompt }], { format: 'json', temperature: 0, timeoutMs: 20000 });
+    const out = await callOllamaJson([{ role: 'user', content: prompt }], { format: 'json', temperature: 0, timeoutMs: 15000 });
     if (!out || !('id' in out)) throw new Error('модель вернула ответ без поля id');
     return out.id;
   });

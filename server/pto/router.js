@@ -79,7 +79,7 @@ function createPtoRouter({ requireAccess, service }) {
   router.post('/documents/:id/works/rebuild', asyncRoute(async (req, res) => res.json({ works: await service.rebuildWorks(req.params.id) })));
   router.post('/documents/:id/rates/apply', asyncRoute(async (req, res) => {
     let warning = null;
-    try { await service.applyRates(req.params.id); } catch (err) {
+    try { await service.applyRates(req.params.id, { redo: true }); } catch (err) {
       if (!(err instanceof RatesUnavailable)) throw err;
       warning = err.message;
     }

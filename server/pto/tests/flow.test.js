@@ -86,6 +86,7 @@ test('загрузка: 202 сразу, разбор в фоне, строки �
   assert.equal(rebar.quantity, 37.901); // 37223 + 678 кг в тоннах
   assert.equal(rebar.rate.status, 'suggested');
   assert.equal(rebar.rate.name, 'Армирование');
+  assert.equal(rebar.rate.class, 'Расценки утверждённые в ТОО VK development group', 'категория расценки сохранена');
   assert.equal(rebar.rate.price, 250000);
   assert.equal(rebar.rate.confidence, 0.62);
 });
@@ -123,8 +124,11 @@ test('своя строка и пересчёт видов работ: ручн�
   assert.equal(work.status, 201);
   assert.equal(work.body.work.manual, true);
 
+  rates.calls.suggest.length = 0;
   const rebuilt = await call('POST', `/api/pto/documents/${docId}/works/rebuild`, {});
   const works = rebuilt.body.works;
+  assert.ok(works.filter((w) => w.name === 'Армирование монолитных конструкций').every((w) => w.rate && w.rate.status === 'suggested'), 'предложенные расценки сохранились при пересчёте');
+  assert.ok(!rates.calls.suggest.some(([q]) => /Армирование|Бетонирование монолитных/.test(q)), 'уже подобранные расценки не искали заново (искали только для работ без расценки)');
   assert.ok(works.some((w) => w.name === 'Устройство опалубки' && w.manual), 'ручная работа осталась');
   const rebar = works.find((w) => w.name === 'Армирование монолитных конструкций' && w.element === 'Фундамент ФЛм 1');
   assert.equal(rebar.quantity, 38.979); // 37300,5 + 678 + 1000 кг = 38 978,5 кг
@@ -204,6 +208,10 @@ test('сверка со сводной ведомостью: предложен 
     { kind: 'steel', element: 'Монолитные стены См', name: 'Арматура ∅12', markClass: 'А400', unit: 'кг', quantity: 312247, page: 4, basis: 'summary' },
     { kind: 'steel', element: 'Стены монолитной См 1 т', name: 'Арматура ∅12', markClass: 'А400', unit: 'кг', quantity: 154704, page: 23, basis: 'spec', note: 'Расход в спецификации дан на один элемент — количество элементов смотрите на листах расположения' },
     { kind: 'concrete', element: 'Стены монолитной См 1 т', name: 'Бетон С20/25', markClass: 'С20/25', unit: 'м³', quantity: 92, page: 23, basis: 'spec', note: 'Расход в спецификации дан на один элемент — количество элементов смотрите на листах расположения' },
+    // лист стены без сноски «на одну стену» — коэффициент группы всё равно относится и к нему
+    { kind: 'concrete', element: 'Стены монолитной См 5', name: 'Бетон С20/25', markClass: 'С20/25', unit: 'м³', quantity: 10, page: 35, basis: 'spec', note: null },
+    // строка, уже умноженная на явное число элементов, коэффициент не трогает
+    { kind: 'concrete', element: 'Стены монолитной См 6 (2 шт.)', name: 'Бетон С20/25', markClass: 'С20/25', unit: 'м³', quantity: 20, page: 38, basis: 'spec', note: 'Элементов: 2 × расход на один элемент' },
   ];
   void wallsSummary;
   const { reconcileKzh } = require('../reconcile');
@@ -220,21 +228,25 @@ test('сверка со сводной ведомостью: предложен 
     const id = (await upload()).body.id;
     const doc = await finished(id);
     assert.deepEqual(doc.report.reconciliation.map((r) => [r.id, r.factor, r.applied]), [['walls', 2, null]]);
-    const before = (await call('GET', `/api/pto/documents/${id}/items`)).body.items.find((i) => i.kind === 'concrete');
-    assert.equal(before.quantity, 92);
+    const concreteOf = async (element) => (await call('GET', `/api/pto/documents/${id}/items`)).body.items.find((i) => i.kind === 'concrete' && i.element === element);
+    assert.equal((await concreteOf('Стены монолитной См 1 т')).quantity, 92);
 
     assert.equal((await call('POST', `/api/pto/documents/${id}/apply-multiplier`, { group: 'walls', factor: 1 })).status, 400);
     assert.equal((await call('POST', `/api/pto/documents/${id}/apply-multiplier`, { group: 'nope', factor: 2 })).status, 400);
     const ok = await call('POST', `/api/pto/documents/${id}/apply-multiplier`, { group: 'walls', factor: 2 });
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
-    assert.equal(ok.body.changedItems, 2, 'бетон и справочная арматура стен');
-    const after = (await call('GET', `/api/pto/documents/${id}/items`)).body.items.find((i) => i.kind === 'concrete');
+    assert.equal(ok.body.changedItems, 3, 'бетон двух листов стен и справочная арматура; строка с явным числом элементов не тронута');
+    const after = await concreteOf('Стены монолитной См 1 т');
     assert.equal(after.quantity, 184);
+    assert.equal((await concreteOf('Стены монолитной См 5')).quantity, 20, 'лист без сноски тоже умножен');
+    const explicit = await concreteOf('Стены монолитной См 6 (2 шт.)');
+    assert.equal(explicit.quantity, 20, 'уже умноженное на число элементов не трогаем');
+    assert.equal(explicit.edited, false);
     assert.equal(after.edited, true);
     assert.match(after.note, /×2 по сверке/);
     assert.deepEqual(after.sources, [{ page: 23, quantity: 184 }]);
     const works = (await call('GET', `/api/pto/documents/${id}/works`)).body.works;
-    assert.equal(works.find((w) => w.name === 'Бетонирование монолитных конструкций').quantity, 184, 'виды работ пересчитаны');
+    assert.equal(works.filter((w) => w.name === 'Бетонирование монолитных конструкций').reduce((s, w) => s + w.quantity, 0), 224, 'виды работ пересчитаны: 184 + 20 + 20');
     assert.equal((await call('POST', `/api/pto/documents/${id}/apply-multiplier`, { group: 'walls', factor: 2 })).status, 400, 'второй раз нельзя');
   } finally {
     require('../sections').SECTIONS['КЖ'].parse = origParse;

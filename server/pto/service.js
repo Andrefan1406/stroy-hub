@@ -96,7 +96,9 @@ function createPtoService({ db, rates, extract = extractPages }) {
         );
         for (const it of items) ins.run({ ...it, document_id: docId, sources_json: JSON.stringify(it.sources) });
         insertWorks(docId, works);
-        db.prepare(`UPDATE pto_documents SET status = 'draft', error = NULL, page_count = ?, report_json = ?, parsed_at = ?, works_stale = 0 WHERE id = ?`)
+        // Статус остаётся «parsing» до конца подбора расценок: иначе экран откроется
+        // с видами работ без расценок и не обновится.
+        db.prepare(`UPDATE pto_documents SET error = NULL, page_count = ?, report_json = ?, parsed_at = ?, works_stale = 0 WHERE id = ?`)
           .run(pageCount, JSON.stringify(report), now(), docId);
       })();
       await applyRates(docId).catch((err) => {
@@ -104,6 +106,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
         // расценки можно подобрать позже кнопкой.
         console.error('[pto] расценки не подобраны:', err.message);
       });
+      db.prepare(`UPDATE pto_documents SET status = 'draft' WHERE id = ?`).run(docId);
     } catch (err) {
       const message = err instanceof PdfError ? err.message : `Не удалось разобрать документ: ${err.message}`;
       db.prepare(`UPDATE pto_documents SET status = 'error', error = ?, parsed_at = ? WHERE id = ?`).run(message, now(), docId);
@@ -224,9 +227,21 @@ function createPtoService({ db, rates, extract = extractPages }) {
     }));
     const works = SECTIONS[doc.section].deriveWorks(items);
     db.transaction(() => {
+      // Уже подобранные расценки (предложенные и подтверждённые) переносим на
+      // пересозданные работы с тем же названием и единицей — а не подбираем заново.
+      const prev = new Map();
+      for (const w of db.prepare('SELECT * FROM pto_works WHERE document_id = ? AND manual = 0 AND rate_name IS NOT NULL').all(doc.id)) {
+        prev.set(workKey(w.name, w.unit), w);
+      }
       db.prepare('DELETE FROM pto_works WHERE document_id = ? AND manual = 0').run(doc.id);
       const base = db.prepare('SELECT COALESCE(MAX(sort), 0) + 1 AS s FROM pto_works WHERE document_id = ?').get(doc.id).s;
       insertWorks(doc.id, works.map((w, i) => ({ ...w, sort: base + i })));
+      for (const w of db.prepare('SELECT id, name, unit FROM pto_works WHERE document_id = ? AND manual = 0').all(doc.id)) {
+        const p = prev.get(workKey(w.name, w.unit));
+        if (p) {
+          applyRateRow([w.id], { id: p.rate_id, class: p.rate_class, name: p.rate_name, unit: p.rate_unit, price: p.price, manual: !!p.manual_rate }, p.mapping_status, p.confidence);
+        }
+      }
       db.prepare('UPDATE pto_documents SET works_stale = 0 WHERE id = ?').run(doc.id);
     })();
     touch(doc.id);
@@ -288,15 +303,17 @@ function createPtoService({ db, rates, extract = extractPages }) {
          mapping_status = ?, manual_rate = ? WHERE id = ?`
     );
     for (const wid of workIds) {
-      upd.run(rate.id ?? null, rate.class ?? null, rate.name, rate.unit, rate.price ?? null, confidence ?? null, status, rate.manual ? 1 : 0, wid);
+      upd.run(rate.id ?? null, rate.class ?? rate.tier ?? null, rate.name, rate.unit, rate.price ?? null, confidence ?? null, status, rate.manual ? 1 : 0, wid);
     }
   };
 
   // Подбор расценок для видов работ документа без подтверждённой расценки:
   // сначала ранее подтверждённые соответствия, затем предложение по своду.
   // Ошибка доступности свода пробрасывается — вызывающий решает, что показать.
-  async function applyRates(docId) {
-    const works = db.prepare(`SELECT * FROM pto_works WHERE document_id = ? AND mapping_status != 'confirmed'`).all(Number(docId));
+  // redo: переподобрать и уже предложенные (кнопка «Подобрать расценки заново»); по умолчанию — только работы без расценки.
+  async function applyRates(docId, { redo = false } = {}) {
+    const states = redo ? "('none', 'suggested')" : "('none')";
+    const works = db.prepare(`SELECT * FROM pto_works WHERE document_id = ? AND mapping_status IN ${states}`).all(Number(docId));
     const byKey = new Map();
     for (const w of works) {
       const key = workKey(w.name, w.unit);
@@ -304,13 +321,17 @@ function createPtoService({ db, rates, extract = extractPages }) {
       byKey.get(key).ids.push(w.id);
     }
     let unavailable = null;
+    const toSuggest = [];
     for (const [key, g] of byKey) {
       const mapped = db.prepare('SELECT * FROM pto_price_mappings WHERE work_key = ?').get(key);
       if (mapped) {
         applyRateRow(g.ids, { id: mapped.rate_id, class: mapped.rate_class, name: mapped.rate_name, unit: mapped.rate_unit, price: mapped.price, manual: !!mapped.manual }, 'confirmed', 1);
-        continue;
+      } else {
+        toSuggest.push(g);
       }
-      if (unavailable) continue;
+    }
+    // Предложения по своду — параллельно: на каждое уходит поиск и арбитр (модель).
+    await Promise.all(toSuggest.map(async (g) => {
       try {
         const { best } = await rates.suggest(g.query, g.unit, { workName: g.name });
         if (best) applyRateRow(g.ids, best, 'suggested', round(best.score, 3));
@@ -318,7 +339,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
         if (err instanceof RatesUnavailable) unavailable = err;
         else throw err;
       }
-    }
+    }));
     if (unavailable) throw unavailable;
   }
 
@@ -346,7 +367,7 @@ function createPtoService({ db, rates, extract = extractPages }) {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
          ON CONFLICT(work_key) DO UPDATE SET rate_id = excluded.rate_id, rate_class = excluded.rate_class, rate_name = excluded.rate_name,
            rate_unit = excluded.rate_unit, price = excluded.price, manual = excluded.manual, confirmed_by = excluded.confirmed_by, confirmed_at = excluded.confirmed_at`
-      ).run(key, rate.id, rate.class, rate.name, rate.unit, rate.price, rate.manual ? 1 : 0, user || null);
+      ).run(key, rate.id, rate.class ?? rate.tier ?? null, rate.name, rate.unit, rate.price, rate.manual ? 1 : 0, user || null);
       const same = db.prepare('SELECT id, name, unit FROM pto_works WHERE document_id = ?').all(w.document_id)
         .filter((r) => workKey(r.name, r.unit) === key).map((r) => r.id);
       applyRateRow(same, rate, 'confirmed', 1);
@@ -393,13 +414,16 @@ function createPtoService({ db, rates, extract = extractPages }) {
     if (!Number.isInteger(f) || f < 2 || f > 10) throw new ServiceError('Коэффициент — целое число от 2 до 10');
     if (rec.applied) throw new ServiceError(`Коэффициент ×${rec.applied} уже применён`);
     const mark = `×${f} по сверке со сводной ведомостью стали`;
+    // Все спецификационные строки группы, кроме уже умноженных на явное число
+    // элементов («Элементов: N ×…»): сноска «на одну стену» есть не на всех листах,
+    // а коэффициент выведен по всей группе.
     const rows = db.prepare(`SELECT * FROM pto_items WHERE document_id = ? AND basis = 'spec' AND kind IN ('concrete', 'steel', 'metal')`).all(doc.id)
-      .filter((r) => group.spec.test(r.element) && /один элемент/.test(r.note || ''));
+      .filter((r) => group.spec.test(r.element) && !/^Элементов: /.test(r.note || ''));
     db.transaction(() => {
       const upd = db.prepare('UPDATE pto_items SET quantity = ?, sources_json = ?, note = ?, edited = 1 WHERE id = ?');
       for (const r of rows) {
         const sources = parseJson(r.sources_json, []).map((s) => ({ ...s, quantity: round(s.quantity * f, 3) }));
-        upd.run(round(r.quantity * f, 3), JSON.stringify(sources), `${r.note}; ${mark}`, r.id);
+        upd.run(round(r.quantity * f, 3), JSON.stringify(sources), [r.note, mark].filter(Boolean).join('; '), r.id);
       }
       rec.applied = f;
       db.prepare('UPDATE pto_documents SET report_json = ? WHERE id = ?').run(JSON.stringify(report), doc.id);
