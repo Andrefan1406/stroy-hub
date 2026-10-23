@@ -124,12 +124,22 @@ function createPtoRouter({ requireAccess, service }) {
 // Боевая сборка: настоящая авторизация, БД и расценки.
 function createDefaultPtoRouter() {
   const { requirePto } = require('./access');
-  const { initSchema } = require('./db');
-  const { createRates } = require('./rates');
-  const db = initSchema();
-  const rates = createRates();
-  const service = createPtoService({ db, rates });
-  return createPtoRouter({ requireAccess: requirePto, service });
+  try {
+    const { initSchema } = require('./db');
+    const { createRates } = require('./rates');
+    const db = initSchema();
+    const rates = createRates();
+    const service = createPtoService({ db, rates });
+    return createPtoRouter({ requireAccess: requirePto, service });
+  } catch (err) {
+    // Модуль необязательный: если его база не открылась, остальной сервер
+    // (поездки, бетон, аналитика) работает, а ПТО отвечает 503.
+    console.error('[pto] модуль не запущен:', err.message);
+    const router = express.Router();
+    router.use(requirePto);
+    router.use((req, res) => res.status(503).json({ error: 'Модуль ПТО временно недоступен: не открылась его база данных' }));
+    return router;
+  }
 }
 
 module.exports = { createPtoRouter, createDefaultPtoRouter, validateHierarchy, MAX_UPLOAD_MB };
