@@ -1,7 +1,7 @@
 // Открытый документ ПТО: шапка (объект, статус, Excel, подтверждение) и вкладки
 // «Ведомость» / «Виды работ» / «Итого» / «Отчёт разбора».
 import React, { useCallback, useEffect, useState } from "react";
-import { ptoDownloadExcel, ptoGet, ptoOpenPdfPage, ptoPost } from "./api";
+import { openInTakeoff, ptoDownloadExcel, ptoGet, ptoOpenPdfPage, ptoPost } from "./api";
 import { DOC_STATUS } from "./format";
 import ItemsTab from "./ItemsTab";
 import ReportTab from "./ReportTab";
@@ -107,7 +107,10 @@ export default function DocumentView({ id, onBack }) {
             </button>
             <button style={s.secondary} disabled={busy} onClick={excel}>Скачать Excel</button>
             {doc.hasFile && (
-              <button style={s.secondary} onClick={() => ptoOpenPdfPage(doc.id, 1).catch((err) => setError(err.message || "Не удалось открыть PDF"))}>Открыть PDF</button>
+              <button style={s.secondary} onClick={() => openInTakeoff(doc.id, 1)} title="Чертёж откроется в редакторе подсчёта объёмов">Открыть в редакторе объёмов</button>
+            )}
+            {doc.hasFile && (
+              <button style={s.secondary} onClick={() => ptoOpenPdfPage(doc.id, 1).catch((err) => setError(err.message || "Не удалось открыть PDF"))}>Просто PDF</button>
             )}
             {doc.status !== "confirmed" && draftCount > 0 && <span style={s.muted}>Строк в статусе «черновик»: {draftCount} — проверьте перед подтверждением</span>}
           </div>

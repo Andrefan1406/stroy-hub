@@ -70,13 +70,27 @@ export async function ptoDownloadExcel(id, fileName) {
 // Один и тот же blob переиспользуется для всех листов документа (файл большой, качаем один раз за сессию).
 const pdfUrls = new Map();
 
+// PDF документа как Blob (файл под токеном).
+export async function ptoFetchPdfBlob(id) {
+  const headers = await authHeaders();
+  const res = await fetch(`${API_URL}/api/pto/documents/${id}/pdf`, { headers });
+  if (!res.ok) await parse(res);
+  return res.blob();
+}
+
+// Адрес редактора подсчёта объёмов на нужном листе документа ПТО. Лист — в #page=: при повторном
+// переходе в уже открытой вкладке меняется только якорь, чертёж заново не загружается.
+export const takeoffUrl = (docId, page) => `/takeoff?doc=${docId}#page=${page}`;
+
+// Открыть лист в редакторе подсчёта объёмов (одна именованная вкладка на все ссылки).
+export function openInTakeoff(docId, page) {
+  window.open(takeoffUrl(docId, page), "pto-takeoff");
+}
+
 function pdfBlobUrl(id) {
   if (!pdfUrls.has(id)) {
     pdfUrls.set(id, (async () => {
-      const headers = await authHeaders();
-      const res = await fetch(`${API_URL}/api/pto/documents/${id}/pdf`, { headers });
-      if (!res.ok) await parse(res);
-      return URL.createObjectURL(await res.blob());
+      return URL.createObjectURL(await ptoFetchPdfBlob(id));
     })().catch((err) => {
       pdfUrls.delete(id);
       throw err;

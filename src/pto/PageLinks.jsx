@@ -1,9 +1,10 @@
-// Номера листов PDF как ссылки: клик открывает чертёж на этом листе в новой вкладке.
+// Номера листов PDF как ссылки: клик открывает чертёж на этом листе в редакторе подсчёта объёмов
+// (страница /takeoff, отдельная вкладка; PDF документа подгружается туда сам).
 // pages — номера листов ([23, 25]) либо источники строки ([{ page, quantity }]) —
 // тогда в подсказке виден вклад листа. Если файл документа не сохранён (загружен
 // до появления просмотра), номера остаются обычным текстом.
 import React, { useState } from "react";
-import { ptoOpenPdfPage } from "./api";
+import { openInTakeoff } from "./api";
 import { fmtNum } from "./format";
 
 const link = {
@@ -11,19 +12,11 @@ const link = {
   cursor: "pointer", font: "inherit",
 };
 
-export default function PageLinks({ docId, hasFile, pages, onError, max = 6 }) {
+export default function PageLinks({ docId, hasFile, pages, max = 6 }) {
   const [all, setAll] = useState(false);
   const list = (pages || []).map((p) => (typeof p === "number" ? { page: p } : p));
   if (!list.length) return null;
   const shown = all ? list : list.slice(0, max);
-
-  const open = async (page) => {
-    try {
-      await ptoOpenPdfPage(docId, page);
-    } catch (err) {
-      if (onError) onError(err.message || "Не удалось открыть PDF");
-    }
-  };
 
   return (
     <span>
@@ -31,8 +24,8 @@ export default function PageLinks({ docId, hasFile, pages, onError, max = 6 }) {
         <React.Fragment key={p.page}>
           {i > 0 && ", "}
           {hasFile ? (
-            <button type="button" style={link} onClick={() => open(p.page)}
-              title={`Открыть лист ${p.page}${p.quantity != null ? ` (вклад листа: ${fmtNum(p.quantity)})` : ""}`}>
+            <button type="button" style={link} onClick={() => openInTakeoff(docId, p.page)}
+              title={`Открыть лист ${p.page} в редакторе объёмов${p.quantity != null ? ` (вклад листа: ${fmtNum(p.quantity)})` : ""}`}>
               {p.page}
             </button>
           ) : (

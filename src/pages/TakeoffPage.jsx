@@ -19,7 +19,8 @@
 // остаётся под старым файлом. До перезагрузки страницы можно подсветить
 // изменения между редакциями.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { ptoFetchPdfBlob, ptoGet } from "../pto/api";
 import { openPdf, pageSize } from "../takeoff/pdf";
 import TakeoffCanvas from "../takeoff/TakeoffCanvas";
 import CatalogEditor from "../takeoff/CatalogEditor";
@@ -90,6 +91,10 @@ export default function TakeoffPage() {
   const [compare, setCompare] = useState(false);
   const canvasRef = useRef(null);
   const revInputRef = useRef(null);
+  const [ptoDoc, setPtoDoc] = useState(null); // чертёж открыт из модуля ПТО: { id, fileName }
+  const location = useLocation();
+  const docParam = new URLSearchParams(location.search).get("doc");
+  const hashPage = Number((location.hash.match(/page=(\d+)/) || [])[1]) || null;
   const projectKey = file ? `${STORAGE_PREFIX}${file.name}:${file.size}` : null;
 
   // --- справочник работ (общий, с сервера) ---
@@ -106,9 +111,7 @@ export default function TakeoffPage() {
   const groupsById = useMemo(() => Object.fromEntries(catalog.groups.map((g) => [g.id, g])), [catalog]);
 
   // --- файл ---
-  const onFile = async (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
+  const openFile = async (f, requestedPage = null) => {
     setError("");
     setStatus("Открываем PDF…");
     try {
@@ -125,7 +128,7 @@ export default function TakeoffPage() {
       setPrevRev(null);
       setCompare(false);
       setRev(null);
-      const startPage = Math.min(saved?.pageNumber || 1, doc.numPages);
+      const startPage = Math.min(requestedPage || saved?.pageNumber || 1, doc.numPages);
       setPageNumber(startPage);
       setPageInput(String(startPage));
       setSelectedId(null);
@@ -134,6 +137,13 @@ export default function TakeoffPage() {
     } catch (err) {
       setError(`Не удалось открыть PDF: ${err.message}`);
       setStatus("");
+    }
+  };
+  const onFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (f) {
+      setPtoDoc(null);
+      await openFile(f);
     }
   };
 
@@ -295,6 +305,35 @@ export default function TakeoffPage() {
     setPageInput(String(p));
     setSelectedId(null);
   };
+
+  // Чертёж из ПТО: /takeoff?doc=<id>#page=<лист> — подгружаем PDF документа (под токеном администратора) и
+  // открываем на нужном листе. Повторный переход по ссылке на тот же документ меняет только #page — без перезагрузки.
+  useEffect(() => {
+    if (!docParam || (ptoDoc && ptoDoc.id === docParam)) return undefined;
+    let alive = true;
+    (async () => {
+      setError("");
+      setStatus("Загружаем чертёж из ПТО…");
+      try {
+        const { document: d } = await ptoGet(`/documents/${docParam}`);
+        const blob = await ptoFetchPdfBlob(docParam);
+        if (!alive) return;
+        await openFile(new File([blob], d.fileName, { type: "application/pdf" }), hashPage);
+        setPtoDoc({ id: docParam, fileName: d.fileName });
+      } catch (err) {
+        if (alive) {
+          setError(`Не удалось открыть чертёж из ПТО: ${err.message}`);
+          setStatus("");
+        }
+      }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docParam]);
+  useEffect(() => {
+    if (hashPage && pdf && ptoDoc && ptoDoc.id === docParam) goPage(hashPage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hashPage]);
 
   // --- калибровка ---
   const metersPerUnit = calibrations[pageNumber] || null;
@@ -506,6 +545,9 @@ export default function TakeoffPage() {
             <div style={s.blockTitle}>1. Чертёж (PDF)</div>
             <input type="file" accept="application/pdf,.pdf" onChange={onFile} style={{ fontSize: 12, width: "100%" }} />
             {file && <div style={s.muted}>{file.name}</div>}
+            {ptoDoc && (
+              <div style={s.hint}>Чертёж из ПТО (документ №{ptoDoc.id}). <Link to={`/pto/${ptoDoc.id}`}>← К ведомости ПТО</Link></div>
+            )}
             {file && (
               <>
                 <input ref={revInputRef} type="file" accept="application/pdf,.pdf" onChange={startRevision} style={{ display: "none" }} />
