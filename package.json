@@ -22,6 +22,7 @@
     "leaflet": "^1.9.4",
     "node-cron": "^3.0.3",
     "papaparse": "^5.5.3",
+    "pdfjs-dist": "^3.11.174",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-icons": "^5.5.0",
@@ -47,7 +48,8 @@
     "financing-api": "cd services/financing-api && .venv\\Scripts\\python.exe -m uvicorn main:app --port 8000",
     "rides:seed": "node server/rides/seed.js",
     "rides:create-test-users": "node server/rides/create-test-users.js",
-    "rascenki:seed": "node server/rascenkiSeedXlsx.js"
+    "rascenki:seed": "node server/rascenkiSeedXlsx.js",
+    "test:pto": "node --test \"server/pto/tests/*.test.js\""
   },
   "eslintConfig": {
     "extends": [
