@@ -9,6 +9,9 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth } from "../firebase";
 
 const ADMIN_EMAIL = "admin@vkdev.kz";
+// У страниц системы поездок своя шапка с кнопкой «Выйти» (rides/LogoutButton):
+// плашка поверх неё дублировала выход и на телефоне наезжала на заголовок.
+const RIDES_PAGES = ["/employee", "/dispatcher", "/driver", "/rides-admin"];
 
 export default function AccountBar() {
   const navigate = useNavigate();
@@ -19,6 +22,7 @@ export default function AccountBar() {
 
   // В Telegram Mini App (/tg/*) вход — через Telegram, не через этот логин.
   if (!email || location.pathname === "/login" || location.pathname.startsWith("/tg")) return null;
+  if (RIDES_PAGES.some((p) => location.pathname === p || location.pathname.startsWith(`${p}/`))) return null;
 
   const login = email.split("@")[0];
 

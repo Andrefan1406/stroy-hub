@@ -19,7 +19,7 @@
 //   address — улица, дом (без населённого пункта, его добавляет addressPayload);
 //   status: idle | checking | found | street | not_found | unavailable | manual
 //   hint — где открыть карту (найденная улица).
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import MapPicker from "./MapPicker";
 import { ridesApiFetch } from "./api";
 
@@ -58,7 +58,9 @@ function loadSettlements() {
   return settlementsPromise;
 }
 
-export default function AddressField({ value, onChange, placeholder = "Улица, дом", inputStyle, buttonStyle, mapTitle }) {
+// label — название поля для скринридера («Откуда», «Куда»…): без него три
+// контрола в строке звучат как безымянные «Улица, дом» и список.
+export default function AddressField({ value, onChange, placeholder = "Улица, дом", inputStyle, buttonStyle, mapTitle, label = "Адрес" }) {
   const [mapOpen, setMapOpen] = useState(false);
   const [settlements, setSettlements] = useState([{ name: DEFAULT_CITY }]);
   const valueRef = useRef(value);
@@ -142,58 +144,74 @@ export default function AddressField({ value, onChange, placeholder = "Улиц�
   const cityCenter = city.lat != null ? { lat: city.lat, lng: city.lng }
     : settlements.find((x) => x.name === city.name && x.lat != null) || null;
   const needMap = addressNeedsMap(value);
+  const badCity = cityProblem(value);
+  const uid = useId();
+  const streetMsgId = `${uid}-street`;
+  const cityMsgId = `${uid}-city`;
+  // Итог проверки — одной строкой в живом регионе: скринридер слышит не
+  // только «Ищем адрес…», но и чем закончилось (найден / нужна карта).
+  const streetMessage = value.status === "checking" ? "Ищем адрес на карте…"
+    : value.status === "found" && value.address.trim() ? "Адрес найден на карте"
+      : needMap ? NEED_MAP_TEXT[value.status]
+        : "";
   return (
     <div style={st.wrap}>
       <div style={st.row}>
-        <select style={{ ...inputStyle, ...st.city }} value={city.custom ? OTHER : city.name} onChange={(e) => pickFromList(e.target.value)}>
+        <select aria-label={`${label}: населённый пункт`} style={{ ...inputStyle, ...st.city }} value={city.custom ? OTHER : city.name} onChange={(e) => pickFromList(e.target.value)}>
           {settlements.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
           <option value={OTHER}>Другой — вписать…</option>
         </select>
-        <input style={{ ...inputStyle, flex: "2 1 180px", ...(needMap ? st.inputWarn : null) }} value={value.address} placeholder={placeholder}
+        <input aria-label={`${label}: улица, дом`} aria-invalid={needMap || undefined} aria-describedby={needMap ? streetMsgId : undefined} style={{ ...inputStyle, flex: "2 1 180px", ...(needMap ? st.inputWarn : null) }} value={value.address} placeholder={placeholder}
           onChange={(e) => setText(e.target.value)} />
-        <button type="button" style={{ ...buttonStyle, ...(needMap ? st.buttonWarn : null) }} onClick={() => setMapOpen(true)}
+        <button type="button" aria-label={`${label}: отметить на карте`} style={{ ...buttonStyle, ...(needMap ? st.buttonWarn : null) }} onClick={() => setMapOpen(true)}
           disabled={!cityReady(value)} title={!cityReady(value) ? "Сначала укажите населённый пункт" : undefined}>
           На карте
         </button>
       </div>
       {city.custom && (
         <>
-          <input style={{ ...inputStyle, ...(cityProblem(value) ? st.inputWarn : null) }} value={city.name} autoFocus
+          <input aria-label={`${label}: название населённого пункта`} aria-invalid={badCity || undefined} aria-describedby={city.status !== "ok" ? cityMsgId : undefined} style={{ ...inputStyle, ...(cityProblem(value) ? st.inputWarn : null) }} value={city.name} autoFocus
             placeholder="Населённый пункт, например: с. Ивановка" onChange={(e) => typeCity(e.target.value)} />
-          {city.status === "checking" && <div style={st.muted}>Проверяем населённый пункт…</div>}
-          {city.status === "ok" && <div style={st.ok}>✓ Населённый пункт найден: {city.name}</div>}
+          <div role="status" id={cityMsgId}>
+            {city.status === "checking" && <div style={st.muted}>Проверяем населённый пункт…</div>}
+            {city.status === "ok" && <div style={st.ok}><span aria-hidden="true">✓ </span>Населённый пункт найден: {city.name}</div>}
+            {city.status === "unavailable" && <div style={st.warn}><span aria-hidden="true">⚠️ </span>Не удалось проверить населённый пункт — попробуйте ещё раз чуть позже.</div>}
+            {city.status === "not_found" && <div style={st.warn}><span aria-hidden="true">⚠️ </span>Населённый пункт «{city.name}» не найден в ВКО и Абайской области — проверьте написание.</div>}
+          </div>
           {city.status === "unavailable" && (
-            <div style={st.warn}>⚠️ Не удалось проверить населённый пункт — попробуйте ещё раз чуть позже.{" "}
+            <div>
               <button type="button" style={st.link} onClick={() => typeCity(city.name)}>Проверить снова</button>
             </div>
           )}
-          {city.status === "not_found" && (
-            <div style={st.warn}>
-              ⚠️ Населённый пункт «{city.name}» не найден в ВКО и Абайской области — проверьте написание.
-              {city.suggestions?.length > 0 && (
-                <div>Возможно:{" "}
-                  {city.suggestions.map((name, i) => (
-                    <React.Fragment key={name}>
-                      {i > 0 && ", "}
-                      <button type="button" style={st.link} onClick={() => takeSuggestion(name)}>{name}</button>
-                    </React.Fragment>
-                  ))}
-                </div>
-              )}
+          {city.status === "not_found" && city.suggestions?.length > 0 && (
+            <div style={st.suggestions}>
+              Возможно:{" "}
+              {city.suggestions.map((name, i) => (
+                <React.Fragment key={name}>
+                  {i > 0 && ", "}
+                  <button type="button" style={st.link} onClick={() => takeSuggestion(name)}>{name}</button>
+                </React.Fragment>
+              ))}
             </div>
           )}
         </>
       )}
-      {value.status === "checking" && <div style={st.muted}>Ищем адрес на карте…</div>}
-      {value.status === "found" && value.address.trim() && <div style={st.ok}>✓ Адрес найден на карте</div>}
+      <div role="status" id={streetMsgId} style={needMap ? st.warn : value.status === "found" ? st.ok : st.muted}>
+        {streetMessage && (
+          <>
+            {needMap && <span aria-hidden="true">⚠️ </span>}
+            {value.status === "found" && <span aria-hidden="true">✓ </span>}
+            {streetMessage}
+          </>
+        )}
+      </div>
       {manual && (
         <div style={st.ok}>
-          ✓ Точка отмечена на карте{" "}
+          <span aria-hidden="true">✓ </span>Точка отмечена на карте{" "}
           <button type="button" style={st.link} onClick={() => setMapOpen(true)}>Изменить</button>{" "}
           <button type="button" style={st.link} onClick={() => onChange({ ...value, point: null, status: "idle" })}>Сбросить</button>
         </div>
       )}
-      {needMap && <div style={st.warn}>⚠️ {NEED_MAP_TEXT[value.status]}</div>}
       {mapOpen && (
         <MapPicker
           title={mapTitle}
@@ -226,10 +244,13 @@ const st = {
   wrap: { display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 0 },
   row: { display: "flex", gap: 8, flexWrap: "wrap" },
   city: { flex: "1 1 170px", minWidth: 0 },
-  inputWarn: { borderColor: "#e0a800", background: "#fffaf0" },
-  buttonWarn: { borderColor: "#e0a800", background: "#fff3c4", fontWeight: 600 },
-  muted: { fontSize: 12, color: "#777" },
-  ok: { fontSize: 12, color: "#1a7f37" },
-  warn: { fontSize: 12, color: "#8a5a00", background: "#fff6e0", borderRadius: 6, padding: "6px 8px", lineHeight: 1.4 },
-  link: { background: "none", border: "none", color: "#1976d2", cursor: "pointer", padding: 0, fontSize: 12, textDecoration: "underline" },
+  // #a86b00 — 4,2:1 к фону: рамка поля с проблемой заметна (нетекстовый контраст ≥ 3:1).
+  inputWarn: { borderColor: "#a86b00", background: "#fffaf0" },
+  buttonWarn: { borderColor: "#a86b00", background: "#fff3c4", fontWeight: 600 },
+  muted: { fontSize: 13, color: "#5f5f5f" },
+  ok: { fontSize: 13, color: "#1a7f37" },
+  warn: { fontSize: 13, color: "#7a4f00", background: "#fff6e0", borderRadius: 6, padding: "6px 8px", lineHeight: 1.45 },
+  // Ссылки-кнопки («Изменить», «Сбросить», подсказки) — с запасом под палец.
+  suggestions: { fontSize: 13, color: "#7a4f00" },
+  link: { background: "none", border: "none", color: "#1565c0", cursor: "pointer", padding: "10px 4px", fontSize: 14, textDecoration: "underline" },
 };

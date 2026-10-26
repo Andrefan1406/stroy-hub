@@ -7,6 +7,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { useDialog } from "./dialog";
 
 // Стандартный фикс для CRA/webpack: без него иконка маркера ищет
 // картинки по относительному пути от CSS и не находит их через бандлер.
@@ -50,6 +51,8 @@ async function reverseGeocode(lat, lng) {
 export default function MapPicker({ onSelect, onClose, initialAddress = "", center = null, centerIsPoint = false, cityCenter = null, title = "Отметьте точку на карте" }) {
   const mapDivRef = useRef(null);
   const markerRef = useRef(null);
+  const mapRef = useRef(null);
+  const placeAtRef = useRef(null); // поставить точку в заданное место (кнопка «в центр карты»)
   const [address, setAddress] = useState(initialAddress);
   const [suggested, setSuggested] = useState(""); // адрес по точке, если поле уже заполнено вручную
   const [point, setPoint] = useState(centerIsPoint && center ? { lat: center.lat, lng: center.lng } : null);
@@ -58,6 +61,16 @@ export default function MapPicker({ onSelect, onClose, initialAddress = "", cent
   const addressRef = useRef(initialAddress);
   addressRef.current = address;
   const autoRef = useRef(""); // последний адрес, подставленный автоматически
+  const dialogRef = useDialog(onClose, { initialFocus: "container" });
+
+  // В Telegram Mini App вертикальный свайп сворачивает окно — карту при этом
+  // не подвигать. Пока карта открыта, этот свайп выключаем.
+  useEffect(() => {
+    const webApp = window.Telegram?.WebApp;
+    if (!webApp?.disableVerticalSwipes) return undefined;
+    webApp.disableVerticalSwipes();
+    return () => webApp.enableVerticalSwipes?.();
+  }, []);
 
   useEffect(() => {
     const start = center ? [center.lat, center.lng] : cityCenter ? [cityCenter.lat, cityCenter.lng] : DEFAULT_CENTER;
@@ -95,6 +108,11 @@ export default function MapPicker({ onSelect, onClose, initialAddress = "", cent
       }
     };
     if (centerIsPoint && center) putMarker(start);
+    mapRef.current = map;
+    placeAtRef.current = (latlng) => {
+      putMarker(latlng);
+      placed(latlng);
+    };
 
     map.on("click", (e) => {
       putMarker(e.latlng);
@@ -111,11 +129,22 @@ export default function MapPicker({ onSelect, onClose, initialAddress = "", cent
   }, []);
 
   return (
-    <div style={s.overlay} onClick={onClose}>
-      <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ margin: "0 0 4px" }}>{title}</h3>
-        <div style={s.hint}>Щёлкните по нужному зданию или въезду — маркер можно перетащить. По этой точке рассчитываются время в пути и километраж.</div>
-        <div ref={mapDivRef} style={s.map} />
+    // Клик мимо окна его не закрывает: случайный тап по затемнению терял бы
+    // отмеченную точку и вписанный адрес. Закрыть — «Отмена» или Escape.
+    <div style={s.overlay}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="map-picker-title" tabIndex={-1} style={s.modal}>
+        <h3 id="map-picker-title" style={{ margin: "0 0 4px" }}>{title}</h3>
+        <div style={s.hint}>Нажмите на нужное здание или въезд — маркер можно перетащить. Или подвиньте карту так, чтобы место было в перекрестии, и нажмите «Поставить точку в центр карты». По этой точке рассчитываются время в пути и километраж.</div>
+        {/* Карта двигается и стрелками (Leaflet), а точку без мыши ставит
+            кнопка ниже — в центр, отмеченный перекрестием. */}
+        <div style={s.mapWrap}>
+          <div ref={mapDivRef} style={s.map} aria-label="Карта: двигайте стрелками, приближайте клавишами + и −" />
+          <div style={s.crosshair} aria-hidden="true" />
+        </div>
+        <button type="button" style={s.centerButton} onClick={() => mapRef.current && placeAtRef.current?.(mapRef.current.getCenter())}>
+          Поставить точку в центр карты
+        </button>
+        <div role="status" style={s.srOnly}>{point ? (loading ? "Точка отмечена, определяем адрес…" : "Точка отмечена") : ""}</div>
         {error && <div style={s.error}>{error}</div>}
         <label style={s.label}>
           Адрес для водителя
@@ -150,16 +179,22 @@ export default function MapPicker({ onSelect, onClose, initialAddress = "", cent
 }
 
 const s = {
-  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 },
-  modal: { background: "#fff", borderRadius: "10px", padding: "16px", width: "560px", maxWidth: "92vw", boxSizing: "border-box" },
-  map: { height: "320px", maxWidth: "100%", borderRadius: "8px", marginBottom: "10px", marginTop: "8px" },
-  hint: { fontSize: "12px", color: "#555", lineHeight: 1.4 },
-  suggest: { fontSize: "12px", color: "#555", marginTop: "6px" },
-  linkButton: { background: "none", border: "none", color: "#1976d2", cursor: "pointer", padding: 0, fontSize: "12px", textDecoration: "underline" },
-  label: { display: "flex", flexDirection: "column", gap: "4px", fontSize: "13px", color: "#444" },
-  input: { padding: "8px 10px", borderRadius: "6px", border: "1px solid #ccc", fontSize: "14px", width: "100%", boxSizing: "border-box" },
-  error: { background: "#fff0f0", color: "#c00", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px", fontSize: "12px" },
+  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: "12px", boxSizing: "border-box" },
+  modal: { background: "#fff", borderRadius: "12px", padding: "16px", width: "560px", maxWidth: "100%", maxHeight: "100%", overflowY: "auto", boxSizing: "border-box", outline: "none" },
+  mapWrap: { position: "relative", marginTop: "8px" },
+  map: { height: "min(320px, 45vh)", maxWidth: "100%", borderRadius: "8px" },
+  crosshair: { position: "absolute", left: "50%", top: "50%", width: "22px", height: "22px", marginLeft: "-11px", marginTop: "-11px", zIndex: 500, pointerEvents: "none",
+    background: "linear-gradient(#b3261e, #b3261e) center / 2px 100% no-repeat, linear-gradient(#b3261e, #b3261e) center / 100% 2px no-repeat" },
+  centerButton: { minHeight: "44px", width: "100%", margin: "8px 0 10px", background: "#fff", border: "1px solid #8c8c8c", borderRadius: "8px", cursor: "pointer", fontSize: "15px", color: "#1f1f1f" },
+  srOnly: { position: "absolute", width: "1px", height: "1px", margin: "-1px", padding: 0, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 },
+  hint: { fontSize: "13px", color: "#555", lineHeight: 1.4 },
+  suggest: { fontSize: "14px", color: "#555", marginTop: "6px" },
+  linkButton: { background: "none", border: "none", color: "#1565c0", cursor: "pointer", padding: "10px 4px", fontSize: "14px", textDecoration: "underline" },
+  label: { display: "flex", flexDirection: "column", gap: "4px", fontSize: "14px", color: "#444" },
+  // 16px — меньший шрифт iOS (и Telegram на iOS) при фокусе увеличивает масштаб страницы.
+  input: { minHeight: "44px", padding: "8px 12px", borderRadius: "8px", border: "1px solid #8c8c8c", fontSize: "16px", width: "100%", boxSizing: "border-box" },
+  error: { background: "#fff0f0", color: "#b00020", borderRadius: "6px", padding: "6px 10px", marginBottom: "8px", fontSize: "14px" },
   actions: { display: "flex", justifyContent: "flex-end", flexWrap: "wrap", gap: "8px", marginTop: "14px" },
-  primaryButton: { background: "#1976d2", color: "#fff", border: "none", borderRadius: "6px", padding: "8px 16px", cursor: "pointer", fontSize: "13px", fontWeight: 600 },
-  secondaryButton: { background: "#fff", border: "1px solid #ccc", borderRadius: "6px", padding: "8px 14px", cursor: "pointer", fontSize: "13px" },
+  primaryButton: { minHeight: "44px", background: "#1565c0", color: "#fff", border: "none", borderRadius: "8px", padding: "0 16px", cursor: "pointer", fontSize: "15px", fontWeight: 600 },
+  secondaryButton: { minHeight: "44px", background: "#fff", border: "1px solid #8c8c8c", borderRadius: "8px", padding: "0 16px", cursor: "pointer", fontSize: "15px" },
 };

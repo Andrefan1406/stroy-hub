@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.webkit.CookieManager;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -47,6 +48,11 @@ public class MainActivity extends Activity {
         settings.setDatabaseEnabled(true);
         settings.setSupportMultipleWindows(false); // target="_blank" — в этом же окне (или наружу, см. ниже)
         CookieManager.getInstance().setAcceptCookie(true);
+
+        // Без WebChromeClient WebView молча гасит JS-диалоги: confirm() сразу
+        // возвращает false, alert() не показывается. Сайт уже не полагается на
+        // них (свои окна подтверждения), это страховка для старых страниц.
+        web.setWebChromeClient(new WebChromeClient());
 
         web.setWebViewClient(new WebViewClient() {
             @Override
