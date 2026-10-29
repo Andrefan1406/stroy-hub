@@ -6,7 +6,7 @@
 // здесь только отображение и локальное admin-скрытие строки.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getAuth } from "firebase/auth";
-import styles from "../RequestPage.module.css";
+import styles from "./ConcretePendingRequestsTable.module.css";
 
 const API_URL = process.env.REACT_APP_CONCRETE_CHAT_API_URL || "http://localhost:4000";
 
@@ -65,12 +65,13 @@ const formatResponsible = (name, phone) => {
 // ни колонки, ни сортировки по этому признаку в таблице раствора. Тот же
 // флаг включает и колонку согласования энергетиков (прогрев бетона зимой).
 const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDeleteClick }) => (
-  <div style={{ marginBottom: "32px" }}>
-    <h4 style={{ textAlign: "center" }}>{title}</h4>
+  <div>
+    <h3 className={styles.sub}>{title}</h3>
     {rows.length === 0 ? (
-      <p style={{ color: "#888", textAlign: "center" }}>Неисполненных заявок нет.</p>
+      <p className={styles.state}>Неисполненных заявок нет.</p>
     ) : (
-      <table className={styles.requestTable}>
+      <div className={styles.scroll}>
+      <table className={styles.table}>
         <thead>
           <tr>
             <th>№ п/п</th>
@@ -97,13 +98,17 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
               <td>{formatVolume(row.volume_planned_m3)}</td>
               <td>{row.planned_delivery_date || "—"}</td>
               <td>{formatSubmittedAt(row.submitted_at)}</td>
-              {showGeoColumn && <td>{row.geo_approved ? "Согласовано" : "—"}</td>}
-              {showGeoColumn && <td>{row.energy_approved ? "Согласовано" : "—"}</td>}
+              {showGeoColumn && (
+                <td className={row.geo_approved ? styles.approved : styles.dash}>{row.geo_approved ? "Согласовано" : "—"}</td>
+              )}
+              {showGeoColumn && (
+                <td className={row.energy_approved ? styles.approved : styles.dash}>{row.energy_approved ? "Согласовано" : "—"}</td>
+              )}
               <td>{row.note || "—"}</td>
               <td>{formatResponsible(row.responsible_name, row.responsible_phone)}</td>
               {canDeleteRows && (
                 <td>
-                  <button type="button" onClick={() => onDeleteClick(row)}>
+                  <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={() => onDeleteClick(row)}>
                     Удалить
                   </button>
                 </td>
@@ -112,6 +117,7 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
           ))}
         </tbody>
       </table>
+      </div>
     )}
   </div>
 );
@@ -125,6 +131,7 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
   const [error, setError] = useState("");
   const [confirmingRow, setConfirmingRow] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const currentEmail = getAuth().currentUser?.email?.toLowerCase() || "";
   const canDeleteRows = ROW_DELETE_ALLOWED_EMAILS.includes(currentEmail);
@@ -163,6 +170,7 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
   const handleDeleteConfirmed = async () => {
     if (!confirmingRow) return;
     setDeleting(true);
+    setDeleteError("");
     try {
       await apiFetchWithAuth("/api/concrete-board/hide", {
         method: "POST",
@@ -171,7 +179,7 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
       setRows((prev) => prev.filter((r) => r.request_key !== confirmingRow.request_key));
       setConfirmingRow(null);
     } catch (err) {
-      alert(err.message || "Не удалось удалить строку");
+      setDeleteError(err.message || "Не удалось удалить строку");
     } finally {
       setDeleting(false);
     }
@@ -181,13 +189,20 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
   const mortarRows = rows.filter((r) => r.material === "Раствор");
 
   return (
-    <div style={{ marginTop: "40px", maxWidth: "1200px", marginLeft: "auto", marginRight: "auto" }}>
-      <h3 style={{ textAlign: "center" }}>Текущие заявки</h3>
+    <div className={styles.wrap}>
+      <h2 className={styles.heading}>Текущие заявки</h2>
 
-      {error && <div style={{ color: "#c00", marginBottom: "10px" }}>{error}</div>}
+      {error && (
+        <div className={styles.error} role="alert">
+          <span>{error}</span>
+          <button type="button" className={styles.btn} onClick={load}>
+            Повторить
+          </button>
+        </div>
+      )}
 
       {loading ? (
-        <p style={{ textAlign: "center" }}>Загрузка...</p>
+        <p className={styles.state} role="status">Загрузка...</p>
       ) : (
         <>
           <MaterialRequestsTable
@@ -208,14 +223,15 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
       )}
 
       {confirmingRow && (
-        <div className={styles.modalOverlay}>
-          <div className={styles.modal}>
-            <p>Вы действительно хотите удалить эту строку?</p>
-            <div className={styles.modalButtons}>
-              <button type="button" onClick={() => setConfirmingRow(null)} disabled={deleting}>
+        <div className={styles.overlay}>
+          <div className={styles.dialog} role="dialog" aria-modal="true" aria-label="Удаление строки">
+            <p className={styles.dialogText}>Вы действительно хотите удалить эту строку?</p>
+            {deleteError && <p className={styles.error} role="alert">{deleteError}</p>}
+            <div className={styles.dialogButtons}>
+              <button type="button" className={styles.btn} onClick={() => { setConfirmingRow(null); setDeleteError(""); }} disabled={deleting}>
                 Отмена
               </button>
-              <button type="button" onClick={handleDeleteConfirmed} disabled={deleting}>
+              <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={handleDeleteConfirmed} disabled={deleting}>
                 {deleting ? "Удаление..." : "Удалить"}
               </button>
             </div>
