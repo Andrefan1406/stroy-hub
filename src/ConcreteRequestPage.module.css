@@ -236,6 +236,54 @@
   color: var(--danger);
 }
 
+.help {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* Правило окна подачи — заметный блок под заголовком, а не серая строка. */
+.info {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.infoIcon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--brand);
+  font-size: 20px;
+}
+
+/* Пункт сводки «Не заполнено» — ссылка, ведущая к полю. */
+.noticeLink {
+  display: inline;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--danger);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.noticeLink:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* Сообщения над кнопками вместо всплывающих окон браузера. */
 .noticeError,
 .noticeOk {

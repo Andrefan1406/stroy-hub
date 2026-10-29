@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Select from 'react-select';
 import { getAuth } from 'firebase/auth';
-import { TbAlertCircle, TbCircleCheck } from 'react-icons/tb';
+import { TbAlertCircle, TbCircleCheck, TbInfoCircle } from 'react-icons/tb';
 import css from './ConcreteRequestPage.module.css';
 import {
   objectCategoryOptions,
@@ -39,6 +39,17 @@ const FIELD_LABELS = {
   poaDate: 'Дата доверенности', poaName: 'ФИО по доверенности', note: 'Примечание'
 };
 const FORM_ORDER = Object.keys(FIELD_LABELS);
+
+// Что именно сделать в пустом поле — текст под ним после неудачной отправки.
+const FIELD_ERRORS = {
+  date: 'Выберите дату', time: 'Выберите время', category: 'Выберите категорию',
+  object: 'Выберите объект', position: 'Выберите позицию', block: 'Выберите блок',
+  floor: 'Выберите этаж', constructive: 'Выберите конструктив', material: 'Выберите материал',
+  concreteGrade: 'Выберите марку', concreteClass: 'Выберите подвижность',
+  quantity: 'Введите количество в м³', poaNumber: 'Введите номер доверенности',
+  poaDate: 'Укажите дату доверенности', poaName: 'Введите ФИО по доверенности',
+  note: 'Напишите примечание'
+};
 
 // «Реализация» — единственная категория без цепочки объект/позиция/блок/
 // этаж/конструктив (это не объект строительства, а сбыт), поэтому эти поля
@@ -114,7 +125,12 @@ const selectStyles = {
     '&:hover': { borderColor: state.isFocused ? '#485875' : '#6b7280' },
   }),
   valueContainer: (base) => ({ ...base, padding: '0 12px' }),
-  placeholder: (base, state) => ({ ...base, color: state.isDisabled ? '#5b6472' : '#4b5563' }),
+  // Кнопки «очистить» и «раскрыть» — не уже 44px, как остальные цели нажатия.
+  indicatorsContainer: (base) => ({ ...base, alignSelf: 'stretch' }),
+  clearIndicator: (base) => ({ ...base, padding: '0 10px', display: 'flex', alignItems: 'center', minWidth: 44, justifyContent: 'center' }),
+  dropdownIndicator: (base) => ({ ...base, padding: '0 10px', display: 'flex', alignItems: 'center', minWidth: 44, justifyContent: 'center' }),
+  // Подсказка светлее значения (но ≥4,5:1), чтобы пустое поле не выглядело заполненным.
+  placeholder: (base, state) => ({ ...base, color: state.isDisabled ? '#5b6472' : '#6b7280' }),
   singleValue: (base) => ({ ...base, color: '#1f2937', whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip' }),
   option: (base, state) => ({
     ...base,
@@ -130,7 +146,7 @@ const selectStyles = {
 
 // Подпись над полем (настоящий <label>, привязан к полю через htmlFor);
 // звёздочка — поле обязательно для этой строки. error — текст под полем.
-const Field = ({ label, required, htmlFor, error, errorId, children }) => (
+const Field = ({ label, required, htmlFor, error, errorId, help, helpId, children }) => (
   <div className={css.field}>
     <label className={css.label} htmlFor={htmlFor}>
       {label}
@@ -142,32 +158,61 @@ const Field = ({ label, required, htmlFor, error, errorId, children }) => (
       )}
     </label>
     {children}
+    {help && <span id={helpId} className={css.help}>{help}</span>}
     {error && <span id={errorId} className={css.fieldError}>{error}</span>}
   </div>
 );
+
+// Короткие списки (до 6 вариантов) — обычный select: на телефоне это системный
+// выбор без клавиатуры и мелких кнопок; длинные — react-select с поиском.
+const NATIVE_SELECT_MAX = 6;
 
 // Выпадающий список, который отдаёт изменения в handleChange как обычный input.
 // disabledHint — что написать в неактивном поле, чтобы было ясно, чего оно ждёт.
 const SelectField = ({
   label, name, id, required, options, value, onChange, isDisabled = false, disabledHint, error
-}) => (
-  <Field label={label} required={required} htmlFor={id} error={error} errorId={`${id}-err`}>
-    <Select
-      inputId={id}
-      options={options.map((opt) => ({ value: opt, label: opt }))}
-      value={value ? { value, label: value } : null}
-      onChange={(selected) => onChange({ target: { name, value: selected ? selected.value : '' } })}
-      placeholder={isDisabled && disabledHint ? disabledHint : 'Выберите...'}
-      noOptionsMessage={() => 'Нет вариантов'}
-      isClearable
-      isDisabled={isDisabled}
-      menuPlacement='auto'
-      styles={selectStyles}
-      aria-invalid={error ? true : undefined}
-      aria-describedby={error ? `${id}-err` : undefined}
-    />
-  </Field>
-);
+}) => {
+  const placeholder = isDisabled && disabledHint ? disabledHint : 'Выберите...';
+  // Значение, которого нет в списке (например, из Умной заявки), всё равно показываем.
+  const nativeOptions = value && !options.includes(value) ? [value, ...options] : options;
+  return (
+    <Field label={label} required={required} htmlFor={id} error={error} errorId={`${id}-err`}>
+      {options.length <= NATIVE_SELECT_MAX ? (
+        <select
+          id={id}
+          name={name}
+          className={`${css.input} ${error ? css.inputError : ''}`}
+          value={value}
+          disabled={isDisabled}
+          onChange={(e) => onChange({ target: { name, value: e.target.value } })}
+          aria-required={required || undefined}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${id}-err` : undefined}
+        >
+          <option value=''>{placeholder}</option>
+          {nativeOptions.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+      ) : (
+        <Select
+          inputId={id}
+          options={options.map((opt) => ({ value: opt, label: opt }))}
+          value={value ? { value, label: value } : null}
+          onChange={(selected) => onChange({ target: { name, value: selected ? selected.value : '' } })}
+          placeholder={placeholder}
+          noOptionsMessage={() => 'Нет вариантов'}
+          isClearable
+          isDisabled={isDisabled}
+          menuPlacement='auto'
+          styles={selectStyles}
+          aria-invalid={error ? true : undefined}
+          aria-errormessage={error ? `${id}-err` : undefined}
+        />
+      )}
+    </Field>
+  );
+};
 
 const getActiveRequiredFields = (row) => {
   const activeFields = ['date', 'time', 'category', 'quantity', 'poaNumber', 'poaDate', 'poaName'];
@@ -373,12 +418,12 @@ const ConcreteRequestPage = () => {
     const byRow = new Map();
     missing.forEach((m) => {
       if (!byRow.has(m.index)) byRow.set(m.index, []);
-      byRow.get(m.index).push(FIELD_LABELS[m.field]);
+      byRow.get(m.index).push({ field: m.field, label: FIELD_LABELS[m.field] });
     });
     setNotice({
       kind: 'missing',
       count: missing.length,
-      rows: [...byRow.entries()].map(([index, labels]) => ({ index, labels })),
+      rows: [...byRow.entries()].map(([index, fields]) => ({ index, fields })),
     });
     setShowModal(false);
     setFocusId(`r${missing[0].index}-${missing[0].field}`);
@@ -544,7 +589,12 @@ const ConcreteRequestPage = () => {
       <div className={css.content}>
         <Link to='/' className={css.back}>← На главную</Link>
         <h1 className={css.title}>Заявка на бетон или раствор</h1>
-        {cutoffHint && <p className={css.subtitle}>{cutoffHint}</p>}
+        {cutoffHint && (
+          <p className={css.info}>
+            <TbInfoCircle className={css.infoIcon} aria-hidden='true' />
+            {cutoffHint}
+          </p>
+        )}
 
         <form onSubmit={handleSubmit} noValidate>
           {formRows.map((row, index) => {
@@ -552,14 +602,15 @@ const ConcreteRequestPage = () => {
             const onChange = (e) => handleChange(e, index);
             const hasBlocks = !!positionBlockOptions[row.position];
             const idOf = (name) => `r${index}-${name}`;
-            const errorOf = (name) => (fieldErrors.has(`${index}:${name}`) ? 'Заполните поле' : undefined);
+            const errorOf = (name) => (fieldErrors.has(`${index}:${name}`) ? FIELD_ERRORS[name] : undefined);
             const inputProps = (name) => ({
               id: idOf(name),
               name,
               onChange,
               'aria-required': required.has(name) || undefined,
               'aria-invalid': errorOf(name) ? true : undefined,
-              'aria-describedby': errorOf(name) ? `${idOf(name)}-err` : undefined,
+              'aria-describedby': [name === 'date' ? `${idOf(name)}-help` : null, errorOf(name) ? `${idOf(name)}-err` : null]
+                .filter(Boolean).join(' ') || undefined,
             });
             const inputClass = (name) => `${css.input} ${errorOf(name) ? css.inputError : ''}`;
             const notNeeded = !!row.position && !hasBlocks;
@@ -579,7 +630,15 @@ const ConcreteRequestPage = () => {
                 <div role='group' aria-labelledby={idOf('g-when')} className={css.group}>
                   <h3 id={idOf('g-when')} className={css.groupTitle}>Когда</h3>
                   <div className={css.gridWhen}>
-                    <Field label='Дата' required={required.has('date')} htmlFor={idOf('date')} error={errorOf('date')} errorId={`${idOf('date')}-err`}>
+                    <Field
+                      label='Дата'
+                      required={required.has('date')}
+                      htmlFor={idOf('date')}
+                      error={errorOf('date')}
+                      errorId={`${idOf('date')}-err`}
+                      help={`Ближайшая дата: ${minDate.split('-').reverse().slice(0, 2).join('.')}`}
+                      helpId={`${idOf('date')}-help`}
+                    >
                       <input
                         type='date'
                         className={inputClass('date')}
@@ -813,7 +872,15 @@ const ConcreteRequestPage = () => {
                 <ul className={css.noticeList}>
                   {notice.rows.map((r) => (
                     <li key={r.index}>
-                      {formRows.length > 1 ? `Заявка ${r.index + 1}: ` : ''}{r.labels.join(', ')}
+                      {formRows.length > 1 ? `Заявка ${r.index + 1}: ` : ''}
+                      {r.fields.map((f, i) => (
+                        <React.Fragment key={f.field}>
+                          {i > 0 && ', '}
+                          <button type='button' className={css.noticeLink} onClick={() => setFocusId(`r${r.index}-${f.field}`)}>
+                            {f.label}
+                          </button>
+                        </React.Fragment>
+                      ))}
                     </li>
                   ))}
                 </ul>
