@@ -7,6 +7,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getAuth } from "firebase/auth";
 import styles from "./ConcretePendingRequestsTable.module.css";
+import RequestDialog from "./RequestDialog";
 
 const API_URL = process.env.REACT_APP_CONCRETE_CHAT_API_URL || "http://localhost:4000";
 
@@ -70,54 +71,99 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
     {rows.length === 0 ? (
       <p className={styles.state}>Неисполненных заявок нет.</p>
     ) : (
-      <div className={styles.scroll}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>№ п/п</th>
-            <th>Объект</th>
-            <th>Позиция</th>
-            <th>Марка</th>
-            <th>Объём</th>
-            <th>Плановая дата</th>
-            <th>Подача заявки</th>
-            {showGeoColumn && <th>Геодезисты</th>}
-            {showGeoColumn && <th>Энергетики</th>}
-            <th>Примечание</th>
-            <th>Ответственный</th>
-            {canDeleteRows && <th>Действия</th>}
-          </tr>
-        </thead>
-        <tbody>
+      <>
+        {/* Широкий экран — таблица (блок прокручивается с клавиатуры). */}
+        <div className={styles.scroll} role="region" aria-label={`Таблица заявок: ${title}`} tabIndex={0}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th scope="col">№ п/п</th>
+                <th scope="col">Объект</th>
+                <th scope="col">Позиция</th>
+                <th scope="col">Марка</th>
+                <th scope="col">Объём</th>
+                <th scope="col">Плановая дата</th>
+                <th scope="col">Подача заявки</th>
+                {showGeoColumn && <th scope="col">Геодезисты</th>}
+                {showGeoColumn && <th scope="col">Энергетики</th>}
+                <th scope="col">Примечание</th>
+                <th scope="col">Ответственный</th>
+                {canDeleteRows && <th scope="col">Действия</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={row.request_key}>
+                  <td>{index + 1}</td>
+                  <td>{row.object_name || "—"}</td>
+                  <td>{row.block_position || "—"}</td>
+                  <td>{row.grade_class || "—"}</td>
+                  <td>{formatVolume(row.volume_planned_m3)}</td>
+                  <td>{row.planned_delivery_date || "—"}</td>
+                  <td>{formatSubmittedAt(row.submitted_at)}</td>
+                  {showGeoColumn && (
+                    <td className={row.geo_approved ? styles.approved : styles.dash}>{row.geo_approved ? "Согласовано" : "—"}</td>
+                  )}
+                  {showGeoColumn && (
+                    <td className={row.energy_approved ? styles.approved : styles.dash}>{row.energy_approved ? "Согласовано" : "—"}</td>
+                  )}
+                  <td>{row.note || "—"}</td>
+                  <td>{formatResponsible(row.responsible_name, row.responsible_phone)}</td>
+                  {canDeleteRows && (
+                    <td>
+                      <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={() => onDeleteClick(row)}>
+                        Удалить
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Телефон — те же данные карточками: объект сверху, статусы на виду. */}
+        <ul className={styles.cards}>
           {rows.map((row, index) => (
-            <tr key={row.request_key}>
-              <td>{index + 1}</td>
-              <td>{row.object_name || "—"}</td>
-              <td>{row.block_position || "—"}</td>
-              <td>{row.grade_class || "—"}</td>
-              <td>{formatVolume(row.volume_planned_m3)}</td>
-              <td>{row.planned_delivery_date || "—"}</td>
-              <td>{formatSubmittedAt(row.submitted_at)}</td>
-              {showGeoColumn && (
-                <td className={row.geo_approved ? styles.approved : styles.dash}>{row.geo_approved ? "Согласовано" : "—"}</td>
-              )}
-              {showGeoColumn && (
-                <td className={row.energy_approved ? styles.approved : styles.dash}>{row.energy_approved ? "Согласовано" : "—"}</td>
-              )}
-              <td>{row.note || "—"}</td>
-              <td>{formatResponsible(row.responsible_name, row.responsible_phone)}</td>
+            <li key={row.request_key} className={styles.cardItem}>
+              <p className={styles.cardHead}>
+                <span className={styles.cardNum}>{index + 1}.</span>
+                {row.object_name || "—"}
+              </p>
+              <p className={styles.cardPos}>{row.block_position || "—"}</p>
+              <dl className={styles.dl}>
+                <dt>Марка · объём</dt>
+                <dd>{[row.grade_class, formatVolume(row.volume_planned_m3)].filter((v) => v && v !== "—").join(" · ") || "—"}</dd>
+                <dt>Плановая дата</dt>
+                <dd>{row.planned_delivery_date || "—"}</dd>
+                <dt>Подача заявки</dt>
+                <dd>{formatSubmittedAt(row.submitted_at)}</dd>
+                {showGeoColumn && (
+                  <>
+                    <dt>Геодезисты</dt>
+                    <dd className={row.geo_approved ? styles.approved : styles.dash}>{row.geo_approved ? "Согласовано" : "—"}</dd>
+                    <dt>Энергетики</dt>
+                    <dd className={row.energy_approved ? styles.approved : styles.dash}>{row.energy_approved ? "Согласовано" : "—"}</dd>
+                  </>
+                )}
+                {row.note && (
+                  <>
+                    <dt>Примечание</dt>
+                    <dd>{row.note}</dd>
+                  </>
+                )}
+                <dt>Ответственный</dt>
+                <dd>{formatResponsible(row.responsible_name, row.responsible_phone)}</dd>
+              </dl>
               {canDeleteRows && (
-                <td>
-                  <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={() => onDeleteClick(row)}>
-                    Удалить
-                  </button>
-                </td>
+                <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={() => onDeleteClick(row)}>
+                  Удалить
+                </button>
               )}
-            </tr>
+            </li>
           ))}
-        </tbody>
-      </table>
-      </div>
+        </ul>
+      </>
     )}
   </div>
 );
@@ -201,42 +247,43 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
         </div>
       )}
 
-      {loading ? (
+      {loading && rows.length === 0 ? (
         <p className={styles.state} role="status">Загрузка...</p>
       ) : (
-        <>
-          <MaterialRequestsTable
-            title="Бетон"
-            rows={concreteRows}
-            showGeoColumn
-            canDeleteRows={canDeleteRows}
-            onDeleteClick={setConfirmingRow}
-          />
-          <MaterialRequestsTable
-            title="Раствор"
-            rows={mortarRows}
-            showGeoColumn={false}
-            canDeleteRows={canDeleteRows}
-            onDeleteClick={setConfirmingRow}
-          />
-        </>
+        !(error && rows.length === 0) && (
+          <>
+            {loading && <p className={styles.updating} role="status">Обновляется...</p>}
+            <MaterialRequestsTable
+              title="Бетон"
+              rows={concreteRows}
+              showGeoColumn
+              canDeleteRows={canDeleteRows}
+              onDeleteClick={setConfirmingRow}
+            />
+            <MaterialRequestsTable
+              title="Раствор"
+              rows={mortarRows}
+              showGeoColumn={false}
+              canDeleteRows={canDeleteRows}
+              onDeleteClick={setConfirmingRow}
+            />
+          </>
+        )
       )}
 
       {confirmingRow && (
-        <div className={styles.overlay}>
-          <div className={styles.dialog} role="dialog" aria-modal="true" aria-label="Удаление строки">
-            <p className={styles.dialogText}>Вы действительно хотите удалить эту строку?</p>
-            {deleteError && <p className={styles.error} role="alert">{deleteError}</p>}
-            <div className={styles.dialogButtons}>
-              <button type="button" className={styles.btn} onClick={() => { setConfirmingRow(null); setDeleteError(""); }} disabled={deleting}>
-                Отмена
-              </button>
-              <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={handleDeleteConfirmed} disabled={deleting}>
-                {deleting ? "Удаление..." : "Удалить"}
-              </button>
-            </div>
+        <RequestDialog title="Удаление строки" onClose={() => { setConfirmingRow(null); setDeleteError(""); }}>
+          <p className={styles.dialogText}>Вы действительно хотите удалить эту строку?</p>
+          {deleteError && <p className={styles.error} role="alert">{deleteError}</p>}
+          <div className={styles.dialogButtons}>
+            <button type="button" className={styles.btn} onClick={() => { setConfirmingRow(null); setDeleteError(""); }} disabled={deleting}>
+              Отмена
+            </button>
+            <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={handleDeleteConfirmed} disabled={deleting}>
+              {deleting ? "Удаление..." : "Удалить"}
+            </button>
           </div>
-        </div>
+        </RequestDialog>
       )}
     </div>
   );

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import Select from 'react-select';
 import { getAuth } from 'firebase/auth';
-import { TbAlertCircle, TbCircleCheck, TbX } from 'react-icons/tb';
+import { TbAlertCircle, TbCircleCheck } from 'react-icons/tb';
 import css from './ConcreteRequestPage.module.css';
 import {
   objectCategoryOptions,
@@ -15,6 +15,7 @@ import {
   materialGradeOptions
 } from './data/constructionData';
 import ConcretePendingRequestsTable from './components/ConcretePendingRequestsTable';
+import Dialog from './components/RequestDialog';
 import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
 
 // poaNumber/poaDate/poaName — доверенность на получение бетона (номер,
@@ -200,63 +201,6 @@ const pluralRequests = (n) => {
   return 'заявок';
 };
 
-// Диалог: роль dialog, фокус внутрь при открытии и назад при закрытии,
-// Tab не уходит за пределы окна, Escape закрывает.
-const Dialog = ({ title, onClose, children }) => {
-  const boxRef = useRef(null);
-
-  useEffect(() => {
-    const previous = document.activeElement;
-    const box = boxRef.current;
-    const first = box && box.querySelector('input, select, textarea, button:not([data-dialog-close])');
-    if (first) first.focus();
-    return () => {
-      if (previous && previous.focus) previous.focus();
-    };
-  }, []);
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      onClose();
-      return;
-    }
-    if (e.key !== 'Tab' || !boxRef.current) return;
-    const items = boxRef.current.querySelectorAll('input, select, textarea, button:not([disabled])');
-    if (!items.length) return;
-    const firstItem = items[0];
-    const lastItem = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === firstItem) {
-      e.preventDefault();
-      lastItem.focus();
-    } else if (!e.shiftKey && document.activeElement === lastItem) {
-      e.preventDefault();
-      firstItem.focus();
-    }
-  };
-
-  return (
-    <div className={css.overlay}>
-      <div
-        ref={boxRef}
-        className={css.dialog}
-        role='dialog'
-        aria-modal='true'
-        aria-labelledby='concrete-dialog-title'
-        onKeyDown={handleKeyDown}
-      >
-        <div className={css.dialogHead}>
-          <h3 id='concrete-dialog-title' className={css.dialogTitle}>{title}</h3>
-          <button type='button' className={css.dialogClose} onClick={onClose} aria-label='Закрыть' data-dialog-close>
-            <TbX aria-hidden='true' />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-};
-
 const ConcreteRequestPage = () => {
   const location = useLocation();
   // Заявка пришла из Умной заявки (см. SmartRequestPage.jsx: handleProceed) —
@@ -281,6 +225,7 @@ const ConcreteRequestPage = () => {
   // Увеличивается после каждой успешно поданной заявки, чтобы таблица
   // неисполненных заявок сразу перезапросила список (см. ConcretePendingRequestsTable).
   const [pendingRefreshSignal, setPendingRefreshSignal] = useState(0);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
   const noticeRef = useRef(null);
 
   useEffect(() => {
@@ -299,6 +244,18 @@ const ConcreteRequestPage = () => {
     }
     setFocusId(null);
   }, [focusId]);
+
+  // Когда на телефоне открыта экранная клавиатура, закреплённая панель
+  // отправки отпускается в обычный поток: иначе она вместе с клавиатурой
+  // занимает пол-экрана и закрывает поле, в которое вводят.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return undefined;
+    const update = () => setKeyboardOpen(vv.height < window.innerHeight * 0.75);
+    update();
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
+  }, []);
 
   useEffect(() => {
     if (notice && !focusId && noticeRef.current) {
@@ -351,6 +308,8 @@ const ConcreteRequestPage = () => {
   }
 
   const addRow = () => {
+    // Фокус и прокрутка — на первое поле новой заявки, чтобы было видно, что она добавилась.
+    setFocusId(`r${formRows.length}-date`);
     setFormRows(prev => [...prev, emptyConcreteRow()]);
   };
 
@@ -874,9 +833,12 @@ const ConcreteRequestPage = () => {
             </div>
           )}
 
-          <div className={css.actions}>
-            <button type='button' onClick={addRow} className={css.btnSecondary}>Добавить ещё одну заявку</button>
-            <button type='submit' className={css.btnPrimary}>Отправить заявку</button>
+          <button type='button' onClick={addRow} className={css.addBtn}>+ Добавить ещё одну заявку</button>
+
+          <div className={`${css.actions} ${keyboardOpen ? css.actionsStatic : ''}`}>
+            <button type='submit' className={css.btnPrimary}>
+              {formRows.length > 1 ? `Отправить заявки (${formRows.length})` : 'Отправить заявку'}
+            </button>
           </div>
         </form>
 
