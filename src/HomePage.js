@@ -1,17 +1,53 @@
-import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { getAuth } from "firebase/auth";
 import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
 import { fetchGprReportBlock, gprBlockMessage } from './gprReportGate';
 import { ridesApiFetch } from './rides/api';
 import { ROLE_HOME_PATH } from './rides/constants';
 import { fetchManualBlock, manualBlockMessage } from './manualBlockGate';
+import {
+  TbAlertTriangle, TbBolt, TbCar, TbChartBar, TbChevronRight, TbCrane, TbFlask,
+  TbLayoutGrid, TbLoader2, TbLock, TbRulerMeasure, TbSparkles, TbTruck, TbUsers, TbWall,
+} from 'react-icons/tb';
+import styles from './HomePage.module.css';
 
+const BLOCK_NOTICE_ID = 'home-block-reasons';
+const BLOCK_NOTICE_TITLE_ID = 'home-block-reasons-title';
+const GATE_CHECKS_COUNT = 3;
+const GATE_CHECKS_TIMEOUT_MS = 8000;
 
 const HomePage = () => {
-  const navigate = useNavigate();
-
   const currentEmail = getAuth().currentUser?.email?.toLowerCase() || "";
+
+  // Сколько из трёх проверок блокировки (люди, ГПР, ручная) ещё не ответили.
+  // Пока ждём, плитки техники и бетона показывают «Проверяем доступ…» и не
+  // ведут в форму — иначе они сначала активны, а через секунду сереют, и
+  // плашка с причинами сдвигает сетку под пальцем. Ошибка проверки, как и
+  // раньше, ничего не блокирует (fail-open): .finally срабатывает и на ней.
+  const [gateChecksPending, setGateChecksPending] = useState(currentEmail ? GATE_CHECKS_COUNT : 0);
+  const markGateChecked = () => setGateChecksPending((n) => Math.max(0, n - 1));
+
+  // Зависшая проверка не должна запирать плитки навсегда: один таймер с
+  // момента открытия страницы. Сработал раньше, чем ответили все проверки, —
+  // плитки открываются (fail-open), а опоздавшие ответы на главной уже не
+  // показываем: иначе плашка вставилась бы сверху и сдвинула сетку. Сама
+  // блокировка от этого не теряется — её всё равно проверят гварды форм.
+  const [gateChecksGaveUp, setGateChecksGaveUp] = useState(false);
+  // Хотя бы одна проверка упала с ошибкой — плитки открыты (fail-open), но
+  // честно пишем, что доступ проверят уже в форме.
+  const [gateCheckFailed, setGateCheckFailed] = useState(false);
+  const gateTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (!currentEmail) return undefined;
+    gateTimerRef.current = setTimeout(() => setGateChecksGaveUp(true), GATE_CHECKS_TIMEOUT_MS);
+    return () => clearTimeout(gateTimerRef.current);
+  }, [currentEmail]);
+
+  useEffect(() => {
+    if (gateChecksPending === 0) clearTimeout(gateTimerRef.current);
+  }, [gateChecksPending]);
 
   // Показываем предупреждение сразу на главной (а не только в момент
   // отправки заявки на бетон/раствор — см. ConcreteRequestPage.js), чтобы
@@ -23,7 +59,11 @@ const HomePage = () => {
     if (!currentEmail) return;
     fetchMissingGapDates()
       .then(setMissingGapDates)
-      .catch((err) => console.error('Не удалось проверить пропуски в отчётах по людям:', err));
+      .catch((err) => {
+        console.error('Не удалось проверить пропуски в отчётах по людям:', err);
+        setGateCheckFailed(true);
+      })
+      .finally(markGateChecked);
   }, [currentEmail]);
 
   // Отдельная, независимая проверка — блокировка за незакрытый пропуск в
@@ -40,7 +80,11 @@ const HomePage = () => {
         setGprBlocked(blocked);
         setGprGaps(gaps);
       })
-      .catch((err) => console.error('Не удалось проверить пропуски в отчётах ГПР:', err));
+      .catch((err) => {
+        console.error('Не удалось проверить пропуски в отчётах ГПР:', err);
+        setGateCheckFailed(true);
+      })
+      .finally(markGateChecked);
   }, [currentEmail]);
 
   // Если у сотрудника уже есть роль в системе поездок и при этом включён
@@ -64,7 +108,11 @@ const HomePage = () => {
     if (!currentEmail) return;
     fetchManualBlock()
       .then(setManualBlock)
-      .catch((err) => console.error('Не удалось проверить ручную блокировку:', err));
+      .catch((err) => {
+        console.error('Не удалось проверить ручную блокировку:', err);
+        setGateCheckFailed(true);
+      })
+      .finally(markGateChecked);
   }, [currentEmail]);
 
   const isRequestsBlocked = manualBlock.blocked || missingGapDates.length > 0 || gprBlocked;
@@ -76,162 +124,236 @@ const HomePage = () => {
         ? gprBlockMessage(gprGaps)
         : undefined;
 
+  const rideHomePath = rideRole && ROLE_HOME_PATH[rideRole];
+  // 'unverified' — проверки не успели (тайм-аут) или упали: плитки открыты,
+  // а опоздавшие ответы на главной уже не показываем — иначе блок с
+  // причинами вставился бы в сетку и сдвинул её.
+  const gateState = gateChecksGaveUp
+    ? 'unverified'
+    : gateChecksPending > 0
+      ? 'pending'
+      : isRequestsBlocked
+        ? 'blocked'
+        : gateCheckFailed
+          ? 'unverified'
+          : 'open';
+
+  // Все причины блокировки — одним блоком, у каждой свой путь к исправлению.
+  // Тексты — из тех же gate-модулей, что и у форм.
+  const blockReasons = [
+    manualBlock.blocked && {
+      key: 'manual',
+      text: manualBlockMessage(manualBlock.comment),
+    },
+    missingGapDates.length > 0 && {
+      key: 'people',
+      // Заголовок блока уже говорит, что заявки закрыты, — убираем повтор.
+      text: gapWarningMessage(missingGapDates).replace(/^Подача заявок недоступна\.\s*/, ''),
+      action: { label: 'Заполнить отчёт по людям', path: '/people-report' },
+    },
+    gprBlocked && {
+      key: 'gpr',
+      text: gprBlockMessage(gprGaps),
+      action: { label: 'Открыть таблицы ГПР', path: '/grafiki' },
+    },
+  ].filter(Boolean);
+
+  // Тап по заблокированной плитке не ведёт в форму (как и раньше), а
+  // показывает причину: на телефоне подсказка title не видна.
+  const noticeRef = useRef(null);
+  const showBlockReasons = () => {
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    noticeRef.current?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
+    noticeRef.current?.focus({ preventScroll: true });
+  };
+
+  // Причины — под плитками техники и бетона, а не над всей сеткой:
+  // так при их появлении ничего выше не сдвигается под пальцем.
+  // Показываем, когда ответили все проверки (иначе блок дорастал бы
+  // по одной причине); появление — плавным раскрытием по высоте.
+  const resourceNotice = gateState === 'blocked' && blockReasons.length > 0 ? (
+    <div className={styles.noticeReveal}>
+      <div className={styles.noticeClip}>
+        <div
+          id={BLOCK_NOTICE_ID}
+          ref={noticeRef}
+          tabIndex={-1}
+          role="region"
+          aria-labelledby={BLOCK_NOTICE_TITLE_ID}
+          className={styles.notice}
+        >
+          <p id={BLOCK_NOTICE_TITLE_ID} className={styles.noticeTitle}>
+            <TbAlertTriangle className={styles.noticeIcon} aria-hidden="true" />
+            Заявки на технику и бетон пока закрыты
+          </p>
+          <ul className={blockReasons.length > 1 ? styles.noticeList : styles.noticeListSingle}>
+            {blockReasons.map(({ key, text, action }) => (
+              <li key={key} className={styles.noticeItem}>
+                <span>{text}</span>
+                {action && (
+                  <Link to={action.path} className={styles.noticeAction}>
+                    {action.label}
+                    <TbChevronRight aria-hidden="true" />
+                  </Link>
+                )}
+              </li>
+            ))}
+          </ul>
+          {/* Умная заявка намеренно не проверяет блокировки (см.
+              SmartRequestPage.jsx) — это и есть выход для заблокированных. */}
+          <p className={styles.noticeAlt}>
+            Подать заявку можно и сейчас — через{' '}
+            <Link to="/smart-request" className={styles.noticeAction}>
+              Умную заявку
+              <TbChevronRight aria-hidden="true" />
+            </Link>
+          </p>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
-    <div style={styles.container}>
-      <img src="/Логотип.png" alt="Логотип" style={styles.logo} />
+    <div className={styles.page}>
+      <header className={styles.topbar}>
+        <div className={styles.topbarInner}>
+          <img src="/Логотип.png" alt="VK Development Group" className={styles.logo} />
+        </div>
+      </header>
 
-      <h1>Добро пожаловать!</h1>
+      <main className={styles.content}>
+        <h1 className={styles.title}>Добро пожаловать!</h1>
+        <p className={styles.subtitle}>Внутренний портал VK Development Group</p>
 
-      {manualBlock.blocked && (
-        <div style={{ ...styles.gapWarning, whiteSpace: 'pre-wrap' }}>{manualBlockMessage(manualBlock.comment)}</div>
-      )}
+        {/* Живой регион есть на странице всегда, а текст в него попадает, когда
+            ответили проверки, — так скринридер его зачитывает (регион,
+            появившийся сразу с текстом, многие не озвучивают). */}
+        <div role="status" className={styles.srOnly}>
+          {gateState === 'blocked' ? 'Заявки на технику и бетон пока закрыты. Причины — в блоке ниже.' : ''}
+        </div>
 
-      {missingGapDates.length > 0 && (
-        <div style={styles.gapWarning}>{gapWarningMessage(missingGapDates)}</div>
-      )}
+        <Link to="/smart-request" className={styles.smart}>
+          <span className={styles.tileIcon} aria-hidden="true"><TbSparkles /></span>
+          <span className={styles.tileLabel}>Умная заявка (AI)</span>
+          <TbChevronRight className={styles.chevron} aria-hidden="true" />
+        </Link>
 
-      {gprBlocked && (
-        <div style={styles.gapWarning}>{gprBlockMessage(gprGaps)}</div>
-      )}
+        <Section title="Заявки на ресурсы" after={resourceNotice}>
+          <Tile
+            icon={<TbCrane />}
+            to="/request"
+            gate={gateState}
+            onBlockedClick={showBlockReasons}
+            title={blockedTitle}
+          >
+            Заявка на технику
+          </Tile>
+          <Tile
+            icon={<TbTruck />}
+            to="/concrete-request"
+            gate={gateState}
+            onBlockedClick={showBlockReasons}
+            title={blockedTitle}
+          >
+            Заявка на бетон и раствор
+          </Tile>
+          <Tile icon={<TbLayoutGrid />} to="/blbrequest">
+            Заявка на брусчатку
+          </Tile>
+          <Tile icon={<TbWall />} to="/znbrequest">
+            Заявка на ж/б изделия
+          </Tile>
+        </Section>
 
-      <button onClick={() => navigate('/smart-request')} style={styles.smartButton}>
-        ✦ Умная заявка (AI)
-      </button>
+        <Section title="Инженерные службы">
+          <Tile icon={<TbBolt />} to="/electricans-request">
+            Заявка электриков
+          </Tile>
+          <Tile icon={<TbRulerMeasure />} to="/geo-request">
+            Заявка геодезистов
+          </Tile>
+          <Tile icon={<TbFlask />} to="/lab-request">
+            Лабораторные испытания
+          </Tile>
+        </Section>
 
-      <button
-        onClick={() => navigate('/request')}
-        disabled={isRequestsBlocked}
-        style={isRequestsBlocked ? styles.buttonDisabled : styles.button}
-        title={blockedTitle}
-      >
-        Заявка на технику
-      </button>
+        <Section title="Отчёты">
+          <Tile icon={<TbUsers />} to="/people-report">
+            Отчёты по людям
+          </Tile>
+          <Tile icon={<TbChartBar />} to="/reports-dashboard">
+            Графики и отчёты
+          </Tile>
+        </Section>
 
-      <button
-        onClick={() => navigate('/concrete-request')}
-        disabled={isRequestsBlocked}
-        style={isRequestsBlocked ? styles.buttonDisabled : styles.button}
-        title={blockedTitle}
-      >
-        Заявка на бетон и раствор
-      </button>
-
-      <button onClick={() => navigate('/electricans-request')} style={styles.button}>
-        Заявка электриков
-      </button>
-
-      <button onClick={() => navigate('/geo-request')} style={styles.button}>
-        Заявка геодезистов
-      </button>
-
-      <button onClick={() => navigate('/lab-request')} style={styles.button}>
-        Лабораторные испытания
-      </button>
-
-      <button onClick={() => navigate('/blbrequest')} style={styles.button}>
-        Заявка на брусчатку
-      </button>
-
-      <button onClick={() => navigate('/znbrequest')} style={styles.button}>
-        Заявка на ж/б изделия
-      </button>
-
-      <button onClick={() => navigate('/people-report')} style={styles.button}>
-        Отчёты по людям
-      </button>
-
-      <button
-        onClick={() => navigate('/reports-dashboard')}
-        style={{ ...styles.button, background: 'red' }}
-      >
-        Графики и отчёты
-      </button>
-
-      {rideRole && ROLE_HOME_PATH[rideRole] && (
-        <button onClick={() => navigate(ROLE_HOME_PATH[rideRole])} style={styles.rideButton}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style={{ verticalAlign: 'middle', marginRight: '8px' }}>
-            <path d="M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8l-2.08-5.99zM6.5 16C5.67 16 5 15.33 5 14.5S5.67 13 6.5 13s1.5.67 1.5 1.5S7.33 16 6.5 16zm11 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zM5 11l1.5-4.5h11L19 11H5z" />
-          </svg>
-          Служебный транспорт
-        </button>
-      )}
+        {/* Кнопка поездок — только у кого есть роль в системе поездок, поэтому
+            без неё не показываем и сам раздел. */}
+        {rideHomePath && (
+          <Section title="Транспорт">
+            <Tile icon={<TbCar />} to={rideHomePath}>
+              Служебный транспорт
+            </Tile>
+          </Section>
+        )}
+      </main>
     </div>
   );
 };
 
-const styles = {
-  container: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    minHeight: '100vh',
-    textAlign: 'center',
-    gap: '20px',
-    paddingTop: '40px',
-    position: 'relative'
-  },
+const Section = ({ title, children, after = null }) => (
+  <section className={styles.section}>
+    <h2 className={styles.sectionTitle}>{title}</h2>
+    <div className={styles.grid}>{children}</div>
+    {after}
+  </section>
+);
 
-  logo: {
-    width: '300px',
-    maxWidth: '80%'
-  },
+// gate — состояние плиток, закрываемых проверками блокировки:
+// 'pending' — проверки ещё идут, 'blocked' — есть причина, 'open' — можно,
+// 'unverified' — проверить не удалось (форма проверит сама).
+// Во всех состояниях это одна и та же ссылка (<Link>): смена типа элемента
+// перемонтировала бы её, и фокус с клавиатуры/скринридера улетал бы в начало
+// страницы. Закрытая плитка не ведёт в форму, а показывает причины; пока
+// идёт проверка — не делает ничего.
+const Tile = ({ icon, children, to, gate = 'open', onBlockedClick, title }) => {
+  const blocked = gate === 'blocked';
+  const pending = gate === 'pending';
+  const unverified = gate === 'unverified';
+  const tileClass = [styles.tile, blocked && styles.tileBlocked, pending && styles.tilePending]
+    .filter(Boolean)
+    .join(' ');
 
+  const handleClick = (event) => {
+    if (pending) event.preventDefault();
+    if (blocked) {
+      event.preventDefault();
+      onBlockedClick?.();
+    }
+  };
 
-
-
-
-  gapWarning: {
-    background: '#fff0f0',
-    color: '#c00',
-    border: '1px solid #f5b5b5',
-    borderRadius: '8px',
-    padding: '12px 18px',
-    maxWidth: '420px',
-    fontSize: '14px',
-    fontWeight: '600',
-  },
-  button: {
-    padding: '10px 20px',
-    background: '#007bff',
-    color: 'white',
-    border: 'none',
-    borderRadius: '5px',
-    cursor: 'pointer',
-    fontSize: '16px',
-    width: '300px'
-  },
-  buttonDisabled: {
-    padding: '10px 20px',
-    background: '#b0b0b0',
-    color: '#e8e8e8',
-    border: 'none',
-    borderRadius: '5px',
-    cursor: 'not-allowed',
-    fontSize: '16px',
-    width: '300px'
-  },
-  smartButton: {
-    padding: '12px 20px',
-    background: 'linear-gradient(135deg, #6610f2, #007bff)',
-    color: 'white',
-    border: 'none',
-    borderRadius: '8px',
-    cursor: 'pointer',
-    fontSize: '16px',
-    fontWeight: '700',
-    width: '300px',
-    boxShadow: '0 4px 12px rgba(102,16,242,0.35)',
-  },
-  rideButton: {
-    padding: '10px 20px',
-    background: '#28a745',
-    color: 'white',
-    border: 'none',
-    borderRadius: '5px',
-    cursor: 'pointer',
-    fontSize: '16px',
-    width: '300px'
-  }
+  return (
+    <Link
+      to={to}
+      className={tileClass}
+      onClick={handleClick}
+      aria-disabled={pending || undefined}
+      aria-describedby={blocked ? BLOCK_NOTICE_TITLE_ID : undefined}
+      title={blocked ? title : undefined}
+    >
+      <span className={styles.tileIcon} aria-hidden="true">{icon}</span>
+      <span className={styles.tileLabel}>
+        {children}
+        {blocked && <span className={styles.tileStatus}>Закрыто — нажмите, чтобы узнать почему</span>}
+        {pending && <span className={styles.tileStatusMuted}>Проверяем доступ…</span>}
+        {unverified && (
+          <span className={styles.tileStatusMuted}>Не удалось проверить доступ — проверим при открытии формы</span>
+        )}
+      </span>
+      {blocked && <TbLock className={styles.chevron} aria-hidden="true" />}
+      {pending && <TbLoader2 className={`${styles.chevron} ${styles.spinner}`} aria-hidden="true" />}
+      {!blocked && !pending && <TbChevronRight className={styles.chevron} aria-hidden="true" />}
+    </Link>
+  );
 };
 
 export default HomePage;
