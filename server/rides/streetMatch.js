@@ -94,7 +94,12 @@ function matchResult(text, item, preciseRank) {
   if (!query.words.some((w) => candidates.some((c) => sameWord(w, c)))) return null;
 
   const rankOk = Number(item.place_rank) >= preciseRank;
-  const houseOk = !query.house || sameHouse(query.house, addr.house_number || '');
+  // Номера дома в запросе нет — это поиск места по названию («Штабы»), и
+  // точным считается только ответ, целиком названный так же; здание с этой
+  // улицей в названии («Касым кайсенова 34») на просто «Кайсенова» не годится.
+  const nameWords = wordsOf(name);
+  const nameIsQuery = nameWords.length > 0 && nameWords.every((w) => query.words.some((q) => sameWord(q, w)));
+  const houseOk = query.house ? sameHouse(query.house, addr.house_number || '') : nameIsQuery;
   const parts = [];
   if (name && fold(name) !== fold(road) && rankOk) parts.push(name);
   if (road) parts.push(road);

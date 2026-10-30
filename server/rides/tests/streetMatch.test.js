@@ -47,6 +47,7 @@ test('номер дома не совпал или не указан в отве
   assert.equal(matchResult('Протозанова 10', item('улица Протозанова', '12'), 28).precise, false);
   assert.equal(matchResult('Протозанова 10', item('улица Протозанова', undefined), 28).precise, false);
   assert.equal(matchResult('Протозанова', item('улица Протозанова', undefined, { place_rank: 26 }), 28).precise, false);
+  assert.equal(matchResult('Кайсенова', item('улица Кайсенова', '34', { name: 'Касым кайсенова 34' }), 28).precise, false, 'улица без дома — не здание');
 });
 
 test('организация находится по названию, подпись — как на карте', () => {
