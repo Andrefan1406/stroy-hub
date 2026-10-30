@@ -170,13 +170,13 @@ const NATIVE_SELECT_MAX = 6;
 // Выпадающий список, который отдаёт изменения в handleChange как обычный input.
 // disabledHint — что написать в неактивном поле, чтобы было ясно, чего оно ждёт.
 const SelectField = ({
-  label, name, id, required, options, value, onChange, isDisabled = false, disabledHint, error
+  label, name, id, required, options, value, onChange, isDisabled = false, disabledHint, error, help
 }) => {
   const placeholder = isDisabled && disabledHint ? disabledHint : 'Выберите...';
   // Значение, которого нет в списке (например, из Умной заявки), всё равно показываем.
   const nativeOptions = value && !options.includes(value) ? [value, ...options] : options;
   return (
-    <Field label={label} required={required} htmlFor={id} error={error} errorId={`${id}-err`}>
+    <Field label={label} required={required} htmlFor={id} error={error} errorId={`${id}-err`} help={help} helpId={`${id}-help`}>
       {options.length <= NATIVE_SELECT_MAX ? (
         <select
           id={id}
@@ -187,7 +187,7 @@ const SelectField = ({
           onChange={(e) => onChange({ target: { name, value: e.target.value } })}
           aria-required={required || undefined}
           aria-invalid={error ? true : undefined}
-          aria-describedby={error ? `${id}-err` : undefined}
+          aria-describedby={[help ? `${id}-help` : null, error ? `${id}-err` : null].filter(Boolean).join(' ') || undefined}
         >
           <option value=''>{placeholder}</option>
           {nativeOptions.map((opt) => (
@@ -753,8 +753,9 @@ const ConcreteRequestPage = () => {
                       options={MATERIAL_OPTIONS}
                       value={row.material}
                       onChange={onChange}
-                      isDisabled={hasBlocks}
-                      disabledHint='Определяется по конструктиву'
+                      isDisabled={hasBlocks || (!row.position && row.category !== REALIZATION_CATEGORY)}
+                      disabledHint={hasBlocks ? 'Автоматически' : 'Сначала выберите позицию'}
+                      help={hasBlocks ? 'Зависит от конструктива: кладка — раствор, остальное — бетон.' : undefined}
                       error={errorOf('material')}
                     />
                     <SelectField
