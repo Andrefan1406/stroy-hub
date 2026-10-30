@@ -1,9 +1,10 @@
-// Обновлённый компонент с ограничением времени и даты
-import React, { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+// Страница заявки на бетон или раствор. Оформление — в стиле главной
+// (ConcreteRequestPage.module.css); логика полей, проверок и отправки прежняя.
+import React, { useState, useEffect, useRef } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import Select from 'react-select';
 import { getAuth } from 'firebase/auth';
-import styles from './RequestPage.module.css';
+import { TbAlertCircle, TbCircleCheck, TbInfoCircle } from 'react-icons/tb';
 import css from './ConcreteRequestPage.module.css';
 import {
   objectCategoryOptions,
@@ -14,6 +15,7 @@ import {
   materialGradeOptions
 } from './data/constructionData';
 import ConcretePendingRequestsTable from './components/ConcretePendingRequestsTable';
+import Dialog from './components/RequestDialog';
 import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
 
 // poaNumber/poaDate/poaName — доверенность на получение бетона (номер,
@@ -27,61 +29,26 @@ const emptyConcreteRow = () => ({
   poaNumber: '', poaDate: '', poaName: '', note: ''
 });
 
-// Стилизованная замена window.confirm() для предупреждения об окне 15:00-17:00
-// (см. handleSubmit/handleFinalSubmit) — та же визуальная логика, что и
-// модалка подтверждения выходного на странице отчёта по людям
-// (см. src/PeopleReportPage.js), только в предупреждающей (красной) палитре,
-// т.к. эта модалка не спрашивает подтверждение, а объясняет отказ: заявка не
-// отправляется независимо от того, как её закрыть.
-const mortarModalStyles = {
-  box: {
-    position: 'relative',
-    background: '#fff',
-    padding: '28px 24px 20px',
-    borderRadius: '14px',
-    width: '360px',
-    maxWidth: '90vw',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    textAlign: 'center',
-    gap: '10px',
-    boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
-  },
-  icon: {
-    width: '48px',
-    height: '48px',
-    borderRadius: '50%',
-    background: '#fdeaea',
-    color: '#c0392b',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '22px',
-    marginBottom: '4px',
-  },
-  title: {
-    margin: 0,
-    fontSize: '17px',
-    color: '#333',
-  },
-  text: {
-    margin: 0,
-    fontSize: '14px',
-    color: '#555',
-    lineHeight: 1.5,
-  },
-  okBtn: {
-    marginTop: '8px',
-    padding: '9px 24px',
-    background: '#c0392b',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontSize: '14px',
-    fontWeight: 600,
-  },
+// Названия полей для сообщения «Не заполнено: …» и порядок обхода формы
+// (по нему ищется первое пустое поле, куда переводится фокус).
+const FIELD_LABELS = {
+  date: 'Дата', time: 'Время', category: 'Категория', object: 'Объект',
+  position: 'Позиция', block: 'Блок', floor: 'Этаж', constructive: 'Конструктив',
+  material: 'Материал', concreteGrade: 'Марка', concreteClass: 'Подвижность',
+  quantity: 'Количество', poaNumber: 'Номер доверенности',
+  poaDate: 'Дата доверенности', poaName: 'ФИО по доверенности', note: 'Примечание'
+};
+const FORM_ORDER = Object.keys(FIELD_LABELS);
+
+// Что именно сделать в пустом поле — текст под ним после неудачной отправки.
+const FIELD_ERRORS = {
+  date: 'Выберите дату', time: 'Выберите время', category: 'Выберите категорию',
+  object: 'Выберите объект', position: 'Выберите позицию', block: 'Выберите блок',
+  floor: 'Выберите этаж', constructive: 'Выберите конструктив', material: 'Выберите материал',
+  concreteGrade: 'Выберите марку', concreteClass: 'Выберите подвижность',
+  quantity: 'Введите количество в м³', poaNumber: 'Введите номер доверенности',
+  poaDate: 'Укажите дату доверенности', poaName: 'Введите ФИО по доверенности',
+  note: 'Напишите примечание'
 };
 
 // «Реализация» — единственная категория без цепочки объект/позиция/блок/
@@ -145,48 +112,113 @@ const pruneConcreteChain = (row) => {
 const MATERIAL_OPTIONS = ['Бетон', 'Раствор'];
 const MOBILITY_OPTIONS = ['П3', 'П4'];
 
-// Общий вид выпадающих списков формы (react-select) — в тон обычным полям.
+// Общий вид выпадающих списков формы (react-select) — в тон полям ввода.
 const selectStyles = {
   control: (base, state) => ({
     ...base,
-    minHeight: 36,
-    fontSize: 14,
-    borderRadius: 6,
-    borderColor: state.isFocused ? '#1976d2' : '#c8d0da',
-    boxShadow: state.isFocused ? '0 0 0 2px rgba(25, 118, 210, 0.15)' : 'none',
-    backgroundColor: state.isDisabled ? '#f2f4f7' : '#fff',
+    minHeight: 48,
+    fontSize: 16,
+    borderRadius: 10,
+    borderColor: state.selectProps['aria-invalid'] ? '#a61b1b' : (state.isFocused ? '#485875' : '#6b7280'),
+    boxShadow: state.isFocused ? '0 0 0 3px rgba(72, 88, 117, 0.3)' : 'none',
+    backgroundColor: state.isDisabled ? '#eef0f3' : '#fff',
+    '&:hover': { borderColor: state.isFocused ? '#485875' : '#4b5563' },
   }),
-  valueContainer: (base) => ({ ...base, padding: '0 8px' }),
-  menu: (base) => ({ ...base, fontSize: 14, zIndex: 20 }),
-  singleValue: (base) => ({ ...base, whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip' }),
+  valueContainer: (base) => ({ ...base, padding: '0 12px' }),
+  // Кнопки «очистить» и «раскрыть» — не уже 44px, как остальные цели нажатия.
+  indicatorsContainer: (base) => ({ ...base, alignSelf: 'stretch' }),
+  clearIndicator: (base) => ({ ...base, padding: '0 10px', display: 'flex', alignItems: 'center', minWidth: 44, justifyContent: 'center' }),
+  dropdownIndicator: (base) => ({ ...base, padding: '0 10px', display: 'flex', alignItems: 'center', minWidth: 44, justifyContent: 'center' }),
+  // Подсказка светлее значения (но ≥4,5:1), чтобы пустое поле не выглядело заполненным.
+  placeholder: (base, state) => ({ ...base, color: state.isDisabled ? '#5b6472' : '#6b7280' }),
+  singleValue: (base) => ({ ...base, color: '#1f2937', whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip' }),
+  option: (base, state) => ({
+    ...base,
+    fontSize: 16,
+    minHeight: 44,
+    display: 'flex',
+    alignItems: 'center',
+    color: state.isSelected ? '#fff' : '#1f2937',
+    backgroundColor: state.isSelected ? '#485875' : (state.isFocused ? '#e8ebf0' : '#fff'),
+  }),
+  menu: (base) => ({ ...base, zIndex: 20 }),
 };
 
-// Подпись над полем; звёздочка — поле обязательно для этой строки.
-const Field = ({ label, required, children }) => (
+// Подпись над полем (настоящий <label>, привязан к полю через htmlFor);
+// звёздочка — поле обязательно для этой строки. error — текст под полем.
+const Field = ({ label, required, optional, htmlFor, error, errorId, help, helpId, children }) => (
   <div className={css.field}>
-    <span className={css.label}>
+    <label className={css.label} htmlFor={htmlFor}>
       {label}
-      {required && <span className={css.required}>*</span>}
-    </span>
+      {required && (
+        <>
+          <span className={css.required} aria-hidden='true'>*</span>
+          <span className={css.srOnly}> (обязательно)</span>
+        </>
+      )}
+      {optional && <span className={css.optional}> (необязательно)</span>}
+    </label>
     {children}
+    {help && <span id={helpId} className={css.help}>{help}</span>}
+    {error && <span id={errorId} className={css.fieldError}>{error}</span>}
   </div>
 );
 
+// Короткие списки (до 6 вариантов) — обычный select: на телефоне это системный
+// выбор без клавиатуры и мелких кнопок; длинные — react-select с поиском.
+const NATIVE_SELECT_MAX = 6;
+
+// Сенсорный экран (телефон, планшет): системный выбор вместо react-select,
+// чтобы не поднималась клавиатура и не прыгала закреплённая панель отправки.
+const isCoarsePointer = () =>
+  typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+
 // Выпадающий список, который отдаёт изменения в handleChange как обычный input.
-const SelectField = ({ label, name, required, options, value, onChange, isDisabled = false }) => (
-  <Field label={label} required={required}>
-    <Select
-      options={options.map((opt) => ({ value: opt, label: opt }))}
-      value={value ? { value, label: value } : null}
-      onChange={(selected) => onChange({ target: { name, value: selected ? selected.value : '' } })}
-      placeholder='Выберите...'
-      isClearable
-      isDisabled={isDisabled}
-      menuPlacement='auto'
-      styles={selectStyles}
-    />
-  </Field>
-);
+// disabledHint — что написать в неактивном поле, чтобы было ясно, чего оно ждёт.
+const SelectField = ({
+  label, name, id, required, optional, options, value, onChange, isDisabled = false, disabledHint, error, help
+}) => {
+  const placeholder = isDisabled && disabledHint ? disabledHint : 'Выберите...';
+  // Значение, которого нет в списке (например, из Умной заявки), всё равно показываем.
+  const nativeOptions = value && !options.includes(value) ? [value, ...options] : options;
+  return (
+    <Field label={label} required={required} optional={optional} htmlFor={id} error={error} errorId={`${id}-err`} help={help} helpId={`${id}-help`}>
+      {options.length <= NATIVE_SELECT_MAX || isCoarsePointer() ? (
+        <select
+          id={id}
+          name={name}
+          className={`${css.input} ${error ? css.inputError : ''}`}
+          value={value}
+          disabled={isDisabled}
+          onChange={(e) => onChange({ target: { name, value: e.target.value } })}
+          aria-required={required || undefined}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={[help ? `${id}-help` : null, error ? `${id}-err` : null].filter(Boolean).join(' ') || undefined}
+        >
+          <option value=''>{placeholder}</option>
+          {nativeOptions.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+      ) : (
+        <Select
+          inputId={id}
+          options={options.map((opt) => ({ value: opt, label: opt }))}
+          value={value ? { value, label: value } : null}
+          onChange={(selected) => onChange({ target: { name, value: selected ? selected.value : '' } })}
+          placeholder={placeholder}
+          noOptionsMessage={() => 'Нет вариантов'}
+          isClearable
+          isDisabled={isDisabled}
+          menuPlacement='auto'
+          styles={selectStyles}
+          aria-invalid={error ? true : undefined}
+          aria-errormessage={error ? `${id}-err` : undefined}
+        />
+      )}
+    </Field>
+  );
+};
 
 const getActiveRequiredFields = (row) => {
   const activeFields = ['date', 'time', 'category', 'quantity', 'poaNumber', 'poaDate', 'poaName'];
@@ -212,6 +244,14 @@ const getActiveRequiredFields = (row) => {
   return activeFields;
 };
 
+const pluralRequests = (n) => {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'заявка';
+  if ([2, 3, 4].includes(mod10) && ![12, 13, 14].includes(mod100)) return 'заявки';
+  return 'заявок';
+};
+
 const ConcreteRequestPage = () => {
   const location = useLocation();
   // Заявка пришла из Умной заявки (см. SmartRequestPage.jsx: handleProceed) —
@@ -222,12 +262,23 @@ const ConcreteRequestPage = () => {
 
   const [showModal, setShowModal] = useState(false);
   const [showMortarWindowModal, setShowMortarWindowModal] = useState(false);
+  const [showClearModal, setShowClearModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [userName, setUserName] = useState('');
   const [userPhone, setUserPhone] = useState('');
+  // Сообщение над кнопками вместо window.alert: { kind: 'missing' | 'gap' | 'success', ... }.
+  const [notice, setNotice] = useState(null);
+  // Не заполненные обязательные поля после попытки отправки: ключи `${строка}:${поле}`.
+  const [fieldErrors, setFieldErrors] = useState(() => new Set());
+  // id поля, на которое нужно перевести фокус после показа ошибок.
+  const [focusId, setFocusId] = useState(null);
+  // Ошибка самой отправки — показывается в окне ответственного, данные не теряются.
+  const [submitError, setSubmitError] = useState('');
   // Увеличивается после каждой успешно поданной заявки, чтобы таблица
   // неисполненных заявок сразу перезапросила список (см. ConcretePendingRequestsTable).
   const [pendingRefreshSignal, setPendingRefreshSignal] = useState(0);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const noticeRef = useRef(null);
 
   useEffect(() => {
     const prefill = location.state?.prefill;
@@ -235,6 +286,37 @@ const ConcreteRequestPage = () => {
     setFormRows(prefill.rows.map((r) => ({ ...emptyConcreteRow(), ...r })));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!focusId) return;
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.focus({ preventScroll: true });
+    }
+    setFocusId(null);
+  }, [focusId]);
+
+  // Когда на телефоне открыта экранная клавиатура, закреплённая панель
+  // отправки отпускается в обычный поток: иначе она вместе с клавиатурой
+  // занимает пол-экрана и закрывает поле, в которое вводят.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return undefined;
+    // Жест-увеличение тоже уменьшает видимую область, но масштаб при этом больше 1 — это не клавиатура.
+    const update = () => setKeyboardOpen(vv.scale <= 1.01 && vv.height < window.innerHeight * 0.75);
+    update();
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
+  }, []);
+
+  useEffect(() => {
+    if (notice && !focusId && noticeRef.current) {
+      noticeRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      // Успех: фокус на плашку, чтобы скринридер её озвучил.
+      if (notice.kind === 'success') noticeRef.current.focus({ preventScroll: true });
+    }
+  }, [notice, focusId]);
 
   const today = new Date();
   const tomorrow = new Date();
@@ -270,12 +352,35 @@ const ConcreteRequestPage = () => {
   const todayStr = formatDate(today);
   const tomorrowStr = formatDate(tomorrow);
 
+  // Правило окна подачи — заранее, а не после неудачной отправки.
+  let cutoffHint = 'Заявки на завтра принимаются до 15:00, на раствор — до 17:00.';
+  if (hasUnrestrictedTodayAccess) {
+    cutoffHint = '';
+  } else if (isMortarExtensionWindow) {
+    cutoffHint = 'Сейчас 15:00–17:00: на завтра принимаются только заявки на раствор.';
+  } else if (!isMortarWindowOpen) {
+    cutoffHint = 'Приём заявок на завтра закрыт, ближайшая дата — послезавтра.';
+  }
+
   const addRow = () => {
+    // Фокус и прокрутка — на первое поле новой заявки, чтобы было видно, что она добавилась.
+    setFocusId(`r${formRows.length}-date`);
     setFormRows(prev => [...prev, emptyConcreteRow()]);
+  };
+
+  // В форме есть введённое — иначе очищать нечего.
+  const formDirty = JSON.stringify(formRows) !== JSON.stringify([emptyConcreteRow()]);
+
+  const clearForm = () => {
+    setFormRows([emptyConcreteRow()]);
+    setFieldErrors(new Set());
+    setNotice(null);
+    setShowClearModal(false);
   };
 
   const removeRow = (index) => {
     setFormRows(prev => prev.filter((_, i) => i !== index));
+    setFieldErrors(new Set());
   };
 
   const handleChange = (e, index) => {
@@ -305,11 +410,53 @@ const ConcreteRequestPage = () => {
       updatedRows[index] = row;
       return updatedRows;
     });
+
+    // Поле тронули — его пометка об ошибке снимается; когда пометок не
+    // осталось, уходит и сообщение «Не заполнено».
+    if (fieldErrors.has(`${index}:${name}`)) {
+      const next = new Set(fieldErrors);
+      next.delete(`${index}:${name}`);
+      setFieldErrors(next);
+      if (!next.size && notice?.kind === 'missing') setNotice(null);
+    }
   };
-  
+
+  // Не заполненные обязательные поля всех строк, в порядке обхода формы.
+  const findMissingFields = () => {
+    const missing = [];
+    formRows.forEach((row, index) => {
+      getActiveRequiredFields(row).forEach((field) => {
+        if (!row[field]?.toString().trim()) missing.push({ index, field });
+      });
+    });
+    missing.sort((a, b) => a.index - b.index || FORM_ORDER.indexOf(a.field) - FORM_ORDER.indexOf(b.field));
+    return missing;
+  };
+
+  const showMissingFields = (missing) => {
+    setFieldErrors(new Set(missing.map((m) => `${m.index}:${m.field}`)));
+    const byRow = new Map();
+    missing.forEach((m) => {
+      if (!byRow.has(m.index)) byRow.set(m.index, []);
+      byRow.get(m.index).push({ field: m.field, label: FIELD_LABELS[m.field] });
+    });
+    setNotice({
+      kind: 'missing',
+      count: missing.length,
+      rows: [...byRow.entries()].map(([index, fields]) => ({ index, fields })),
+    });
+    setShowModal(false);
+    setFocusId(`r${missing[0].index}-${missing[0].field}`);
+  };
+
+  const showGapNotice = (missingDates) => {
+    setNotice({ kind: 'gap', message: gapWarningMessage(missingDates) });
+    setShowModal(false);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setNotice(null);
 
     // Заявка пришла из Умной заявки (SmartRequestPage.jsx) — блокировку по
     // пропускам отчётности для неё не проверяем, см. PeopleGapsGuard.jsx.
@@ -317,7 +464,7 @@ const ConcreteRequestPage = () => {
       try {
         const missingDates = await fetchMissingGapDates();
         if (missingDates.length) {
-          alert(gapWarningMessage(missingDates));
+          showGapNotice(missingDates);
           return;
         }
       } catch (err) {
@@ -327,15 +474,12 @@ const ConcreteRequestPage = () => {
       }
     }
 
-    const hasEmptyRequiredField = formRows.some(row => {
-      const activeFields = getActiveRequiredFields(row);
-      return activeFields.some(field => !row[field]?.toString().trim());
-    });
-
-    if (hasEmptyRequiredField) {
-      alert('Пожалуйста, заполните все обязательные поля.');
+    const missing = findMissingFields();
+    if (missing.length) {
+      showMissingFields(missing);
       return;
     }
+    setFieldErrors(new Set());
 
     // С 15:00 до 17:00 "завтра" в date-picker доступно всем (см. minDate
     // выше), но на самом деле это окно продлено только для раствора — для
@@ -352,17 +496,14 @@ const ConcreteRequestPage = () => {
     }
 
     // ✅ Только если всё ок — открываем модалку
+    setSubmitError('');
     setShowModal(true);
   };
 
   const handleFinalSubmit = async () => {
-  const hasEmptyRequiredField = formRows.some(row => {
-    const activeFields = getActiveRequiredFields(row);
-    return activeFields.some(field => !row[field]?.toString().trim());
-  });
-
-  if (hasEmptyRequiredField) {
-    alert('Пожалуйста, заполните все обязательные поля.');
+  const missing = findMissingFields();
+  if (missing.length) {
+    showMissingFields(missing);
     return;
   }
 
@@ -389,7 +530,7 @@ const ConcreteRequestPage = () => {
     try {
       const missingDates = await fetchMissingGapDates();
       if (missingDates.length) {
-        alert(gapWarningMessage(missingDates));
+        showGapNotice(missingDates);
         return;
       }
     } catch (err) {
@@ -399,6 +540,7 @@ const ConcreteRequestPage = () => {
 
   // продолжение отправки как прежде:
   setIsSubmitting(true);
+  setSubmitError('');
 
   const payload = formRows.map(row => ({
     date: row.date,
@@ -429,11 +571,22 @@ const ConcreteRequestPage = () => {
       headers: { 'Content-Type': 'application/json' }
     });
 
-    alert('Заявка отправлена!');
+    setNotice({
+      kind: 'success',
+      count: formRows.length,
+      recap: formRows.map((row) => [
+        row.date && row.date.split('-').reverse().slice(0, 2).join('.'),
+        row.time,
+        [row.object || row.category, row.position].filter(Boolean).join(', '),
+        row.material,
+        row.quantity && `${row.quantity} м³`,
+      ].filter(Boolean).join(' · ')),
+    });
     setShowModal(false);
     setUserName('');
     setUserPhone('');
     setFormRows([emptyConcreteRow()]);
+    setFieldErrors(new Set());
 
     // Заявка ушла напрямую в Google Apps Script, а не через наш бэкенд —
     // просим сервер пересинкать таблицу немедленно, не дожидаясь планового
@@ -448,269 +601,447 @@ const ConcreteRequestPage = () => {
     setPendingRefreshSignal((prev) => prev + 1);
   } catch (error) {
     console.error('Ошибка отправки:', error);
-    alert('Ошибка при отправке!');
+    setSubmitError('Заявка не отправлена: нет связи с сервером. Данные сохранены, нажмите «Отправить заявку» ещё раз, когда появится связь.');
   } finally {
     setIsSubmitting(false);
   }
 };
 
-  
-  
   const categoryOptions = Object.keys(objectCategoryOptions);
+
+  const totalQuantity = formRows.reduce((sum, row) => {
+    const n = parseFloat((row.quantity || '').replace(',', '.'));
+    return Number.isNaN(n) ? sum : sum + n;
+  }, 0);
 
   return (
     <div className={css.page}>
-      <h2 className={css.title}>Заявка на бетон или раствор</h2>
-      <form onSubmit={handleSubmit}>
-        {formRows.map((row, index) => {
-          const required = new Set(getActiveRequiredFields(row));
-          const onChange = (e) => handleChange(e, index);
-          const hasBlocks = !!positionBlockOptions[row.position];
-          return (
-            <section key={index} className={css.card}>
-              <div className={css.cardHeader}>
-                <span className={css.cardTitle}>
-                  {formRows.length > 1 ? `Заявка ${index + 1}` : 'Заявка'}
-                </span>
-                {formRows.length > 1 && (
-                  <button type='button' className={css.removeLink} onClick={() => removeRow(index)}>
-                    Удалить
-                  </button>
-                )}
-              </div>
+      <div className={css.content}>
+        <Link to='/' className={css.back}>← На главную</Link>
+        <h1 className={css.title}>Заявка на бетон или раствор</h1>
+        {cutoffHint && (
+          <p className={css.info}>
+            <TbInfoCircle className={css.infoIcon} aria-hidden='true' />
+            {cutoffHint}
+          </p>
+        )}
 
-              <div className={css.grid}>
-                <Field label='Дата' required={required.has('date')}>
-                  <input
-                    type='date'
-                    name='date'
-                    className={css.input}
-                    value={row.date}
-                    min={minDate}
-                    max={maxDate}
-                    onChange={onChange}
-                  />
-                </Field>
+        <p className={css.legend}>
+          <span className={css.required} aria-hidden='true'>*</span> — обязательное поле. Часть полей становится обязательной после выбора в полях выше.
+        </p>
 
-                <Field label='Время' required={required.has('time')}>
-                  <select name='time' className={css.input} value={row.time} onChange={onChange}>
-                    <option value=''>--</option>
-                    {[...Array(24)].map((_, h) => {
-                      const hourStr = `${h.toString().padStart(2, '0')}:00`;
-                      const isDisabled = row.date === todayStr && h <= currentHour;
-                      return (
-                        <option key={h} value={hourStr} disabled={isDisabled}>
-                          {hourStr}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </Field>
+        <form onSubmit={handleSubmit} noValidate>
+          {formRows.map((row, index) => {
+            const required = new Set(getActiveRequiredFields(row));
+            const onChange = (e) => handleChange(e, index);
+            const hasBlocks = !!positionBlockOptions[row.position];
+            const idOf = (name) => `r${index}-${name}`;
+            const errorOf = (name) => (fieldErrors.has(`${index}:${name}`) ? FIELD_ERRORS[name] : undefined);
+            const inputProps = (name) => ({
+              id: idOf(name),
+              name,
+              onChange,
+              'aria-required': required.has(name) || undefined,
+              'aria-invalid': errorOf(name) ? true : undefined,
+              'aria-describedby': [name === 'date' ? `${idOf(name)}-help` : null, errorOf(name) ? `${idOf(name)}-err` : null]
+                .filter(Boolean).join(' ') || undefined,
+            });
+            const inputClass = (name) => `${css.input} ${errorOf(name) ? css.inputError : ''}`;
+            const notNeeded = !!row.position && !hasBlocks;
+            return (
+              <section key={index} className={css.card} aria-label={formRows.length > 1 ? `Заявка ${index + 1}` : 'Заявка'}>
+                <div className={css.cardHeader}>
+                  <h2 className={css.cardTitle}>
+                    {formRows.length > 1 ? `Заявка ${index + 1}` : 'Заявка'}
+                  </h2>
+                  {formRows.length > 1 && (
+                    <button type='button' className={css.removeBtn} onClick={() => removeRow(index)}>
+                      Удалить
+                    </button>
+                  )}
+                </div>
 
-                <SelectField
-                  label='Категория'
-                  name='category'
-                  required={required.has('category')}
-                  options={categoryOptions}
-                  value={row.category}
-                  onChange={onChange}
-                />
-                <SelectField
-                  label='Объект'
-                  name='object'
-                  required={required.has('object')}
-                  options={objectCategoryOptions[row.category] || []}
-                  value={row.object}
-                  onChange={onChange}
-                  isDisabled={!row.category}
-                />
-                <SelectField
-                  label='Позиция'
-                  name='position'
-                  required={required.has('position')}
-                  options={objectPositionOptions[row.object] || []}
-                  value={row.position}
-                  onChange={onChange}
-                  isDisabled={!row.object}
-                />
-                <SelectField
-                  label='Блок'
-                  name='block'
-                  required={required.has('block')}
-                  options={positionBlockOptions[row.position] || []}
-                  value={row.block}
-                  onChange={onChange}
-                  isDisabled={!row.position || !hasBlocks}
-                />
-                <SelectField
-                  label='Этаж'
-                  name='floor'
-                  required={required.has('floor')}
-                  options={blockFloorOptions[row.block] || []}
-                  value={row.floor}
-                  onChange={onChange}
-                  isDisabled={!row.block || !hasBlocks}
-                />
-                <SelectField
-                  label='Конструктив'
-                  name='constructive'
-                  required={required.has('constructive')}
-                  options={floorConstructiveOptions[row.floor] || []}
-                  value={row.constructive}
-                  onChange={onChange}
-                  isDisabled={!row.floor || !hasBlocks}
-                />
-                <SelectField
-                  label='Материал'
-                  name='material'
-                  required={required.has('material')}
-                  options={MATERIAL_OPTIONS}
-                  value={row.material}
-                  onChange={onChange}
-                  isDisabled={hasBlocks}
-                />
-                <SelectField
-                  label='Марка'
-                  name='concreteGrade'
-                  required={required.has('concreteGrade')}
-                  options={materialGradeOptions[row.material] || []}
-                  value={row.concreteGrade}
-                  onChange={onChange}
-                  isDisabled={!row.material}
-                />
-                {row.material === 'Бетон' ? (
-                  <SelectField
-                    label='Подвижность'
-                    name='concreteClass'
-                    required={required.has('concreteClass')}
-                    options={MOBILITY_OPTIONS}
-                    value={row.concreteClass}
-                    onChange={onChange}
-                  />
-                ) : (
-                  <Field label='Подвижность'>
-                    <div className={css.placeholderBox} />
-                  </Field>
-                )}
-
-                <Field label='Количество, м³' required={required.has('quantity')}>
-                  <input
-                    type='text'
-                    inputMode='decimal'
-                    name='quantity'
-                    className={css.input}
-                    value={row.quantity}
-                    onChange={onChange}
-                    placeholder='Введите число'
-                  />
-                </Field>
-              </div>
-
-              <div className={css.bottomRow}>
-                <fieldset className={css.group}>
-                  <legend className={css.groupTitle}>Доверенность</legend>
-                  <div className={css.groupGrid}>
-                    <Field label='Номер' required>
+                <div role='group' aria-labelledby={idOf('g-when')} className={css.group}>
+                  <h3 id={idOf('g-when')} className={css.groupTitle}>Когда</h3>
+                  <div className={css.gridWhen}>
+                    <Field
+                      label='Дата'
+                      required={required.has('date')}
+                      htmlFor={idOf('date')}
+                      error={errorOf('date')}
+                      errorId={`${idOf('date')}-err`}
+                      help={`Ближайшая дата: ${minDate.split('-').reverse().slice(0, 2).join('.')}`}
+                      helpId={`${idOf('date')}-help`}
+                    >
                       <input
-                        type='text'
-                        inputMode='numeric'
-                        name='poaNumber'
-                        className={css.input}
-                        value={row.poaNumber}
-                        onChange={onChange}
-                        placeholder='№'
+                        type='date'
+                        className={inputClass('date')}
+                        value={row.date}
+                        min={minDate}
+                        max={maxDate}
+                        {...inputProps('date')}
                       />
                     </Field>
-                    <Field label='Дата' required>
-                      <input type='date' name='poaDate' className={css.input} value={row.poaDate} onChange={onChange} />
+
+                    <Field label='Время' required={required.has('time')} htmlFor={idOf('time')} error={errorOf('time')} errorId={`${idOf('time')}-err`}>
+                      <select className={inputClass('time')} value={row.time} {...inputProps('time')}>
+                        <option value=''>--</option>
+                        {[...Array(24)].map((_, h) => {
+                          const hourStr = `${h.toString().padStart(2, '0')}:00`;
+                          const isDisabled = row.date === todayStr && h <= currentHour;
+                          return (
+                            <option key={h} value={hourStr} disabled={isDisabled}>
+                              {hourStr}
+                            </option>
+                          );
+                        })}
+                      </select>
                     </Field>
-                    <Field label='ФИО' required>
+                  </div>
+                </div>
+
+                <div role='group' aria-labelledby={idOf('g-where')} className={css.group}>
+                  <h3 id={idOf('g-where')} className={css.groupTitle}>Куда</h3>
+                  <div className={css.gridWhere}>
+                    <SelectField
+                      label='Категория'
+                      name='category'
+                      id={idOf('category')}
+                      required={required.has('category')}
+                      options={categoryOptions}
+                      value={row.category}
+                      onChange={onChange}
+                      error={errorOf('category')}
+                    />
+                    <SelectField
+                      label='Объект'
+                      name='object'
+                      id={idOf('object')}
+                      required={required.has('object')}
+                      options={objectCategoryOptions[row.category] || []}
+                      value={row.object}
+                      onChange={onChange}
+                      isDisabled={!row.category}
+                      disabledHint='Сначала выберите категорию'
+                      error={errorOf('object')}
+                    />
+                    <SelectField
+                      label='Позиция'
+                      name='position'
+                      id={idOf('position')}
+                      required={required.has('position')}
+                      options={objectPositionOptions[row.object] || []}
+                      value={row.position}
+                      onChange={onChange}
+                      isDisabled={!row.object}
+                      disabledHint='Сначала выберите объект'
+                      error={errorOf('position')}
+                    />
+                    <SelectField
+                      label='Блок'
+                      name='block'
+                      id={idOf('block')}
+                      required={required.has('block')}
+                      options={positionBlockOptions[row.position] || []}
+                      value={row.block}
+                      onChange={onChange}
+                      isDisabled={!row.position || !hasBlocks}
+                      disabledHint={notNeeded ? 'Для этой позиции не нужен' : 'Сначала выберите позицию'}
+                      error={errorOf('block')}
+                    />
+                    <SelectField
+                      label='Этаж'
+                      name='floor'
+                      id={idOf('floor')}
+                      required={required.has('floor')}
+                      options={blockFloorOptions[row.block] || []}
+                      value={row.floor}
+                      onChange={onChange}
+                      isDisabled={!row.block || !hasBlocks}
+                      disabledHint={notNeeded ? 'Для этой позиции не нужен' : 'Сначала выберите блок'}
+                      error={errorOf('floor')}
+                    />
+                    <SelectField
+                      label='Конструктив'
+                      name='constructive'
+                      id={idOf('constructive')}
+                      required={required.has('constructive')}
+                      options={floorConstructiveOptions[row.floor] || []}
+                      value={row.constructive}
+                      onChange={onChange}
+                      isDisabled={!row.floor || !hasBlocks}
+                      disabledHint={notNeeded ? 'Для этой позиции не нужен' : 'Сначала выберите этаж'}
+                      error={errorOf('constructive')}
+                    />
+                  </div>
+                </div>
+
+                <div role='group' aria-labelledby={idOf('g-what')} className={css.group}>
+                  <h3 id={idOf('g-what')} className={css.groupTitle}>Что и сколько</h3>
+                  <div className={css.gridWhat}>
+                    <SelectField
+                      label='Материал'
+                      name='material'
+                      id={idOf('material')}
+                      required={required.has('material')}
+                      options={MATERIAL_OPTIONS}
+                      value={row.material}
+                      onChange={onChange}
+                      isDisabled={hasBlocks || (!row.position && row.category !== REALIZATION_CATEGORY)}
+                      disabledHint={hasBlocks ? 'Автоматически' : 'Сначала выберите позицию'}
+                      help={hasBlocks ? 'Зависит от конструктива: кладка — раствор, остальное — бетон.' : undefined}
+                      error={errorOf('material')}
+                    />
+                    <SelectField
+                      label='Марка'
+                      name='concreteGrade'
+                      id={idOf('concreteGrade')}
+                      required={required.has('concreteGrade')}
+                      optional={hasBlocks}
+                      options={materialGradeOptions[row.material] || []}
+                      value={row.concreteGrade}
+                      onChange={onChange}
+                      isDisabled={!row.material}
+                      disabledHint='Сначала выберите материал'
+                      error={errorOf('concreteGrade')}
+                    />
+                    {row.material === 'Бетон' ? (
+                      <SelectField
+                        label='Подвижность'
+                        name='concreteClass'
+                        id={idOf('concreteClass')}
+                        required={required.has('concreteClass')}
+                        optional={hasBlocks}
+                        options={MOBILITY_OPTIONS}
+                        value={row.concreteClass}
+                        onChange={onChange}
+                        error={errorOf('concreteClass')}
+                      />
+                    ) : (
+                      <Field label='Подвижность' htmlFor={idOf('concreteClass-na')}>
+                        <input
+                          id={idOf('concreteClass-na')}
+                          className={css.input}
+                          value=''
+                          placeholder='Только для бетона'
+                          disabled
+                          readOnly
+                        />
+                      </Field>
+                    )}
+
+                    <Field label='Количество, м³' required={required.has('quantity')} htmlFor={idOf('quantity')} error={errorOf('quantity')} errorId={`${idOf('quantity')}-err`}>
                       <input
                         type='text'
-                        name='poaName'
-                        className={css.input}
-                        value={row.poaName}
-                        onChange={onChange}
-                        placeholder='ФИО по доверенности'
+                        inputMode='decimal'
+                        className={inputClass('quantity')}
+                        value={row.quantity}
+                        placeholder='Например, 12,5'
+                        autoComplete='off'
+                        {...inputProps('quantity')}
                       />
                     </Field>
                   </div>
-                </fieldset>
+                </div>
 
-                <Field label='Примечание' required={required.has('note')}>
-                  <textarea
-                    name='note'
-                    className={css.textarea}
-                    value={row.note}
-                    onChange={onChange}
-                    rows={2}
-                    placeholder='Введите примечание...'
-                  />
-                </Field>
-              </div>
-            </section>
-          );
-        })}
+                <div className={css.bottomRow}>
+                  <div role='group' aria-labelledby={idOf('g-poa')} className={css.group}>
+                    <h3 id={idOf('g-poa')} className={css.groupTitle}>Доверенность на получение</h3>
+                    <div className={css.gridPoa}>
+                      <Field label='Номер' required htmlFor={idOf('poaNumber')} error={errorOf('poaNumber')} errorId={`${idOf('poaNumber')}-err`}>
+                        <input
+                          type='text'
+                          inputMode='numeric'
+                          className={inputClass('poaNumber')}
+                          value={row.poaNumber}
+                          placeholder='№'
+                          autoComplete='off'
+                          {...inputProps('poaNumber')}
+                        />
+                      </Field>
+                      <Field label='Дата' required htmlFor={idOf('poaDate')} error={errorOf('poaDate')} errorId={`${idOf('poaDate')}-err`}>
+                        <input type='date' className={inputClass('poaDate')} value={row.poaDate} {...inputProps('poaDate')} />
+                      </Field>
+                      <Field label='ФИО' required htmlFor={idOf('poaName')} error={errorOf('poaName')} errorId={`${idOf('poaName')}-err`}>
+                        <input
+                          type='text'
+                          className={inputClass('poaName')}
+                          value={row.poaName}
+                          placeholder='ФИО по доверенности'
+                          autoComplete='off'
+                          {...inputProps('poaName')}
+                        />
+                      </Field>
+                    </div>
+                  </div>
 
-        <div className={css.actions}>
-          <button type='button' onClick={addRow} className={styles.addButton}>Добавить строку</button>
-          <button type='submit' className={styles.submitButton}>Отправить заявку</button>
-        </div>
-      </form>
-      <ConcretePendingRequestsTable refreshSignal={pendingRefreshSignal} />
-      {showModal && (
-        <div className={styles.modalOverlay}>
-          <div className={styles.modal}>
-            <button className={styles.modalClose} onClick={() => setShowModal(false)}>×</button>
+                  <div className={css.group}>
+                    <Field label='Примечание' required={required.has('note')} optional={!required.has('note')} htmlFor={idOf('note')} error={errorOf('note')} errorId={`${idOf('note')}-err`}>
+                      <textarea
+                        className={`${css.textarea} ${errorOf('note') ? css.inputError : ''}`}
+                        value={row.note}
+                        rows={3}
+                        placeholder='Введите примечание...'
+                        {...inputProps('note')}
+                      />
+                    </Field>
+                  </div>
+                </div>
+              </section>
+            );
+          })}
 
-            <h3>Ответственный</h3>
-
-            <label>
-              ФИО:
-              <input
-                type="text"
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                placeholder="Введите ФИО"
-              />
-            </label>
-
-            <label>
-              Номер телефона:
-              <input
-                type="text"
-                value={userPhone}
-                onChange={(e) => setUserPhone(e.target.value)}
-                placeholder="Введите номер"
-              />
-            </label>
-
-            <button
-              className={styles.submitButton}
-              onClick={handleFinalSubmit}
-              disabled={isSubmitting}
+          {notice && (
+            <div
+              ref={noticeRef}
+              className={notice.kind === 'success' ? css.noticeOk : css.noticeError}
+              role={notice.kind === 'success' ? 'status' : 'alert'}
+              tabIndex={notice.kind === 'success' ? -1 : undefined}
             >
-              {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
+              <p className={css.noticeTitle}>
+                {notice.kind === 'success'
+                  ? <TbCircleCheck className={css.noticeIcon} aria-hidden='true' />
+                  : <TbAlertCircle className={css.noticeIcon} aria-hidden='true' />}
+                {notice.kind === 'missing' && `Не заполнено полей: ${notice.count}`}
+                {notice.kind === 'gap' && 'Заявку пока нельзя отправить'}
+                {notice.kind === 'success' && (notice.count > 1 ? 'Заявки отправлены' : 'Заявка отправлена')}
+              </p>
+              {notice.kind === 'missing' && (
+                <ul className={css.noticeList}>
+                  {notice.rows.map((r) => (
+                    <li key={r.index}>
+                      {formRows.length > 1 ? `Заявка ${r.index + 1}: ` : ''}
+                      {r.fields.map((f, i) => (
+                        <React.Fragment key={f.field}>
+                          {i > 0 && ', '}
+                          <button type='button' className={css.noticeLink} onClick={() => setFocusId(`r${r.index}-${f.field}`)}>
+                            {f.label}
+                          </button>
+                        </React.Fragment>
+                      ))}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {notice.kind === 'gap' && (
+                <>
+                  <p className={css.noticeText}>{notice.message}</p>
+                  <Link to='/people-report' className={css.noticeAction}>Заполнить отчёт по людям →</Link>
+                </>
+              )}
+              {notice.kind === 'success' && (
+                <>
+                  <ul className={css.noticeRecap}>
+                    {notice.recap.map((line, i) => (
+                      <li key={i}>{notice.count > 1 ? `Заявка ${i + 1}: ` : ''}{line}</li>
+                    ))}
+                  </ul>
+                  <p className={css.noticeText}>{notice.count > 1 ? 'Они появятся' : 'Она появится'} в списке «Текущие заявки» ниже с пометкой «Новая».</p>
+                  <a href='#current-requests' className={css.noticeAction}>Перейти к списку ↓</a>
+                </>
+              )}
+            </div>
+          )}
+
+          <button type='button' onClick={addRow} className={css.addBtn}>+ Добавить ещё одну заявку</button>
+
+          <div className={`${css.actions} ${keyboardOpen ? css.actionsStatic : ''}`}>
+            {formDirty && (
+              <button type='button' className={css.btnGhost} onClick={() => setShowClearModal(true)}>
+                Очистить форму
+              </button>
+            )}
+            <button type='submit' className={css.btnPrimary}>
+              {formRows.length > 1 ? `Отправить заявки (${formRows.length})` : 'Отправить заявку'}
             </button>
           </div>
+        </form>
+
+        <div id='current-requests'>
+          <ConcretePendingRequestsTable refreshSignal={pendingRefreshSignal} />
         </div>
+      </div>
+
+      {showModal && (
+        <Dialog title='Ответственный' onClose={() => setShowModal(false)}>
+          <p className={css.dialogSummary}>
+            {formRows.length} {pluralRequests(formRows.length)}
+            {totalQuantity > 0 && ` · ${totalQuantity.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} м³`}
+          </p>
+
+          <div className={css.field}>
+            <label className={css.label} htmlFor='responsible-name'>ФИО</label>
+            <input
+              id='responsible-name'
+              type='text'
+              className={css.input}
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              placeholder='Введите ФИО'
+              autoComplete='name'
+            />
+          </div>
+
+          <div className={css.field}>
+            <label className={css.label} htmlFor='responsible-phone'>Номер телефона</label>
+            <input
+              id='responsible-phone'
+              type='tel'
+              inputMode='tel'
+              className={css.input}
+              value={userPhone}
+              onChange={(e) => setUserPhone(e.target.value)}
+              placeholder='Введите номер'
+              autoComplete='tel'
+            />
+          </div>
+
+          {submitError && (
+            <div className={css.noticeError} role='alert'>
+              <p className={css.noticeTitle}>
+                <TbAlertCircle className={css.noticeIcon} aria-hidden='true' />
+                Не отправлено
+              </p>
+              <p className={css.noticeText}>{submitError}</p>
+            </div>
+          )}
+
+          <button
+            type='button'
+            className={css.btnPrimary}
+            onClick={handleFinalSubmit}
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
+          </button>
+        </Dialog>
+      )}
+
+      {showClearModal && (
+        <Dialog title='Очистить форму?' onClose={() => setShowClearModal(false)}>
+          <p className={css.dialogText}>
+            {formRows.length > 1
+              ? `Все заявки (${formRows.length}) будут удалены, останется одна пустая.`
+              : 'Все введённые данные будут удалены.'}
+          </p>
+          <div className={css.dialogActions}>
+            <button type='button' className={css.btnGhost} onClick={() => setShowClearModal(false)}>Отмена</button>
+            <button type='button' className={css.btnPrimary} onClick={clearForm}>Очистить</button>
+          </div>
+        </Dialog>
       )}
 
       {showMortarWindowModal && (
-        <div className={styles.modalOverlay}>
-          <div style={mortarModalStyles.box}>
-            <div style={mortarModalStyles.icon}>⛔</div>
-            <h3 style={mortarModalStyles.title}>Заявка на завтра недоступна</h3>
-            <p style={mortarModalStyles.text}>
-              С 15:00 до 17:00 подать заявку на завтра можно только для <strong>раствора</strong>.
-              Для <strong>бетона</strong> такой возможности нет — выберите другую дату
-              или измените материал на «Раствор».
-            </p>
-            <button style={mortarModalStyles.okBtn} onClick={() => setShowMortarWindowModal(false)}>
-              Понятно
-            </button>
-          </div>
-        </div>
+        <Dialog title='Заявка на завтра недоступна' onClose={() => setShowMortarWindowModal(false)}>
+          <p className={css.dialogText}>
+            С 15:00 до 17:00 подать заявку на завтра можно только для <strong>раствора</strong>.
+            Для <strong>бетона</strong> такой возможности нет — выберите другую дату
+            или измените материал на «Раствор».
+          </p>
+          <button type='button' className={css.btnPrimary} onClick={() => setShowMortarWindowModal(false)}>
+            Понятно
+          </button>
+        </Dialog>
       )}
 
     </div>

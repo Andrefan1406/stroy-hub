@@ -1,0 +1,241 @@
+/* Таблицы текущих заявок на бетон и раствор под формой заявки. Оформление
+   в стиле главной; цвета и шрифт приходят от обёртки страницы заявки
+   (ConcreteRequestPage.module.css, .page). Широкая таблица прокручивается
+   внутри своего блока, а не расширяет страницу на телефоне. */
+
+.wrap {
+  margin-top: 32px;
+}
+
+.heading {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.badgeNew {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 8px;
+  background: var(--ok-bg, #f0f8f3);
+  color: var(--ok, #1d6b3a);
+  border: 1px solid var(--ok-border, #b9dcc6);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.sub {
+  margin: 28px 0 10px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.scroll {
+  overflow-x: auto;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #939ba7);
+  border-radius: 10px;
+}
+
+.table {
+  width: 100%;
+  min-width: 920px;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #d5d9df;
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  background: #eef0f3;
+  color: var(--muted, #4b5563);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.approved {
+  color: var(--ok, #1d6b3a);
+  font-weight: 600;
+}
+
+.dash {
+  color: var(--muted, #4b5563);
+}
+
+.state {
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #939ba7);
+  border-radius: 10px;
+  color: var(--muted, #4b5563);
+  font-size: 15px;
+}
+
+.error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  background: var(--danger-bg, #fdf2f2);
+  border: 1px solid var(--danger-border, #f3c4c4);
+  border-radius: 10px;
+  color: var(--danger, #a61b1b);
+  font-size: 15px;
+}
+
+.btn {
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--surface, #fff);
+  color: var(--brand, #485875);
+  border: 1px solid var(--brand, #485875);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: #e8ebf0;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btnDanger {
+  color: var(--danger, #a61b1b);
+  border-color: var(--danger-border, #f3c4c4);
+}
+
+.btnDanger:hover {
+  background: var(--danger-bg, #fdf2f2);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--brand, #485875);
+  outline-offset: 2px;
+}
+
+.dialogText {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.dialogButtons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.updating {
+  margin: 8px 0 0;
+  color: var(--muted, #4b5563);
+  font-size: 14px;
+}
+
+.scroll:focus-visible {
+  outline: 2px solid var(--brand, #485875);
+  outline-offset: 2px;
+}
+
+/* Карточки — только на телефоне; на широком экране показана таблица. */
+.cards {
+  display: none;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cardItem {
+  padding: 14px 14px 16px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #939ba7);
+  border-radius: 10px;
+}
+
+.cardItem + .cardItem {
+  margin-top: 10px;
+}
+
+.cardHead {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cardNum {
+  margin-right: 6px;
+  color: var(--muted, #4b5563);
+  font-variant-numeric: tabular-nums;
+}
+
+.cardPos {
+  margin: 2px 0 0;
+  color: var(--muted, #4b5563);
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 6px 12px;
+  margin: 12px 0 0;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dl dt {
+  color: var(--muted, #4b5563);
+}
+
+.dl dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cardItem .btn {
+  width: 100%;
+  margin-top: 12px;
+}
+
+@media (max-width: 640px) {
+  .scroll {
+    display: none;
+  }
+
+  .cards {
+    display: block;
+  }
+
+  .dialogButtons {
+    flex-direction: column-reverse;
+  }
+
+  .dialogButtons > button {
+    width: 100%;
+  }
+}
