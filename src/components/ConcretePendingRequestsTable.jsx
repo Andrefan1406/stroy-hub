@@ -4,6 +4,10 @@
 // по полю material. Сортировку (приоритет объекта -> плановая дата поставки
 // -> дата подачи заявки) считает сервер (server/concreteRequestsBoard.js),
 // здесь только отображение и локальное admin-скрытие строки.
+//
+// На телефоне бетон и раствор — две вкладки с переключением смахиванием
+// влево/вправо (иначе до раствора пришлось бы долго прокручивать карточки
+// бетона); на широком экране обе таблицы подряд, вкладки скрыты.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { getAuth } from "firebase/auth";
 import styles from "./ConcretePendingRequestsTable.module.css";
@@ -48,12 +52,31 @@ async function apiFetchWithAuth(path, options = {}) {
 const formatVolume = (value) =>
   value === null || value === undefined ? "—" : `${Number(value).toLocaleString("ru-RU")} м³`;
 
+// "2026-10-28" -> "28.10.2026"; значение в другом виде показываем как есть.
+const formatPlannedDate = (value) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : value || "—";
+};
+
+// В таблице плановая дата в две строки: день и месяц, ниже год («28.10.» / «2026»).
+const PlannedDateCell = ({ value }) => {
+  const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(formatPlannedDate(value));
+  return m ? <>{m[1]}.{m[2]}.<br />{m[3]}</> : formatPlannedDate(value);
+};
+
 const formatSubmittedAt = (value) => {
   if (!value) return "—";
   // "2024-06-06 15:26:16" -> "06.06.2024 15:26"
   const [datePart, timePart] = value.split(" ");
   const [y, m, d] = datePart.split("-");
   return `${d}.${m}.${y} ${(timePart || "").slice(0, 5)}`;
+};
+
+// Подача заявки в таблице раствора: дата, ниже время.
+const SubmittedAtCell = ({ value, split }) => {
+  const text = formatSubmittedAt(value);
+  const at = text.lastIndexOf(" ");
+  return split && at > 0 ? <>{text.slice(0, at)}<br />{text.slice(at + 1)}</> : text;
 };
 
 const formatResponsible = (name, phone) => {
@@ -67,16 +90,21 @@ const formatResponsible = (name, phone) => {
 // флаг включает и колонку согласования энергетиков (прогрев бетона зимой).
 const NewBadge = () => <span className={styles.badgeNew}>Новая</span>;
 
-const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDeleteClick, newKeys }) => (
-  <div>
+const MaterialRequestsTable = ({ id, title, rows, showGeoColumn, canDeleteRows, onDeleteClick, newKeys, active }) => (
+  <div
+    id={`panel-${id}`}
+    role="tabpanel"
+    aria-labelledby={`tab-${id}`}
+    className={active ? styles.panel : `${styles.panel} ${styles.panelOff}`}
+  >
     <h3 className={styles.sub}>{title}</h3>
     {rows.length === 0 ? (
       <p className={styles.state}>Неисполненных заявок нет.</p>
     ) : (
       <>
         {/* Широкий экран — таблица (блок прокручивается с клавиатуры). */}
-        <div className={styles.scroll} role="region" aria-label={`Таблица заявок: ${title}`} tabIndex={0}>
-          <table className={styles.table}>
+        <div className={styles.scroll} role="region" aria-label={`Таблица заявок: ${title}`}>
+          <table className={showGeoColumn ? styles.table : `${styles.table} ${styles.tableMortar}`}>
             <thead>
               <tr>
                 <th scope="col">№ п/п</th>
@@ -101,8 +129,8 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
                   <td>{row.block_position || "—"}</td>
                   <td>{row.grade_class || "—"}</td>
                   <td>{formatVolume(row.volume_planned_m3)}</td>
-                  <td>{row.planned_delivery_date || "—"}</td>
-                  <td>{formatSubmittedAt(row.submitted_at)}</td>
+                  <td><PlannedDateCell value={row.planned_delivery_date} /></td>
+                  <td><SubmittedAtCell value={row.submitted_at} split={!showGeoColumn} /></td>
                   {showGeoColumn && (
                     <td className={row.geo_approved ? styles.approved : styles.dash}>{row.geo_approved ? "Согласовано" : "—"}</td>
                   )}
@@ -138,7 +166,7 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
                 <dt>Марка · объём</dt>
                 <dd>{[row.grade_class, formatVolume(row.volume_planned_m3)].filter((v) => v && v !== "—").join(" · ") || "—"}</dd>
                 <dt>Плановая дата</dt>
-                <dd>{row.planned_delivery_date || "—"}</dd>
+                <dd>{formatPlannedDate(row.planned_delivery_date)}</dd>
                 <dt>Подача заявки</dt>
                 <dd>{formatSubmittedAt(row.submitted_at)}</dd>
                 {showGeoColumn && (
@@ -184,6 +212,9 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
   // Заявки, появившиеся в списке после отправки новой, — помечаются «Новая».
   const [newKeys, setNewKeys] = useState(() => new Set());
   const knownKeysRef = useRef(null);
+  // Вкладка на телефоне: concrete | mortar.
+  const [tab, setTab] = useState("concrete");
+  const touchRef = useRef(null);
 
   const currentEmail = getAuth().currentUser?.email?.toLowerCase() || "";
   const canDeleteRows = ROW_DELETE_ALLOWED_EMAILS.includes(currentEmail);
@@ -245,6 +276,35 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
   const concreteRows = rows.filter((r) => r.material === "Бетон");
   const mortarRows = rows.filter((r) => r.material === "Раствор");
 
+  const TABS = [
+    { id: "concrete", label: "Бетон", count: concreteRows.length },
+    { id: "mortar", label: "Раствор", count: mortarRows.length },
+  ];
+
+  // Смахивание: палец влево — следующая вкладка, вправо — предыдущая.
+  // Засчитываем только явно горизонтальный жест, вертикальная прокрутка не мешает.
+  const onTouchStart = (e) => {
+    const t = e.touches[0];
+    touchRef.current = { x: t.clientX, y: t.clientY };
+  };
+  const onTouchEnd = (e) => {
+    const start = touchRef.current;
+    touchRef.current = null;
+    if (!start) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    setTab(dx < 0 ? "mortar" : "concrete");
+  };
+  const onTabKeyDown = (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const next = e.key === "ArrowRight" ? "mortar" : "concrete";
+    setTab(next);
+    document.getElementById(`tab-${next}`)?.focus();
+  };
+
   return (
     <div className={styles.wrap}>
       <h2 className={styles.heading}>Текущие заявки</h2>
@@ -264,7 +324,28 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
         !(error && rows.length === 0) && (
           <>
             {loading && <p className={styles.updating} role="status">Обновляется...</p>}
+            <div className={styles.tabs} role="tablist" aria-label="Материал" onKeyDown={onTabKeyDown}>
+              {TABS.map((t) => (
+                <button
+                  key={t.id}
+                  id={`tab-${t.id}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === t.id}
+                  aria-controls={`panel-${t.id}`}
+                  tabIndex={tab === t.id ? 0 : -1}
+                  className={tab === t.id ? `${styles.tab} ${styles.tabOn}` : styles.tab}
+                  onClick={() => setTab(t.id)}
+                >
+                  {t.label} <span className={styles.tabCount}>{t.count}</span>
+                </button>
+              ))}
+            </div>
+            <p className={styles.swipeHint}>Листайте влево и вправо, чтобы переключить бетон и раствор</p>
+            <div className={styles.panels} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
             <MaterialRequestsTable
+              id="concrete"
+              active={tab === "concrete"}
               title="Бетон"
               rows={concreteRows}
               newKeys={newKeys}
@@ -273,6 +354,8 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
               onDeleteClick={setConfirmingRow}
             />
             <MaterialRequestsTable
+              id="mortar"
+              active={tab === "mortar"}
               title="Раствор"
               rows={mortarRows}
               newKeys={newKeys}
@@ -280,6 +363,7 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
               canDeleteRows={canDeleteRows}
               onDeleteClick={setConfirmingRow}
             />
+            </div>
           </>
         )
       )}

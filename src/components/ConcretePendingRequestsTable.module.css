@@ -1,7 +1,8 @@
 /* Таблицы текущих заявок на бетон и раствор под формой заявки. Оформление
    в стиле главной; цвета и шрифт приходят от обёртки страницы заявки
-   (ConcreteRequestPage.module.css, .page). Широкая таблица прокручивается
-   внутри своего блока, а не расширяет страницу на телефоне. */
+   (ConcreteRequestPage.module.css, .page). Таблица без горизонтальной
+   прокрутки: колонки сжимаются, длинный текст переносится; на экранах
+   уже 900px вместо таблицы — карточки. */
 
 .wrap {
   margin-top: 32px;
@@ -33,6 +34,11 @@
   font-weight: 600;
 }
 
+.tabs,
+.swipeHint {
+  display: none;
+}
+
 .scroll {
   overflow-x: auto;
   background: var(--surface, #fff);
@@ -42,26 +48,25 @@
 
 .table {
   width: 100%;
-  min-width: 920px;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
 .table th,
 .table td {
-  padding: 10px 12px;
+  padding: 8px 8px;
   border-bottom: 1px solid #d5d9df;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .table th {
   background: #eef0f3;
   color: var(--muted, #4b5563);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  white-space: nowrap;
 }
 
 .table tbody tr:last-child td {
@@ -160,6 +165,29 @@
   outline-offset: 2px;
 }
 
+/* «Объём» не переносится (влезет и трёхзначное число); «Плановая дата» —
+   «28.10.» в первой строке, год во второй. Колонки: 4 Марка, 5 Объём,
+   6 Плановая дата, 7 Подача заявки. */
+.table th:nth-child(5),
+.table td:nth-child(5),
+.table td:nth-child(6) {
+  white-space: nowrap;
+}
+
+/* Раствор: «Марка» в одну строку; «Подача заявки» — дата и время двумя
+   строками (в разметке), освободившееся место отдано «Примечанию» (колонка 8). */
+.tableMortar th:nth-child(4),
+.tableMortar td:nth-child(4),
+.tableMortar th:nth-child(7),
+.tableMortar td:nth-child(7) {
+  white-space: nowrap;
+}
+
+.tableMortar th:nth-child(8),
+.tableMortar td:nth-child(8) {
+  width: 22%;
+}
+
 /* Карточки — только на телефоне; на широком экране показана таблица. */
 .cards {
   display: none;
@@ -222,9 +250,72 @@
   margin-top: 12px;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 900px) {
   .scroll {
     display: none;
+  }
+
+  /* Бетон и раствор — вкладки; неактивная панель скрыта. */
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .tab {
+    flex: 1;
+    min-height: 48px;
+    padding: 0 12px;
+    background: var(--surface, #fff);
+    color: var(--brand, #485875);
+    border: 1px solid var(--border, #939ba7);
+    border-radius: 10px;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .tabOn {
+    background: var(--brand, #485875);
+    color: #fff;
+    border-color: var(--brand, #485875);
+  }
+
+  .tab:focus-visible {
+    outline: 2px solid var(--brand, #485875);
+    outline-offset: 2px;
+  }
+
+  .tabCount {
+    margin-left: 4px;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+
+  .swipeHint {
+    display: block;
+    margin: 8px 0 0;
+    color: var(--muted, #4b5563);
+    font-size: 13px;
+  }
+
+  .panelOff {
+    display: none;
+  }
+
+  /* Название — на вкладке; жест смахивания по горизонтали, вертикаль — прокрутка. */
+  .sub {
+    display: none;
+  }
+
+  .panels {
+    touch-action: pan-y;
+    margin-top: 12px;
+  }
+
+  .panel .state {
+    margin-top: 0;
   }
 
   .cards {
