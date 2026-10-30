@@ -61,13 +61,6 @@
   text-wrap: balance;
 }
 
-.subtitle {
-  margin: 6px 0 0;
-  font-size: 15px;
-  color: var(--muted);
-  line-height: 1.45;
-}
-
 /* Одна строка заявки — белая плитка с контуром. */
 .card {
   margin-top: 20px;
@@ -212,6 +205,18 @@
   border-color: var(--brand);
 }
 
+.input:has(option[value=""]:checked) {
+  color: var(--muted);
+}
+
+.input option {
+  color: var(--text);
+}
+
+.optional {
+  font-weight: 400;
+}
+
 .input:disabled {
   background: #eef0f3;
   color: #5b6472;
@@ -266,8 +271,10 @@
 
 /* Пункт сводки «Не заполнено» — ссылка, ведущая к полю. */
 .noticeLink {
-  display: inline;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 2px;
   background: none;
   border: none;
   color: var(--danger);
@@ -328,6 +335,13 @@
   color: var(--text);
 }
 
+.noticeList li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 2px;
+}
+
 .noticeList li + li {
   margin-top: 4px;
 }
@@ -345,7 +359,6 @@
 .noticeAction:focus-visible,
 .back:focus-visible,
 .btnPrimary:focus-visible,
-.btnSecondary:focus-visible,
 .removeBtn:focus-visible,
 .addBtn:focus-visible {
   outline: 2px solid var(--brand);
@@ -391,8 +404,7 @@
   border-color: var(--border-hover);
 }
 
-.btnPrimary,
-.btnSecondary {
+.btnPrimary {
   min-height: 48px;
   padding: 0 20px;
   border-radius: 10px;
@@ -415,16 +427,6 @@
 .btnPrimary:disabled {
   opacity: 0.6;
   cursor: default;
-}
-
-.btnSecondary {
-  background: var(--surface);
-  color: var(--brand);
-  border: 1px solid var(--brand);
-}
-
-.btnSecondary:hover {
-  background: #e8ebf0;
 }
 
 /* Содержимое окон (сами окна — components/RequestDialog). */
@@ -473,6 +475,11 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  /* Материал и марка — во всю ширину (в подсказках длинный текст), в паре только подвижность и количество. */
+  .gridWhat > .field:nth-child(-n + 2) {
+    grid-column: 1 / -1;
+  }
+
   .gridPoa {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
   }
@@ -490,5 +497,11 @@
 
   .actions > button {
     width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .gridWhen {
+    grid-template-columns: 1fr;
   }
 }

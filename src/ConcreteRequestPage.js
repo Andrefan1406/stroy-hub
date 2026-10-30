@@ -146,7 +146,7 @@ const selectStyles = {
 
 // Подпись над полем (настоящий <label>, привязан к полю через htmlFor);
 // звёздочка — поле обязательно для этой строки. error — текст под полем.
-const Field = ({ label, required, htmlFor, error, errorId, help, helpId, children }) => (
+const Field = ({ label, required, optional, htmlFor, error, errorId, help, helpId, children }) => (
   <div className={css.field}>
     <label className={css.label} htmlFor={htmlFor}>
       {label}
@@ -156,6 +156,7 @@ const Field = ({ label, required, htmlFor, error, errorId, help, helpId, childre
           <span className={css.srOnly}> (обязательно)</span>
         </>
       )}
+      {optional && <span className={css.optional}> (необязательно)</span>}
     </label>
     {children}
     {help && <span id={helpId} className={css.help}>{help}</span>}
@@ -167,17 +168,22 @@ const Field = ({ label, required, htmlFor, error, errorId, help, helpId, childre
 // выбор без клавиатуры и мелких кнопок; длинные — react-select с поиском.
 const NATIVE_SELECT_MAX = 6;
 
+// Сенсорный экран (телефон, планшет): системный выбор вместо react-select,
+// чтобы не поднималась клавиатура и не прыгала закреплённая панель отправки.
+const isCoarsePointer = () =>
+  typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+
 // Выпадающий список, который отдаёт изменения в handleChange как обычный input.
 // disabledHint — что написать в неактивном поле, чтобы было ясно, чего оно ждёт.
 const SelectField = ({
-  label, name, id, required, options, value, onChange, isDisabled = false, disabledHint, error, help
+  label, name, id, required, optional, options, value, onChange, isDisabled = false, disabledHint, error, help
 }) => {
   const placeholder = isDisabled && disabledHint ? disabledHint : 'Выберите...';
   // Значение, которого нет в списке (например, из Умной заявки), всё равно показываем.
   const nativeOptions = value && !options.includes(value) ? [value, ...options] : options;
   return (
-    <Field label={label} required={required} htmlFor={id} error={error} errorId={`${id}-err`} help={help} helpId={`${id}-help`}>
-      {options.length <= NATIVE_SELECT_MAX ? (
+    <Field label={label} required={required} optional={optional} htmlFor={id} error={error} errorId={`${id}-err`} help={help} helpId={`${id}-help`}>
+      {options.length <= NATIVE_SELECT_MAX || isCoarsePointer() ? (
         <select
           id={id}
           name={name}
@@ -763,6 +769,7 @@ const ConcreteRequestPage = () => {
                       name='concreteGrade'
                       id={idOf('concreteGrade')}
                       required={required.has('concreteGrade')}
+                      optional={hasBlocks}
                       options={materialGradeOptions[row.material] || []}
                       value={row.concreteGrade}
                       onChange={onChange}
@@ -776,6 +783,7 @@ const ConcreteRequestPage = () => {
                         name='concreteClass'
                         id={idOf('concreteClass')}
                         required={required.has('concreteClass')}
+                        optional={hasBlocks}
                         options={MOBILITY_OPTIONS}
                         value={row.concreteClass}
                         onChange={onChange}
@@ -840,7 +848,7 @@ const ConcreteRequestPage = () => {
                   </div>
 
                   <div className={css.group}>
-                    <Field label='Примечание' required={required.has('note')} htmlFor={idOf('note')} error={errorOf('note')} errorId={`${idOf('note')}-err`}>
+                    <Field label='Примечание' required={required.has('note')} optional={!required.has('note')} htmlFor={idOf('note')} error={errorOf('note')} errorId={`${idOf('note')}-err`}>
                       <textarea
                         className={`${css.textarea} ${errorOf('note') ? css.inputError : ''}`}
                         value={row.note}
@@ -894,7 +902,7 @@ const ConcreteRequestPage = () => {
               )}
               {notice.kind === 'success' && (
                 <>
-                  <p className={css.noticeText}>Проверьте её в списке «Текущие заявки» ниже.</p>
+                  <p className={css.noticeText}>{notice.count > 1 ? 'Проверьте их' : 'Проверьте её'} в списке «Текущие заявки» ниже.</p>
                   <a href='#current-requests' className={css.noticeAction}>Перейти к списку ↓</a>
                 </>
               )}
