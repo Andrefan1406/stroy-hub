@@ -75,7 +75,7 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
     ) : (
       <>
         {/* Широкий экран — таблица (блок прокручивается с клавиатуры). */}
-        <div className={styles.scroll} role="region" aria-label={`Таблица заявок: ${title}`} tabIndex={0}>
+        <div className={styles.scroll} role="region" aria-label={`Таблица заявок: ${title}`}>
           <table className={styles.table}>
             <thead>
               <tr>

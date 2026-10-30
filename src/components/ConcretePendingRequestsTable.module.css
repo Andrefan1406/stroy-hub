@@ -1,7 +1,8 @@
 /* Таблицы текущих заявок на бетон и раствор под формой заявки. Оформление
    в стиле главной; цвета и шрифт приходят от обёртки страницы заявки
-   (ConcreteRequestPage.module.css, .page). Широкая таблица прокручивается
-   внутри своего блока, а не расширяет страницу на телефоне. */
+   (ConcreteRequestPage.module.css, .page). Таблица без горизонтальной
+   прокрутки: колонки сжимаются, длинный текст переносится; на экранах
+   уже 900px вместо таблицы — карточки. */
 
 .wrap {
   margin-top: 32px;
@@ -42,26 +43,25 @@
 
 .table {
   width: 100%;
-  min-width: 920px;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
 .table th,
 .table td {
-  padding: 10px 12px;
+  padding: 8px 8px;
   border-bottom: 1px solid #d5d9df;
   text-align: left;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .table th {
   background: #eef0f3;
   color: var(--muted, #4b5563);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  white-space: nowrap;
 }
 
 .table tbody tr:last-child td {
@@ -222,7 +222,7 @@
   margin-top: 12px;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 900px) {
   .scroll {
     display: none;
   }
