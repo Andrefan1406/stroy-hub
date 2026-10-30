@@ -262,6 +262,7 @@ const ConcreteRequestPage = () => {
 
   const [showModal, setShowModal] = useState(false);
   const [showMortarWindowModal, setShowMortarWindowModal] = useState(false);
+  const [showClearModal, setShowClearModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [userName, setUserName] = useState('');
   const [userPhone, setUserPhone] = useState('');
@@ -365,6 +366,16 @@ const ConcreteRequestPage = () => {
     // Фокус и прокрутка — на первое поле новой заявки, чтобы было видно, что она добавилась.
     setFocusId(`r${formRows.length}-date`);
     setFormRows(prev => [...prev, emptyConcreteRow()]);
+  };
+
+  // В форме есть введённое — иначе очищать нечего.
+  const formDirty = JSON.stringify(formRows) !== JSON.stringify([emptyConcreteRow()]);
+
+  const clearForm = () => {
+    setFormRows([emptyConcreteRow()]);
+    setFieldErrors(new Set());
+    setNotice(null);
+    setShowClearModal(false);
   };
 
   const removeRow = (index) => {
@@ -935,6 +946,11 @@ const ConcreteRequestPage = () => {
           <button type='button' onClick={addRow} className={css.addBtn}>+ Добавить ещё одну заявку</button>
 
           <div className={`${css.actions} ${keyboardOpen ? css.actionsStatic : ''}`}>
+            {formDirty && (
+              <button type='button' className={css.btnGhost} onClick={() => setShowClearModal(true)}>
+                Очистить форму
+              </button>
+            )}
             <button type='submit' className={css.btnPrimary}>
               {formRows.length > 1 ? `Отправить заявки (${formRows.length})` : 'Отправить заявку'}
             </button>
@@ -998,6 +1014,20 @@ const ConcreteRequestPage = () => {
           >
             {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
           </button>
+        </Dialog>
+      )}
+
+      {showClearModal && (
+        <Dialog title='Очистить форму?' onClose={() => setShowClearModal(false)}>
+          <p className={css.dialogText}>
+            {formRows.length > 1
+              ? `Все заявки (${formRows.length}) будут удалены, останется одна пустая.`
+              : 'Все введённые данные будут удалены.'}
+          </p>
+          <div className={css.dialogActions}>
+            <button type='button' className={css.btnGhost} onClick={() => setShowClearModal(false)}>Отмена</button>
+            <button type='button' className={css.btnPrimary} onClick={clearForm}>Очистить</button>
+          </div>
         </Dialog>
       )}
 

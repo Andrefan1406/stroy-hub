@@ -390,6 +390,7 @@
 .noticeAction:focus-visible,
 .back:focus-visible,
 .btnPrimary:focus-visible,
+.btnGhost:focus-visible,
 .removeBtn:focus-visible,
 .addBtn:focus-visible {
   outline: 2px solid var(--brand);
@@ -449,6 +450,36 @@
   background: var(--brand);
   color: #fff;
   border: 1px solid var(--brand);
+}
+
+.btnGhost {
+  min-height: 48px;
+  margin-right: auto;
+  padding: 0 16px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btnGhost:hover {
+  background: #e8ebf0;
+  color: var(--text);
+}
+
+.dialogActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.dialogActions .btnGhost {
+  margin-right: 0;
 }
 
 .btnPrimary:hover {
