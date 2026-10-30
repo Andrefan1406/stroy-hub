@@ -85,7 +85,7 @@ const MaterialRequestsTable = ({ id, title, rows, showGeoColumn, canDeleteRows, 
       <>
         {/* Широкий экран — таблица (блок прокручивается с клавиатуры). */}
         <div className={styles.scroll} role="region" aria-label={`Таблица заявок: ${title}`}>
-          <table className={styles.table}>
+          <table className={showGeoColumn ? styles.table : `${styles.table} ${styles.tableMortar}`}>
             <thead>
               <tr>
                 <th scope="col">№ п/п</th>

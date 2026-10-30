@@ -165,6 +165,23 @@
   outline-offset: 2px;
 }
 
+/* Раствор: «Примечание» уже, «Марка», «Плановая дата» и «Подача заявки» —
+   по содержимому, в одну строку (колонки: 1 №, 2 Объект, 3 Позиция, 4 Марка,
+   5 Объём, 6 Плановая дата, 7 Подача заявки, 8 Примечание, 9 Ответственный). */
+.tableMortar th:nth-child(4),
+.tableMortar td:nth-child(4),
+.tableMortar th:nth-child(6),
+.tableMortar td:nth-child(6),
+.tableMortar th:nth-child(7),
+.tableMortar td:nth-child(7) {
+  white-space: nowrap;
+}
+
+.tableMortar th:nth-child(8),
+.tableMortar td:nth-child(8) {
+  width: 11%;
+}
+
 /* Карточки — только на телефоне; на широком экране показана таблица. */
 .cards {
   display: none;
