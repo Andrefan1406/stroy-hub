@@ -311,6 +311,8 @@ const ConcreteRequestPage = () => {
   useEffect(() => {
     if (notice && !focusId && noticeRef.current) {
       noticeRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      // Успех: фокус на плашку, чтобы скринридер её озвучил.
+      if (notice.kind === 'success') noticeRef.current.focus({ preventScroll: true });
     }
   }, [notice, focusId]);
 
@@ -557,7 +559,17 @@ const ConcreteRequestPage = () => {
       headers: { 'Content-Type': 'application/json' }
     });
 
-    setNotice({ kind: 'success', count: formRows.length });
+    setNotice({
+      kind: 'success',
+      count: formRows.length,
+      recap: formRows.map((row) => [
+        row.date && row.date.split('-').reverse().slice(0, 2).join('.'),
+        row.time,
+        [row.object || row.category, row.position].filter(Boolean).join(', '),
+        row.material,
+        row.quantity && `${row.quantity} м³`,
+      ].filter(Boolean).join(' · ')),
+    });
     setShowModal(false);
     setUserName('');
     setUserPhone('');
@@ -868,6 +880,7 @@ const ConcreteRequestPage = () => {
               ref={noticeRef}
               className={notice.kind === 'success' ? css.noticeOk : css.noticeError}
               role={notice.kind === 'success' ? 'status' : 'alert'}
+              tabIndex={notice.kind === 'success' ? -1 : undefined}
             >
               <p className={css.noticeTitle}>
                 {notice.kind === 'success'
@@ -902,7 +915,12 @@ const ConcreteRequestPage = () => {
               )}
               {notice.kind === 'success' && (
                 <>
-                  <p className={css.noticeText}>{notice.count > 1 ? 'Проверьте их' : 'Проверьте её'} в списке «Текущие заявки» ниже.</p>
+                  <ul className={css.noticeRecap}>
+                    {notice.recap.map((line, i) => (
+                      <li key={i}>{notice.count > 1 ? `Заявка ${i + 1}: ` : ''}{line}</li>
+                    ))}
+                  </ul>
+                  <p className={css.noticeText}>{notice.count > 1 ? 'Они появятся' : 'Она появится'} в списке «Текущие заявки» ниже с пометкой «Новая».</p>
                   <a href='#current-requests' className={css.noticeAction}>Перейти к списку ↓</a>
                 </>
               )}

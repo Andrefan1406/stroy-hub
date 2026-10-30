@@ -65,7 +65,9 @@ const formatResponsible = (name, phone) => {
 // для конструктива, у раствора (кладка/штукатурка) такого требования нет —
 // ни колонки, ни сортировки по этому признаку в таблице раствора. Тот же
 // флаг включает и колонку согласования энергетиков (прогрев бетона зимой).
-const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDeleteClick }) => (
+const NewBadge = () => <span className={styles.badgeNew}>Новая</span>;
+
+const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDeleteClick, newKeys }) => (
   <div>
     <h3 className={styles.sub}>{title}</h3>
     {rows.length === 0 ? (
@@ -95,7 +97,7 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
               {rows.map((row, index) => (
                 <tr key={row.request_key}>
                   <td>{index + 1}</td>
-                  <td>{row.object_name || "—"}</td>
+                  <td>{newKeys.has(row.request_key) && <NewBadge />}{row.object_name || "—"}</td>
                   <td>{row.block_position || "—"}</td>
                   <td>{row.grade_class || "—"}</td>
                   <td>{formatVolume(row.volume_planned_m3)}</td>
@@ -128,6 +130,7 @@ const MaterialRequestsTable = ({ title, rows, showGeoColumn, canDeleteRows, onDe
             <li key={row.request_key} className={styles.cardItem}>
               <p className={styles.cardHead}>
                 <span className={styles.cardNum}>{index + 1}.</span>
+                {newKeys.has(row.request_key) && <NewBadge />}
                 {row.object_name || "—"}
               </p>
               <p className={styles.cardPos}>{row.block_position || "—"}</p>
@@ -178,16 +181,24 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
   const [confirmingRow, setConfirmingRow] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  // Заявки, появившиеся в списке после отправки новой, — помечаются «Новая».
+  const [newKeys, setNewKeys] = useState(() => new Set());
+  const knownKeysRef = useRef(null);
 
   const currentEmail = getAuth().currentUser?.email?.toLowerCase() || "";
   const canDeleteRows = ROW_DELETE_ALLOWED_EMAILS.includes(currentEmail);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (markNew = false) => {
     setLoading(true);
     setError("");
     try {
       const data = await apiFetch("/api/concrete-board/pending");
-      setRows(data.rows || []);
+      const loaded = data.rows || [];
+      if (markNew && knownKeysRef.current) {
+        setNewKeys(new Set(loaded.filter((r) => !knownKeysRef.current.has(r.request_key)).map((r) => r.request_key)));
+      }
+      knownKeysRef.current = new Set(loaded.map((r) => r.request_key));
+      setRows(loaded);
     } catch (err) {
       setError(err.message || "Не удалось загрузить заявки");
     } finally {
@@ -196,7 +207,7 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
   }, []);
 
   useEffect(() => {
-    load();
+    load(refreshSignal > 0);
   }, [load, refreshSignal]);
 
   // Часовой опрос 06:00-24:00 — только перезапрашивает список, чтобы строки
@@ -241,7 +252,7 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
       {error && (
         <div className={styles.error} role="alert">
           <span>{error}</span>
-          <button type="button" className={styles.btn} onClick={load}>
+          <button type="button" className={styles.btn} onClick={() => load()}>
             Повторить
           </button>
         </div>
@@ -256,6 +267,7 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
             <MaterialRequestsTable
               title="Бетон"
               rows={concreteRows}
+              newKeys={newKeys}
               showGeoColumn
               canDeleteRows={canDeleteRows}
               onDeleteClick={setConfirmingRow}
@@ -263,6 +275,7 @@ const ConcretePendingRequestsTable = ({ refreshSignal }) => {
             <MaterialRequestsTable
               title="Раствор"
               rows={mortarRows}
+              newKeys={newKeys}
               showGeoColumn={false}
               canDeleteRows={canDeleteRows}
               onDeleteClick={setConfirmingRow}

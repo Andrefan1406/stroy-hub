@@ -227,8 +227,15 @@
   color: #5b6472;
 }
 
-.inputError {
+.inputError,
+.input.inputError:focus-visible,
+.textarea.inputError:focus-visible {
   border-color: var(--danger);
+}
+
+.input.inputError:focus-visible,
+.textarea.inputError:focus-visible {
+  outline-color: var(--danger);
 }
 
 .textarea {
@@ -309,6 +316,21 @@
   border-color: var(--ok-border);
   background: var(--ok-bg);
   color: var(--ok);
+}
+
+.noticeRecap {
+  margin: 8px 0 0;
+  padding: 0 0 0 20px;
+  color: var(--text);
+}
+
+.noticeRecap li + li {
+  margin-top: 2px;
+}
+
+.noticeOk:focus-visible {
+  outline: 2px solid var(--ok);
+  outline-offset: 2px;
 }
 
 .noticeTitle {

@@ -14,6 +14,19 @@
   letter-spacing: -0.01em;
 }
 
+.badgeNew {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 8px;
+  background: var(--ok-bg, #f0f8f3);
+  color: var(--ok, #1d6b3a);
+  border: 1px solid var(--ok-border, #b9dcc6);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
 .sub {
   margin: 28px 0 10px;
   font-size: 17px;
