@@ -21,8 +21,9 @@ const SETTLEMENTS = {
   'зыряновск': [place('Алтай', 'town', 49.72, 84.27)],
 };
 const ADDRESSES = {
-  'ул. Ленина, 5, Семей': [{ lat: '50.41', lon: '80.25', place_rank: 30 }],
-  'ул. Мира, 1': [{ lat: '50.51', lon: '82.01', place_rank: 30 }], // в селе — без названия села
+  'ул. Ленина, 5, Семей': [{ lat: '50.41', lon: '80.25', place_rank: 30, address: { road: 'улица Ленина', house_number: '5' } }],
+  'ул. Мира, 1': [{ lat: '50.51', lon: '82.01', place_rank: 30, address: { road: 'улица Мира', house_number: '1' } }], // в селе — без названия села
+  'Протозанова 10': [{ lat: '49.95', lon: '82.61', place_rank: 30, address: { road: 'улица Протозанова', house_number: '10' } }],
 };
 let calls = [];
 mock.method(globalThis, 'fetch', async (url) => {
@@ -65,7 +66,7 @@ test('опечатка или старое название — не найде�
 
 test('улица ищется в границах выбранного населённого пункта', async () => {
   calls = [];
-  assert.deepEqual(await lookupAddress('г. Семей, ул. Ленина, 5'), { status: 'found', lat: 50.41, lng: 80.25 });
+  assert.deepEqual(await lookupAddress('г. Семей, ул. Ленина, 5'), { status: 'found', lat: 50.41, lng: 80.25, matched: 'улица Ленина, 5' });
   assert.deepEqual(calls, [{ q: 'ул. Ленина, 5, Семей', viewbox: '80.07,50.30,80.50,50.51', settlement: false }]);
 });
 

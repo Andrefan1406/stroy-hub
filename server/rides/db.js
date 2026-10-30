@@ -332,6 +332,9 @@ function migrateSchema(db) {
   // запись из кэша до появления этой колонки: точность неизвестна.
   const geocodeColumns = db.prepare('PRAGMA table_info(geocode_cache)').all().map((c) => c.name);
   if (!geocodeColumns.includes('precise')) db.exec('ALTER TABLE geocode_cache ADD COLUMN precise INTEGER');
+  // Как найденное называется на карте (показывается в форме). NULL — запись
+  // до проверки совпадения улицы: могла быть чужим местом, переспрашивается.
+  if (!geocodeColumns.includes('matched')) db.exec('ALTER TABLE geocode_cache ADD COLUMN matched TEXT');
   if (!stopColumns.includes('merged_from_request_id')) {
     db.exec('ALTER TABLE request_stops ADD COLUMN merged_from_request_id INTEGER');
   }

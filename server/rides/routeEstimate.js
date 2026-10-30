@@ -24,6 +24,7 @@
 const { getWriteDb } = require('./db');
 const { logEvent } = require('./events');
 const { KNOWN, splitSettlement, normalize } = require('./settlements');
+const { matchResult, kzToRu } = require('./streetMatch');
 
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving';
@@ -72,20 +73,32 @@ function haversineKm(a, b) {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
-async function geocodeRaw(address, viewbox) {
+// text — адрес без населённого пункта, как набрал пользователь: ответ
+// принимается, только если в нём та же улица или то же место (streetMatch.js).
+// Из нескольких вариантов Nominatim берём первый подходящий, точный — вперёд.
+async function geocodeRaw(address, viewbox, text) {
   const params = new URLSearchParams({
     q: address,
     format: 'jsonv2',
-    limit: '1',
+    limit: '5',
     countrycodes: GEOCODE_COUNTRY_CODES,
     viewbox,
     bounded: '1',
+    addressdetails: '1',
+    'accept-language': 'ru',
   });
   const res = await fetch(`${NOMINATIM_URL}?${params.toString()}`, { headers: { 'User-Agent': 'my-first-site-rides/1.0' } });
   if (!res.ok) throw new Error(`Nominatim ${res.status}`);
   const data = await res.json();
-  if (!data.length) return null;
-  return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), precise: Number(data[0].place_rank) >= PRECISE_PLACE_RANK };
+  let best = null;
+  for (const item of data) {
+    const m = matchResult(text, item, PRECISE_PLACE_RANK);
+    if (!m) continue;
+    const found = { lat: parseFloat(item.lat), lng: parseFloat(item.lon), precise: m.precise, matched: m.matched };
+    if (found.precise) return found;
+    if (!best) best = found;
+  }
+  return best;
 }
 
 // Кэш geocode_cache: свежую запись (в пределах TTL) отдаём сразу, включая
@@ -111,10 +124,10 @@ async function geocodeAddress(address) {
 // числе ошибочно — «г. Шемонаиха, ...») не подхватываются.
 async function searchPlan(address) {
   const split = await splitSettlement(address);
-  if (!split) return { cacheKey: address, queries: [address], viewbox: KNOWN[0].box };
+  if (!split) return { cacheKey: address, queries: [address], viewbox: KNOWN[0].box, text: address };
   const s = split.settlement;
   if (s.status !== 'found') return { status: s.status === 'unavailable' ? 'unavailable' : 'not_found' };
-  return { cacheKey: `${normalize(s.name)}|${split.rest}`, queries: [`${split.rest}, ${s.query}`, split.rest], viewbox: s.box };
+  return { cacheKey: `${normalize(s.name)}|${split.rest}`, queries: [`${split.rest}, ${s.query}`, split.rest], viewbox: s.box, text: split.rest };
 }
 
 // Поиск адреса с кэшем и оценкой точности:
@@ -122,40 +135,47 @@ async function searchPlan(address) {
 //   street      — только улица/район/город — точку нужно отметить на карте;
 //   not_found   — не найдено в окрестностях города;
 //   unavailable — геокодер не ответил (и в кэше ничего) — тоже на карту.
-// lat/lng есть у found и street (street — чтобы открыть карту на этой улице).
+// lat/lng есть у found и street (street — чтобы открыть карту на этой улице),
+// matched — как найденное называется на карте («улица Протозанова, 10»).
 async function lookupAddress(address) {
   const text = String(address || '').trim();
   if (!text) return { status: 'not_found' };
   const plan = await searchPlan(text);
   if (plan.status) return { status: plan.status };
+  // Казахское написание карта часто не находит — после запросов как есть
+  // пробуем то же русскими буквами (дальше первого точного ответа не идём).
+  const ruQueries = plan.queries.map(kzToRu).filter((q) => !plan.queries.includes(q));
+  plan.queries = [...plan.queries, ...ruQueries];
   const key = plan.cacheKey;
   const db = getWriteDb();
-  const row = db.prepare('SELECT lat, lng, found, precise, fetched_at FROM geocode_cache WHERE address = ?').get(key);
-  const fromRow = (r) => (r.found ? { status: r.precise ? 'found' : 'street', lat: r.lat, lng: r.lng } : { status: 'not_found' });
+  const row = db.prepare('SELECT lat, lng, found, precise, matched, fetched_at FROM geocode_cache WHERE address = ?').get(key);
+  const fromRow = (r) => (r.found ? { status: r.precise ? 'found' : 'street', lat: r.lat, lng: r.lng, matched: r.matched } : { status: 'not_found' });
   if (row) {
     const ageDays = (Date.now() - new Date(row.fetched_at + 'Z').getTime()) / 86400000;
-    // Записи без точности (из кэша до её появления) — переспрашиваем.
-    if (ageDays < GEOCODE_TTL_DAYS && (!row.found || row.precise != null)) return fromRow(row);
+    // Найденное без точности или без названия (кэш до проверки совпадения
+    // улицы — в нём бывали чужие места) — переспрашиваем.
+    if (ageDays < GEOCODE_TTL_DAYS && (!row.found || (row.precise != null && row.matched))) return fromRow(row);
   }
   let result = null;
   try {
     // До первого точного (дом, здание); иначе — первое неточное (улица).
     for (const q of plan.queries) {
-      const r = await geocodeRaw(q, plan.viewbox); // последовательно — щадим лимит Nominatim
+      const r = await geocodeRaw(q, plan.viewbox, plan.text); // последовательно — щадим лимит Nominatim
       if (r && (r.precise || !result)) result = r;
       if (result?.precise) break;
     }
   } catch (err) {
-    if (row && row.found && row.precise != null) return fromRow(row);
-    return row && row.found ? { status: 'street', lat: row.lat, lng: row.lng } : { status: 'unavailable' };
+    if (row && row.found && row.precise != null && row.matched) return fromRow(row);
+    return { status: 'unavailable' }; // старой записи без проверки совпадения не верим
   }
   db.prepare(
-    `INSERT INTO geocode_cache (address, lat, lng, found, precise, fetched_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))
+    `INSERT INTO geocode_cache (address, lat, lng, found, precise, matched, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(address) DO UPDATE SET
-       lat = excluded.lat, lng = excluded.lng, found = excluded.found, precise = excluded.precise, fetched_at = excluded.fetched_at`
-  ).run(key, result ? result.lat : null, result ? result.lng : null, result ? 1 : 0, result ? (result.precise ? 1 : 0) : null);
-  return result ? { status: result.precise ? 'found' : 'street', lat: result.lat, lng: result.lng } : { status: 'not_found' };
+       lat = excluded.lat, lng = excluded.lng, found = excluded.found, precise = excluded.precise,
+       matched = excluded.matched, fetched_at = excluded.fetched_at`
+  ).run(key, result ? result.lat : null, result ? result.lng : null, result ? 1 : 0, result ? (result.precise ? 1 : 0) : null, result ? result.matched : null);
+  return result ? { status: result.precise ? 'found' : 'street', lat: result.lat, lng: result.lng, matched: result.matched } : { status: 'not_found' };
 }
 
 async function osrmLegKm(points) {
