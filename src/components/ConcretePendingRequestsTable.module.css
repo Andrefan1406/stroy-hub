@@ -34,6 +34,11 @@
   font-weight: 600;
 }
 
+.tabs,
+.swipeHint {
+  display: none;
+}
+
 .scroll {
   overflow-x: auto;
   background: var(--surface, #fff);
@@ -225,6 +230,69 @@
 @media (max-width: 900px) {
   .scroll {
     display: none;
+  }
+
+  /* Бетон и раствор — вкладки; неактивная панель скрыта. */
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .tab {
+    flex: 1;
+    min-height: 48px;
+    padding: 0 12px;
+    background: var(--surface, #fff);
+    color: var(--brand, #485875);
+    border: 1px solid var(--border, #939ba7);
+    border-radius: 10px;
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .tabOn {
+    background: var(--brand, #485875);
+    color: #fff;
+    border-color: var(--brand, #485875);
+  }
+
+  .tab:focus-visible {
+    outline: 2px solid var(--brand, #485875);
+    outline-offset: 2px;
+  }
+
+  .tabCount {
+    margin-left: 4px;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+
+  .swipeHint {
+    display: block;
+    margin: 8px 0 0;
+    color: var(--muted, #4b5563);
+    font-size: 13px;
+  }
+
+  .panelOff {
+    display: none;
+  }
+
+  /* Название — на вкладке; жест смахивания по горизонтали, вертикаль — прокрутка. */
+  .sub {
+    display: none;
+  }
+
+  .panels {
+    touch-action: pan-y;
+    margin-top: 12px;
+  }
+
+  .panel .state {
+    margin-top: 0;
   }
 
   .cards {
