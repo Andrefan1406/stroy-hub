@@ -14,11 +14,16 @@
 // с карты главнее текста: текст можно уточнять дальше («склад №2»), точка
 // остаётся, пока её не сбросят.
 //
-// Значение поля: { city, address, point: { lat, lng, manual } | null, status, hint }
+// Найденное показываем словами карты («✓ Найдено: улица Протозанова, 10»), чтобы
+// ошибку поиска (не тот дом, не та улица) было видно, а не принимать молча;
+// слишком далёкую от города точку подсвечиваем.
+//
+// Значение поля: { city, address, point: { lat, lng, manual } | null, status, hint, matched }
 //   city: { name, custom, status: ok | empty | checking | not_found | unavailable, lat, lng, suggestions }
 //   address — улица, дом (без населённого пункта, его добавляет addressPayload);
 //   status: idle | checking | found | street | not_found | unavailable | manual
-//   hint — где открыть карту (найденная улица).
+//   hint — где открыть карту (найденная улица);
+//   matched — как найденное называется на карте.
 import React, { useEffect, useRef, useState } from "react";
 import MapPicker from "./MapPicker";
 import { ridesApiFetch } from "./api";
@@ -37,6 +42,16 @@ export const addressReady = (v) => !v.address.trim() || (cityReady(v) && !!v.poi
 export const addressNeedsMap = (v) => !!v.address.trim() && cityReady(v) && !v.point && ["street", "not_found", "unavailable"].includes(v.status);
 
 const CHECK_DELAY_MS = 700;
+
+// Дальше этого от центра населённого пункта найденная точка вызывает сомнение.
+const FAR_FROM_CITY_KM = 15;
+
+function distanceKm(a, b) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const h = Math.sin(rad(b.lat - a.lat) / 2) ** 2
+    + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lng - a.lng) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
 
 const NEED_MAP_TEXT = {
   street: "Найдена только улица, без дома. Нажмите «На карте» и отметьте нужное здание — так время в пути и километраж будут рассчитаны точно.",
@@ -114,8 +129,8 @@ export default function AddressField({ value, onChange, placeholder = "Улиц�
       if (fullAddress(cur) !== full || cur.point?.manual) return;
       const at = res.lat != null ? { lat: res.lat, lng: res.lng } : null;
       onChange(res.status === "found"
-        ? { ...cur, status: "found", point: { ...at, manual: false }, hint: at }
-        : { ...cur, status: res.status, point: null, hint: at });
+        ? { ...cur, status: "found", point: { ...at, manual: false }, hint: at, matched: res.matched || null }
+        : { ...cur, status: res.status, point: null, hint: at, matched: res.matched || null });
     }, CHECK_DELAY_MS);
     return () => clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,6 +157,8 @@ export default function AddressField({ value, onChange, placeholder = "Улиц�
   const cityCenter = city.lat != null ? { lat: city.lat, lng: city.lng }
     : settlements.find((x) => x.name === city.name && x.lat != null) || null;
   const needMap = addressNeedsMap(value);
+  const farKm = value.status === "found" && value.point && cityCenter?.lat != null ? distanceKm(cityCenter, value.point) : 0;
+  const farFromCity = farKm > FAR_FROM_CITY_KM;
   return (
     <div style={st.wrap}>
       <div style={st.row}>
@@ -185,7 +202,15 @@ export default function AddressField({ value, onChange, placeholder = "Улиц�
         </>
       )}
       {value.status === "checking" && <div style={st.muted}>Ищем адрес на карте…</div>}
-      {value.status === "found" && value.address.trim() && <div style={st.ok}>✓ Адрес найден на карте</div>}
+      {value.status === "found" && value.address.trim() && (
+        <div style={st.ok}>
+          ✓ Найдено: {value.matched || "адрес на карте"}{" "}
+          <button type="button" style={st.link} onClick={() => setMapOpen(true)}>Проверить на карте</button>
+        </div>
+      )}
+      {farFromCity && (
+        <div style={st.warn}>⚠️ Найденная точка далеко от населённого пункта ({Math.round(farKm)} км). Проверьте её — нажмите «На карте» и отметьте нужное место.</div>
+      )}
       {manual && (
         <div style={st.ok}>
           ✓ Точка отмечена на карте{" "}
@@ -193,7 +218,11 @@ export default function AddressField({ value, onChange, placeholder = "Улиц�
           <button type="button" style={st.link} onClick={() => onChange({ ...value, point: null, status: "idle" })}>Сбросить</button>
         </div>
       )}
-      {needMap && <div style={st.warn}>⚠️ {NEED_MAP_TEXT[value.status]}</div>}
+      {needMap && (
+        <div style={st.warn}>⚠️ {NEED_MAP_TEXT[value.status]}
+          {value.status === "street" && value.matched && <> Нашли: {value.matched}.</>}
+        </div>
+      )}
       {mapOpen && (
         <MapPicker
           title={mapTitle}

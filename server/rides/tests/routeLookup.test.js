@@ -14,9 +14,15 @@ initSchema();
 const { lookupAddress, recomputeRequestEstimate } = require('../routeEstimate');
 
 const NOMINATIM = {
-  'Протозанова 10': [{ lat: '49.95', lon: '82.61', place_rank: 30 }],
-  'ул. Базовая': [{ lat: '49.97', lon: '82.55', place_rank: 26 }],
+  'Протозанова 10': [{ lat: '49.95', lon: '82.61', place_rank: 30, address: { road: 'улица Протозанова', house_number: '10' } }],
+  'ул. Базовая': [{ lat: '49.97', lon: '82.55', place_rank: 26, address: { road: 'улица Базовая' } }],
   'Нигде': [],
+  // Такой улицы на карте нет: сервис отвечает чужой АЗС, зацепившись за номер дома.
+  'Кайсенова 119': [{ lat: '50.0158', lon: '82.5166', place_rank: 30, name: 'Qazaq Oil', address: { road: 'улица Бажова' } }],
+  // Улица есть, дома с таким номером нет — рядом дом другого номера.
+  'Протозанова 99': [{ lat: '49.95', lon: '82.61', place_rank: 30, address: { road: 'улица Протозанова', house_number: '10' } }],
+  // Казахское написание и фамилия в другом роде.
+  'Қайсенов 7': [{ lat: '49.96', lon: '82.60', place_rank: 30, address: { road: 'улица Кайсенова', house_number: '7' } }],
 };
 let nominatimCalls = [];
 let nominatimDown = false;
@@ -31,12 +37,34 @@ mock.method(globalThis, 'fetch', async (url) => {
 });
 
 test('точность адреса: дом — найден, только улица — на карту, ничего — не найден', async () => {
-  assert.deepEqual(await lookupAddress('Протозанова 10'), { status: 'found', lat: 49.95, lng: 82.61 });
-  assert.deepEqual(await lookupAddress('ул. Базовая'), { status: 'street', lat: 49.97, lng: 82.55 });
+  assert.deepEqual(await lookupAddress('Протозанова 10'), { status: 'found', lat: 49.95, lng: 82.61, matched: 'улица Протозанова, 10' });
+  assert.deepEqual(await lookupAddress('ул. Базовая'), { status: 'street', lat: 49.97, lng: 82.55, matched: 'улица Базовая' });
   assert.deepEqual(await lookupAddress('Нигде'), { status: 'not_found' });
   nominatimCalls = [];
   assert.equal((await lookupAddress('ул. Базовая')).status, 'street');
   assert.deepEqual(nominatimCalls, [], 'повторно — из кэша');
+});
+
+test('чужое место с тем же номером дома не принимается — адрес не найден', async () => {
+  assert.deepEqual(await lookupAddress('Кайсенова 119'), { status: 'not_found' });
+});
+
+test('улица есть, а номера дома нет — только улица, точку отметят на карте', async () => {
+  assert.deepEqual(await lookupAddress('Протозанова 99'), { status: 'street', lat: 49.95, lng: 82.61, matched: 'улица Протозанова, 10' });
+});
+
+test('казахские буквы и окончание фамилии не мешают найти улицу', async () => {
+  const r = await lookupAddress('Қайсенов 7');
+  assert.equal(r.status, 'found');
+  assert.equal(r.matched, 'улица Кайсенова, 7');
+});
+
+test('запись кэша без названия найденного (до проверки совпадения) переспрашивается', async () => {
+  const db = getWriteDb();
+  db.prepare("INSERT INTO geocode_cache (address, lat, lng, found, precise, matched) VALUES ('Старый адрес', 1, 2, 1, 1, NULL)").run();
+  nominatimCalls = [];
+  assert.deepEqual(await lookupAddress('Старый адрес'), { status: 'not_found' });
+  assert.deepEqual(nominatimCalls, ['Старый адрес']);
 });
 
 test('сервис поиска не ответил — «unavailable» (точку нужно отметить на карте)', async () => {
