@@ -52,6 +52,12 @@ async function apiFetchWithAuth(path, options = {}) {
 const formatVolume = (value) =>
   value === null || value === undefined ? "—" : `${Number(value).toLocaleString("ru-RU")} м³`;
 
+// "2026-10-28" -> "28.10.2026"; значение в другом виде показываем как есть.
+const formatPlannedDate = (value) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ""));
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : value || "—";
+};
+
 const formatSubmittedAt = (value) => {
   if (!value) return "—";
   // "2024-06-06 15:26:16" -> "06.06.2024 15:26"
@@ -110,7 +116,7 @@ const MaterialRequestsTable = ({ id, title, rows, showGeoColumn, canDeleteRows, 
                   <td>{row.block_position || "—"}</td>
                   <td>{row.grade_class || "—"}</td>
                   <td>{formatVolume(row.volume_planned_m3)}</td>
-                  <td>{row.planned_delivery_date || "—"}</td>
+                  <td>{formatPlannedDate(row.planned_delivery_date)}</td>
                   <td>{formatSubmittedAt(row.submitted_at)}</td>
                   {showGeoColumn && (
                     <td className={row.geo_approved ? styles.approved : styles.dash}>{row.geo_approved ? "Согласовано" : "—"}</td>
@@ -147,7 +153,7 @@ const MaterialRequestsTable = ({ id, title, rows, showGeoColumn, canDeleteRows, 
                 <dt>Марка · объём</dt>
                 <dd>{[row.grade_class, formatVolume(row.volume_planned_m3)].filter((v) => v && v !== "—").join(" · ") || "—"}</dd>
                 <dt>Плановая дата</dt>
-                <dd>{row.planned_delivery_date || "—"}</dd>
+                <dd>{formatPlannedDate(row.planned_delivery_date)}</dd>
                 <dt>Подача заявки</dt>
                 <dd>{formatSubmittedAt(row.submitted_at)}</dd>
                 {showGeoColumn && (
