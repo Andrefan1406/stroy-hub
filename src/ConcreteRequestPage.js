@@ -119,10 +119,10 @@ const selectStyles = {
     minHeight: 48,
     fontSize: 16,
     borderRadius: 10,
-    borderColor: state.selectProps['aria-invalid'] ? '#a61b1b' : (state.isFocused ? '#485875' : '#939ba7'),
+    borderColor: state.selectProps['aria-invalid'] ? '#a61b1b' : (state.isFocused ? '#485875' : '#6b7280'),
     boxShadow: state.isFocused ? '0 0 0 3px rgba(72, 88, 117, 0.3)' : 'none',
     backgroundColor: state.isDisabled ? '#eef0f3' : '#fff',
-    '&:hover': { borderColor: state.isFocused ? '#485875' : '#6b7280' },
+    '&:hover': { borderColor: state.isFocused ? '#485875' : '#4b5563' },
   }),
   valueContainer: (base) => ({ ...base, padding: '0 12px' }),
   // Кнопки «очистить» и «раскрыть» — не уже 44px, как остальные цели нажатия.
@@ -302,7 +302,8 @@ const ConcreteRequestPage = () => {
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return undefined;
-    const update = () => setKeyboardOpen(vv.height < window.innerHeight * 0.75);
+    // Жест-увеличение тоже уменьшает видимую область, но масштаб при этом больше 1 — это не клавиатура.
+    const update = () => setKeyboardOpen(vv.scale <= 1.01 && vv.height < window.innerHeight * 0.75);
     update();
     vv.addEventListener('resize', update);
     return () => vv.removeEventListener('resize', update);

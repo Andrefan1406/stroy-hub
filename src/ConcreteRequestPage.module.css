@@ -12,6 +12,8 @@
   --muted: #4b5563;        /* ≥7:1 на фоне — читается и на солнце */
   --border: #939ba7;       /* 2,8:1 к белому — край поля и плитки виден и на солнце */
   --border-hover: #6b7280;
+  --field-border: #6b7280;       /* рамка полей ввода: 4,8:1 к белому (≥3:1 для границ элементов) */
+  --field-border-hover: #4b5563;
   --surface: #ffffff;
   --bg: #f6f7f9;
   --danger: #a61b1b;
@@ -182,7 +184,7 @@
   padding: 10px 12px;
   background: var(--surface);
   color: var(--text);
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: 10px;
   font: inherit;
   font-size: 16px; /* и чтобы Safari на iOS не увеличивал страницу при фокусе */
@@ -196,7 +198,14 @@
 
 .input:hover,
 .textarea:hover {
-  border-color: var(--border-hover);
+  border-color: var(--field-border-hover);
+}
+
+/* При переходе фокуса не прятать поле под закреплённой панелью отправки. */
+.field input,
+.field select,
+.field textarea {
+  scroll-margin-bottom: 96px;
 }
 
 .input:focus-visible,
@@ -362,13 +371,6 @@
   margin: 8px 0 0;
   padding: 0 0 0 28px;
   color: var(--text);
-}
-
-.noticeList li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  column-gap: 2px;
 }
 
 .noticeList li + li {
