@@ -58,12 +58,25 @@ const formatPlannedDate = (value) => {
   return m ? `${m[3]}.${m[2]}.${m[1]}` : value || "—";
 };
 
+// В таблице плановая дата в две строки: день и месяц, ниже год («28.10.» / «2026»).
+const PlannedDateCell = ({ value }) => {
+  const m = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(formatPlannedDate(value));
+  return m ? <>{m[1]}.{m[2]}.<br />{m[3]}</> : formatPlannedDate(value);
+};
+
 const formatSubmittedAt = (value) => {
   if (!value) return "—";
   // "2024-06-06 15:26:16" -> "06.06.2024 15:26"
   const [datePart, timePart] = value.split(" ");
   const [y, m, d] = datePart.split("-");
   return `${d}.${m}.${y} ${(timePart || "").slice(0, 5)}`;
+};
+
+// Подача заявки в таблице раствора: дата, ниже время.
+const SubmittedAtCell = ({ value, split }) => {
+  const text = formatSubmittedAt(value);
+  const at = text.lastIndexOf(" ");
+  return split && at > 0 ? <>{text.slice(0, at)}<br />{text.slice(at + 1)}</> : text;
 };
 
 const formatResponsible = (name, phone) => {
@@ -116,8 +129,8 @@ const MaterialRequestsTable = ({ id, title, rows, showGeoColumn, canDeleteRows, 
                   <td>{row.block_position || "—"}</td>
                   <td>{row.grade_class || "—"}</td>
                   <td>{formatVolume(row.volume_planned_m3)}</td>
-                  <td>{formatPlannedDate(row.planned_delivery_date)}</td>
-                  <td>{formatSubmittedAt(row.submitted_at)}</td>
+                  <td><PlannedDateCell value={row.planned_delivery_date} /></td>
+                  <td><SubmittedAtCell value={row.submitted_at} split={!showGeoColumn} /></td>
                   {showGeoColumn && (
                     <td className={row.geo_approved ? styles.approved : styles.dash}>{row.geo_approved ? "Согласовано" : "—"}</td>
                   )}
