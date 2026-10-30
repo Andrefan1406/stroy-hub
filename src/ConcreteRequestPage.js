@@ -614,6 +614,10 @@ const ConcreteRequestPage = () => {
           </p>
         )}
 
+        <p className={css.legend}>
+          <span className={css.required} aria-hidden='true'>*</span> — обязательное поле. Часть полей становится обязательной после выбора в полях выше.
+        </p>
+
         <form onSubmit={handleSubmit} noValidate>
           {formRows.map((row, index) => {
             const required = new Set(getActiveRequiredFields(row));

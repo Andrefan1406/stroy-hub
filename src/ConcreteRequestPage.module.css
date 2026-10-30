@@ -125,9 +125,10 @@
   gap: 12px;
 }
 
+/* Две колонки: в узкую четверть не помещаются подсказки неактивных полей. */
 .gridWhat {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -254,6 +255,12 @@
 }
 
 /* Правило окна подачи — заметный блок под заголовком, а не серая строка. */
+.legend {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
 .info {
   display: flex;
   gap: 8px;
