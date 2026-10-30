@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { onAuthStateChanged, signOut } from "firebase/auth";
+import { TbLogout } from "react-icons/tb";
 import { auth } from "../firebase";
 
 const ADMIN_EMAIL = "admin@vkdev.kz";
@@ -38,47 +39,61 @@ export default function AccountBar() {
         <span style={styles.accountEmail}>{login}</span>
       )}
       <button type="button" onClick={handleLogout} style={styles.logoutIconBtn} title="Выход" aria-label="Выход">
-        ➤
+        <TbLogout aria-hidden="true" />
       </button>
     </div>
   );
 }
 
+// Цвета и шрифт — как у главной (HomePage.module.css): акцент цвета логотипа,
+// контур, видимый на солнце. top учитывает вырез iPhone (safe-area), иначе
+// кнопки уходят под строку статуса и не нажимаются.
+const BRAND = "#485875";
 const styles = {
   bar: {
     position: "fixed",
-    top: "8px",
+    top: "calc(env(safe-area-inset-top, 0px) + 4px)",
     right: "12px",
     zIndex: 50, // ниже модальных окон (100-200), чтобы не перекрывать их
     display: "flex",
     alignItems: "center",
-    gap: "8px",
-    padding: "3px 8px",
-    borderRadius: "12px",
-    background: "rgba(255, 255, 255, 0.85)",
+    gap: "2px",
+    padding: "0 2px 0 6px",
+    borderRadius: "10px",
+    border: "1px solid #939ba7",
+    background: "rgba(255, 255, 255, 0.95)",
+    fontFamily: "inherit",
   },
   accountEmail: {
-    color: "#666",
-    fontSize: "12px",
+    color: "#4b5563",
+    fontSize: "14px",
     fontWeight: "500",
   },
   adminLink: {
+    minHeight: "32px",
     background: "none",
     border: "none",
-    color: "#6610f2",
+    color: BRAND,
     cursor: "pointer",
-    fontSize: "11px",
+    font: "inherit",
+    fontSize: "14px",
     fontWeight: "600",
-    padding: "0",
+    padding: "0 6px",
     textDecoration: "underline",
+    textUnderlineOffset: "3px",
   },
   logoutIconBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: "36px",
+    minHeight: "32px",
     background: "none",
     border: "none",
-    color: "#007bff",
+    color: BRAND,
     cursor: "pointer",
-    fontSize: "14px",
+    fontSize: "20px",
     lineHeight: "1",
-    padding: "2px",
+    padding: "0 4px",
   },
 };

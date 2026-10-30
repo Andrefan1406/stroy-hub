@@ -30,7 +30,7 @@
    висел поверх плиток. */
 .topbar {
   position: sticky;
-  top: 0;
+  top: env(safe-area-inset-top, 0px); /* под полосой строки статуса iPhone, см. index.css */
   z-index: 40; /* ниже AccountBar (50): он лежит поверх панели, а не под ней */
   height: 40px;
   background: var(--brand);
