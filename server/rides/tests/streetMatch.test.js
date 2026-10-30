@@ -2,7 +2,7 @@
 // типы улиц и номер дома (streetMatch.js).
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { fold, parseQuery, matchResult } = require('../streetMatch');
+const { kzToRu, fold, parseQuery, matchResult } = require('../streetMatch');
 
 const item = (road, house, extra = {}) => ({ place_rank: 30, address: { road, house_number: house }, ...extra });
 
@@ -53,4 +53,10 @@ test('номер дома не совпал или не указан в отве
 test('организация находится по названию, подпись — как на карте', () => {
   const m = matchResult('Штабы', { place_rank: 30, name: 'Штабы', address: { road: 'улица Ленина' } }, 28);
   assert.deepEqual(m, { precise: true, matched: 'Штабы, улица Ленина' });
+});
+
+test('казахские буквы для запроса к карте заменяются русскими с сохранением регистра', () => {
+  assert.equal(kzToRu('Әл-Фараби, Қайсенов 119'), 'Ал-Фараби, Кайсенов 119');
+  assert.equal(kzToRu('ҚАЙСЕНОВ Ұлы Бірлік'), 'КАЙСЕНОВ Улы Бирлик');
+  assert.equal(kzToRu('улица Ленина'), 'улица Ленина');
 });

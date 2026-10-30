@@ -24,7 +24,7 @@
 const { getWriteDb } = require('./db');
 const { logEvent } = require('./events');
 const { KNOWN, splitSettlement, normalize } = require('./settlements');
-const { matchResult } = require('./streetMatch');
+const { matchResult, kzToRu } = require('./streetMatch');
 
 const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const OSRM_URL = 'https://router.project-osrm.org/route/v1/driving';
@@ -142,6 +142,10 @@ async function lookupAddress(address) {
   if (!text) return { status: 'not_found' };
   const plan = await searchPlan(text);
   if (plan.status) return { status: plan.status };
+  // Казахское написание карта часто не находит — после запросов как есть
+  // пробуем то же русскими буквами (дальше первого точного ответа не идём).
+  const ruQueries = plan.queries.map(kzToRu).filter((q) => !plan.queries.includes(q));
+  plan.queries = [...plan.queries, ...ruQueries];
   const key = plan.cacheKey;
   const db = getWriteDb();
   const row = db.prepare('SELECT lat, lng, found, precise, matched, fetched_at FROM geocode_cache WHERE address = ?').get(key);

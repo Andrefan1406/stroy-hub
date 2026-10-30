@@ -22,6 +22,8 @@ const NOMINATIM = {
   // Улица есть, дома с таким номером нет — рядом дом другого номера.
   'Протозанова 99': [{ lat: '49.95', lon: '82.61', place_rank: 30, address: { road: 'улица Протозанова', house_number: '10' } }],
   // Казахское написание и фамилия в другом роде.
+  'Дүкенов 5': [], // казахское написание карта не находит...
+  'Дукенов 5': [{ lat: '49.97', lon: '82.62', place_rank: 30, address: { road: 'улица Дукенова', house_number: '5' } }], // ...а русское — да
   'Қайсенов 7': [{ lat: '49.96', lon: '82.60', place_rank: 30, address: { road: 'улица Кайсенова', house_number: '7' } }],
 };
 let nominatimCalls = [];
@@ -57,6 +59,13 @@ test('казахские буквы и окончание фамилии не м
   const r = await lookupAddress('Қайсенов 7');
   assert.equal(r.status, 'found');
   assert.equal(r.matched, 'улица Кайсенова, 7');
+});
+
+test('казахское написание не нашлось — повторный поиск русскими буквами', async () => {
+  nominatimCalls = [];
+  const r = await lookupAddress('Дүкенов 5');
+  assert.equal(r.status, 'found');
+  assert.deepEqual(nominatimCalls, ['Дүкенов 5', 'Дукенов 5']);
 });
 
 test('запись кэша без названия найденного (до проверки совпадения) переспрашивается', async () => {

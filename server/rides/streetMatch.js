@@ -23,6 +23,11 @@ const NOISE = new Set([
 // После этих слов число — не номер дома.
 const NOT_HOUSE_AFTER = new Set(['мкр', 'мик', 'микрорайон', 'кв', 'оф', 'офис']);
 
+// Казахские буквы -> русские с сохранением регистра: «Қайсенов» -> «Кайсенов».
+// Карта (Nominatim) казахское написание часто не находит, а русское — находит.
+const KZ_UPPER = { Ә: 'А', Ғ: 'Г', Қ: 'К', Ң: 'Н', Ө: 'О', Ұ: 'У', Ү: 'У', Һ: 'Х', І: 'И' };
+const kzToRu = (s) => String(s || '').replace(/[әғқңөұүһіӘҒҚҢӨҰҮҺІ]/g, (c) => KZ_UPPER[c] || KZ_TO_RU[c]);
+
 // Нижний регистр, казахские буквы -> русские, всё кроме букв и цифр -> пробел.
 function fold(s) {
   return String(s || '')
@@ -107,4 +112,4 @@ function matchResult(text, item, preciseRank) {
   return { precise: rankOk && houseOk, matched: parts.join(', ') || name };
 }
 
-module.exports = { fold, stem, parseQuery, matchResult };
+module.exports = { kzToRu, fold, stem, parseQuery, matchResult };
