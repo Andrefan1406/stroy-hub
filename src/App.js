@@ -28,6 +28,7 @@ import AdminRoute from './components/AdminRoute';
 import FinancingRoute from './components/FinancingRoute';
 import PeopleGapsGuard from './components/PeopleGapsGuard';
 import GprReportGuard from './components/GprReportGuard';
+import PlanradarGuard from './components/PlanradarGuard';
 import ManualBlockGuard from './components/ManualBlockGuard';
 import PageTracker from './components/PageTracker';
 import AccountBar from './components/AccountBar';
@@ -117,9 +118,11 @@ const App = () => {
             <Protected>
               <ManualBlockGuard>
                 <GprReportGuard>
-                  <PeopleGapsGuard>
-                    <RequestPage />
-                  </PeopleGapsGuard>
+                  <PlanradarGuard>
+                    <PeopleGapsGuard>
+                      <RequestPage />
+                    </PeopleGapsGuard>
+                  </PlanradarGuard>
                 </GprReportGuard>
               </ManualBlockGuard>
             </Protected>
@@ -150,9 +153,11 @@ const App = () => {
             <Protected>
               <ManualBlockGuard>
                 <GprReportGuard>
-                  <PeopleGapsGuard>
-                    <ConcreteRequestPage />
-                  </PeopleGapsGuard>
+                  <PlanradarGuard>
+                    <PeopleGapsGuard>
+                      <ConcreteRequestPage />
+                    </PeopleGapsGuard>
+                  </PlanradarGuard>
                 </GprReportGuard>
               </ManualBlockGuard>
             </Protected>

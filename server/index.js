@@ -18,6 +18,7 @@ const peopleGapsAdminRouter = require('./peopleGapsAdmin');
 const peopleGapsCheckRouter = require('./peopleGapsCheck');
 const gprReportAdminRouter = require('./gprReportAdmin');
 const gprReportCheckRouter = require('./gprReportCheck');
+const { checkRouter: planradarCheckRouter, adminRouter: planradarAdminRouter, startPlanradarSync } = require('./planradar');
 const blockedUsersAdminRouter = require('./blockedUsersAdmin');
 const { checkRouter: manualBlockCheckRouter, adminRouter: manualBlockAdminRouter } = require('./manualBlock');
 const rascenkiAdminRouter = require('./rascenkiAdmin');
@@ -84,6 +85,8 @@ app.use('/api/admin/people-gaps', peopleGapsAdminRouter);
 app.use('/api/people-gaps', peopleGapsCheckRouter);
 app.use('/api/admin/gpr-report', gprReportAdminRouter);
 app.use('/api/gpr-report', gprReportCheckRouter);
+app.use('/api/admin/planradar', planradarAdminRouter);
+app.use('/api/planradar', planradarCheckRouter);
 app.use('/api/admin/blocked-users/manual', manualBlockAdminRouter);
 app.use('/api/admin/blocked-users', blockedUsersAdminRouter);
 app.use('/api/manual-block', manualBlockCheckRouter);
@@ -130,6 +133,8 @@ startDefectActsSync();
 // (POST /api/admin/rascenki/reindex).
 startRascenkiSync();
 startGprReportSync();
+// Просроченные замечания PlanRadar (блокировка заявок) — опрос раз в час.
+startPlanradarSync();
 
 const server = http.createServer(app);
 initSocket(server);

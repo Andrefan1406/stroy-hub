@@ -68,6 +68,10 @@ npm run rascenki:seed  # разовая загрузка таблицы расц
 
 `src/peopleGapsGate.js` и `src/gprReportGate.js` устроены одинаково: перед тем как дать пользователю подать заявку, проверяется, есть ли именно он в настроенном администратором списке (`people_gap_check_rules` / `gpr_report_check_rules`, управляются через `/admin/users`), привязанном к участку/источнику отчёта с неразрешённым пропуском. Оба fail-open — ошибка сети/бэкенда страницу не блокирует, и оба возвращают `blocked: false` для любого email без совпавшего правила, так что для всех остальных пользователей проверка незаметна.
 
+### Блокировка заявок из-за замечаний PlanRadar (`server/planradar.js`)
+
+Справочник `scripts/planradar/projects.json` — объект → `id` в PlanRadar и `emails` закреплённых за ним сотрудников. Раз в час (`PLANRADAR_SYNC_CRON`) сервер опрашивает PlanRadar (лимит 30 запросов/мин) и кладёт в `planradar_overdue` число незакрытых замечаний, срок которых истёк три дня назад и раньше. `GET /api/planradar/check?email=` отдаёт `{blocked, items:[{project,count}]}`; `PlanradarGuard` закрывает `/request` и `/concrete-request`, `HomePage` — плитки техники и бетона. Тот же gate-паттерн и fail-open, что у ГПР. Нужны `PLANRADAR_API_KEY` и `PLANRADAR_CUSTOMER_ID` (на Render тоже). Python-скрипты в `scripts/planradar/` — разовые выгрузки, сайту не нужны.
+
 ### Роутинг
 
 Все маршруты объявлены в одном месте, `src/App.js`, оборачивая страницы в `Protected` (авторизация), `AdminRoute` (только админ) и/или гварды-«gate» (`GprReportGuard`, `PeopleGapsGuard`) по необходимости — сначала стоит смотреть туда, чтобы понять, какая защита стоит на конкретной странице, а не предполагать, что она открыта.

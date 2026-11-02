@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { getAuth } from "firebase/auth";
 import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
 import { fetchGprReportBlock, gprBlockMessage } from './gprReportGate';
+import { fetchPlanradarBlock, planradarBlockMessage } from './planradarGate';
 import { ridesApiFetch } from './rides/api';
 import { ROLE_HOME_PATH } from './rides/constants';
 import { fetchManualBlock, manualBlockMessage } from './manualBlockGate';
@@ -14,13 +15,13 @@ import styles from './HomePage.module.css';
 
 const BLOCK_NOTICE_ID = 'home-block-reasons';
 const BLOCK_NOTICE_TITLE_ID = 'home-block-reasons-title';
-const GATE_CHECKS_COUNT = 3;
+const GATE_CHECKS_COUNT = 4;
 const GATE_CHECKS_TIMEOUT_MS = 8000;
 
 const HomePage = () => {
   const currentEmail = getAuth().currentUser?.email?.toLowerCase() || "";
 
-  // Сколько из трёх проверок блокировки (люди, ГПР, ручная) ещё не ответили.
+  // Сколько из четырёх проверок блокировки (люди, ГПР, PlanRadar, ручная) ещё не ответили.
   // Пока ждём, плитки техники и бетона показывают «Проверяем доступ…» и не
   // ведут в форму — иначе они сначала активны, а через секунду сереют, и
   // плашка с причинами сдвигает сетку под пальцем. Ошибка проверки, как и
@@ -87,6 +88,21 @@ const HomePage = () => {
       .finally(markGateChecked);
   }, [currentEmail]);
 
+  // Просроченные замечания PlanRadar по закреплённым за сотрудником
+  // объектам, см. planradarGate.js.
+  const [planradarItems, setPlanradarItems] = useState([]);
+
+  useEffect(() => {
+    if (!currentEmail) return;
+    fetchPlanradarBlock()
+      .then(({ items }) => setPlanradarItems(items))
+      .catch((err) => {
+        console.error('Не удалось проверить замечания PlanRadar:', err);
+        setGateCheckFailed(true);
+      })
+      .finally(markGateChecked);
+  }, [currentEmail]);
+
   // Если у сотрудника уже есть роль в системе поездок и при этом включён
   // "Доступ ко всему сайту" (иначе он сюда физически не попал бы —
   // см. RideAccessGate.jsx), даём ему кнопку назад на его страницу
@@ -115,14 +131,17 @@ const HomePage = () => {
       .finally(markGateChecked);
   }, [currentEmail]);
 
-  const isRequestsBlocked = manualBlock.blocked || missingGapDates.length > 0 || gprBlocked;
+  const planradarBlocked = planradarItems.length > 0;
+  const isRequestsBlocked = manualBlock.blocked || missingGapDates.length > 0 || gprBlocked || planradarBlocked;
   const blockedTitle = manualBlock.blocked
     ? manualBlockMessage(manualBlock.comment)
     : missingGapDates.length > 0
       ? gapWarningMessage(missingGapDates)
       : gprBlocked
         ? gprBlockMessage(gprGaps)
-        : undefined;
+        : planradarBlocked
+          ? planradarBlockMessage(planradarItems)
+          : undefined;
 
   const rideHomePath = rideRole && ROLE_HOME_PATH[rideRole];
   // 'unverified' — проверки не успели (тайм-аут) или упали: плитки открыты,
@@ -155,6 +174,10 @@ const HomePage = () => {
       key: 'gpr',
       text: gprBlockMessage(gprGaps),
       action: { label: 'Открыть таблицы ГПР', path: '/grafiki' },
+    },
+    planradarBlocked && {
+      key: 'planradar',
+      text: planradarBlockMessage(planradarItems).replace(/^Подача заявок недоступна:\s*/, ''),
     },
   ].filter(Boolean);
 
