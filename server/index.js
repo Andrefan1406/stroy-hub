@@ -21,6 +21,7 @@ const gprReportCheckRouter = require('./gprReportCheck');
 const blockedUsersAdminRouter = require('./blockedUsersAdmin');
 const { checkRouter: manualBlockCheckRouter, adminRouter: manualBlockAdminRouter } = require('./manualBlock');
 const rascenkiAdminRouter = require('./rascenkiAdmin');
+const lzkRouter = require('./lzk/router');
 const concreteDailyReportRouter = require('./concreteDailyReport');
 const concreteDashboardRouter = require('./concreteDashboard');
 const concreteRequestsBoardRouter = require('./concreteRequestsBoard');
@@ -88,6 +89,7 @@ app.use('/api/admin/blocked-users/manual', manualBlockAdminRouter);
 app.use('/api/admin/blocked-users', blockedUsersAdminRouter);
 app.use('/api/manual-block', manualBlockCheckRouter);
 app.use('/api/admin/rascenki', rascenkiAdminRouter);
+app.use('/api/lzk', lzkRouter);
 // Оба роутера смонтированы на одном префиксе — их пути не пересекаются
 // (daily-report у одного, options/monthly/unexecuted/chart-titles у
 // другого), Express пробует их по очереди и падает в 404 только если ни

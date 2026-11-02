@@ -7,7 +7,7 @@ import { ridesApiFetch } from './rides/api';
 import { ROLE_HOME_PATH } from './rides/constants';
 import { fetchManualBlock, manualBlockMessage } from './manualBlockGate';
 import {
-  TbAlertTriangle, TbBolt, TbCar, TbChartBar, TbChevronRight, TbCrane, TbFlask,
+  TbAlertTriangle, TbBolt, TbCar, TbChartBar, TbChevronRight, TbCrane, TbFileSpreadsheet, TbFlask,
   TbLayoutGrid, TbLoader2, TbLock, TbRulerMeasure, TbSparkles, TbTruck, TbUsers, TbWall,
 } from 'react-icons/tb';
 import styles from './HomePage.module.css';
@@ -283,6 +283,12 @@ const HomePage = () => {
           </Tile>
           <Tile icon={<TbChartBar />} to="/reports-dashboard">
             Графики и отчёты
+          </Tile>
+        </Section>
+
+        <Section title="ПТО">
+          <Tile icon={<TbFileSpreadsheet />} to="/lzk-draft">
+            Черновики ЛЗК и М-29 по ВДЦ
           </Tile>
         </Section>
 
