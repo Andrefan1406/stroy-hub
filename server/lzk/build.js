@@ -56,8 +56,12 @@ function findWork(name) {
 
 // Заголовки столбцов в разных формах ВДЦ: «Наименование работ», «Наименование видов
 // работ, затрат»; «Кол-во», «Количество», «Объем работ, кол-во» (бывает «Обьем»).
-const NAME_HEADER = /^наименование\s+(видов\s+)?работ/;
-const QTY_HEADER = /^(кол-?во|количество|об[ъь]?[её]м)/;
+const NAME_HEADER = /^наименование(\s+(видов\s+)?работ|$)/;
+const UNIT_HEADER = /^(ед\.?\s*изм|единиц\S*\s+изм)/;
+const QTY_HEADER = /^(кол-?во|кол\.|количество|об[ъь]?[её]м)/;
+
+// Что в шапке есть из нужных трёх столбцов (для ошибки: показать, что нашли, а чего нет).
+const headerCells = (row) => row.map((c) => String(c ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean);
 
 function parseContractPrice(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer' });
@@ -65,17 +69,29 @@ function parseContractPrice(buffer) {
   const hidden = new Set(
     (wb.Workbook?.Sheets || []).filter((s) => s.Hidden).map((s) => s.name),
   );
+  let problem = null; // каких столбцов не хватило в шапке — для подсказки в ошибке
   for (const sheetName of wb.SheetNames) {
     if (hidden.has(sheetName)) continue;
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '', raw: true });
     const headerIdx = rows.findIndex((r) => r.some((c) => NAME_HEADER.test(norm(c))));
-    if (headerIdx === -1) continue;
+    if (headerIdx === -1) {
+      // «Ед. изм.» и «Кол-во» есть, а названия работ называются иначе — подскажем, что переименовать
+      const unitQtyRow = rows.find((r) => r.some((c) => UNIT_HEADER.test(norm(c))) && r.some((c) => QTY_HEADER.test(norm(c))));
+      if (!problem && unitQtyRow) problem = { missing: ['«Наименование работ»'], cells: headerCells(unitQtyRow) };
+      continue;
+    }
 
     const header = rows[headerIdx].map(norm);
     const nameCol = header.findIndex((c) => NAME_HEADER.test(c));
-    const unitCol = header.findIndex((c) => /^ед\.?\s*изм/.test(c));
+    const unitCol = header.findIndex((c) => UNIT_HEADER.test(c));
     const qtyCol = header.findIndex((c) => QTY_HEADER.test(c));
-    if (unitCol === -1 || qtyCol === -1) continue;
+    if (unitCol === -1 || qtyCol === -1) {
+      problem = {
+        missing: [unitCol === -1 && '«Ед. изм.»', qtyCol === -1 && '«Кол-во»'].filter(Boolean),
+        cells: headerCells(rows[headerIdx]),
+      };
+      continue;
+    }
 
     const items = [];
     for (const row of rows.slice(headerIdx + 1)) {
@@ -95,7 +111,12 @@ function parseContractPrice(buffer) {
     }
     return { items, meta: parseMeta(rows.slice(0, headerIdx), rows.slice(headerIdx + 1)) };
   }
-  throw new Error('В файле не найдена таблица ВДЦ: нужны столбцы «Наименование работ», «Ед. изм.», «Кол-во» (или «Наименование видов работ, затрат», «Объем работ, кол-во»)');
+  const fix = 'Переименуйте названия в шапке таблицы на «Наименование работ», «Ед. изм.», «Кол-во» и загрузите файл снова.';
+  throw new Error(
+    problem
+      ? `В шапке таблицы ВДЦ не найден столбец ${problem.missing.join(' и ')}. Сейчас в шапке: ${problem.cells.map((c) => `«${c}»`).join(', ')}. ${fix}`
+      : `В файле не найдена таблица ВДЦ (столбцы «Наименование работ», «Ед. изм.», «Кол-во»). ${fix}`,
+  );
 }
 
 // Шапка ВДЦ: приложение, договор, субподрядчик, объект. Всё необязательное —

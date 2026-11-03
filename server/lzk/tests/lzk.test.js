@@ -303,3 +303,35 @@ test('М-29: работа без норм выводится агрегиров�
   assert.equal(ws.getCell(mountRow, 6).value, 'нет норм');
   assert.notEqual(ws.getCell(mountRow + 1, 1).value, 'материал'); // материалов под ней нет
 });
+
+test('нет нужных столбцов — ошибка называет, чего не хватает, и просит переименовать шапку', async () => {
+  const load = async (head) => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('ВДЦ');
+    ws.addRow(head);
+    ws.addRow([WALL, 'м3', 2]);
+    return Buffer.from(await wb.xlsx.writeBuffer());
+  };
+  await assert.rejects(async () => generate(await load(['Вид работ', 'Ед. изм.', 'Кол-во'])), /не найден столбец «Наименование работ».*Переименуйте/);
+  await assert.rejects(async () => generate(await load(['Наименование работ', 'Единица', 'Кол-во'])), /не найден столбец «Ед\. изм\.»\. Сейчас в шапке.*Переименуйте/);
+  await assert.rejects(async () => generate(await load(['Наименование работ', 'Ед. изм.', 'Сколько'])), /не найден столбец «Кол-во»/);
+  await assert.rejects(async () => generate(await load(['Наименование работ', 'Единица', 'Сколько'])), /«Ед\. изм\.» и «Кол-во»/);
+  await assert.rejects(async () => generate(await load(['что-то', 'другое', 'третье'])), /не найдена таблица ВДЦ.*Переименуйте/);
+});
+
+test('шапка «Наименование» / «Единицы измерения» / «Количество» читается; в ошибке перечислено, что стоит в шапке', async () => {
+  const load = async (head) => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('ВДЦ');
+    ws.addRow(head);
+    ws.addRow([1, WALL, 'м3', 2]);
+    return Buffer.from(await wb.xlsx.writeBuffer());
+  };
+  const ok = await generate(await load(['№ п/п', 'Наименование', 'Единицы измерения', 'Количество']), { month: '2026-11' });
+  assert.equal(ok.summary.works[0].qty, 2);
+
+  await assert.rejects(
+    async () => generate(await load(['№ п/п', 'Наименование работ', 'Ед. изм.', 'Сколько'])),
+    /не найден столбец «Кол-во»\. Сейчас в шапке: «№ п\/п», «Наименование работ», «Ед\. изм\.», «Сколько»\./,
+  );
+});
