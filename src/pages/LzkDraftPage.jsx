@@ -143,7 +143,6 @@ const LzkDraftPage = () => {
                   </li>
                 ))}
               </ul>
-              Для этих работ нет норм расхода — добавьте их в server/lzk/norms.json.
             </div>
           )}
 

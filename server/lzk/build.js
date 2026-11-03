@@ -23,7 +23,8 @@ const norm = (s) =>
     .toLowerCase()
     .replace(/ё/g, 'е')
     .replace(/[ \s]+/g, ' ')
-    .trim();
+    .trim()
+    .replace(/[.\s]+$/, ''); // «…250 мм.» = «…250 мм»
 
 // Единицы в файлах бывают «м3», «м³», «М3» — сравниваем в одном виде.
 const normUnit = (s) =>
@@ -53,17 +54,27 @@ function findWork(name) {
 
 // --- Разбор ВДЦ -----------------------------------------------------------
 
+// Заголовки столбцов в разных формах ВДЦ: «Наименование работ», «Наименование видов
+// работ, затрат»; «Кол-во», «Количество», «Объем работ, кол-во» (бывает «Обьем»).
+const NAME_HEADER = /^наименование\s+(видов\s+)?работ/;
+const QTY_HEADER = /^(кол-?во|количество|об[ъь]?[её]м)/;
+
 function parseContractPrice(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer' });
+  // скрытые листы (Hidden: 1 — скрыт, 2 — «очень скрыт») не читаем
+  const hidden = new Set(
+    (wb.Workbook?.Sheets || []).filter((s) => s.Hidden).map((s) => s.name),
+  );
   for (const sheetName of wb.SheetNames) {
+    if (hidden.has(sheetName)) continue;
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '', raw: true });
-    const headerIdx = rows.findIndex((r) => r.some((c) => /^наименование\s+работ/.test(norm(c))));
+    const headerIdx = rows.findIndex((r) => r.some((c) => NAME_HEADER.test(norm(c))));
     if (headerIdx === -1) continue;
 
     const header = rows[headerIdx].map(norm);
-    const nameCol = header.findIndex((c) => /^наименование\s+работ/.test(c));
+    const nameCol = header.findIndex((c) => NAME_HEADER.test(c));
     const unitCol = header.findIndex((c) => /^ед\.?\s*изм/.test(c));
-    const qtyCol = header.findIndex((c) => /^кол-?во|^количество/.test(c));
+    const qtyCol = header.findIndex((c) => QTY_HEADER.test(c));
     if (unitCol === -1 || qtyCol === -1) continue;
 
     const items = [];
@@ -74,28 +85,68 @@ function parseContractPrice(buffer) {
         if (items.length) break;
         continue;
       }
-      if (/^итого/.test(norm(name))) break;
-      items.push({ name, unit: String(row[unitCol] ?? '').trim(), qty: toNumber(row[qtyCol]) });
+      if (/^(итого|всего)/.test(norm(name))) break;
+      const unit = String(row[unitCol] ?? '').trim();
+      // строки-разделы («поз. 73,75») — без единицы и количества, это не работа
+      if (!unit && String(row[qtyCol] ?? '').trim() === '') continue;
+      // демонтаж — материалы на него не нужны, в лимиты не попадает (и в «Не учтено» тоже)
+      if (/^демонтаж/.test(norm(name))) continue;
+      items.push({ name, unit, qty: toNumber(row[qtyCol]) });
     }
-    return { items, meta: parseMeta(rows.slice(0, headerIdx)) };
+    return { items, meta: parseMeta(rows.slice(0, headerIdx), rows.slice(headerIdx + 1)) };
   }
-  throw new Error('В файле не найдена таблица ВДЦ: нужны столбцы «Наименование работ», «Ед. изм.», «Кол-во»');
+  throw new Error('В файле не найдена таблица ВДЦ: нужны столбцы «Наименование работ», «Ед. изм.», «Кол-во» (или «Наименование видов работ, затрат», «Объем работ, кол-во»)');
 }
 
 // Шапка ВДЦ: приложение, договор, субподрядчик, объект. Всё необязательное —
 // чего не нашли, то оставим пустым в карте.
-function parseMeta(rows) {
+// Субподрядчик из блока подписей под таблицей, если в шапке его нет:
+//   Генподрядчик          Субподрядчик          (подпись «Субподрядчик» — своя ячейка,
+//   Директор              Руководитель           под ней в том же столбце должность
+//   ТОО «VK INVEST …»     ИП "САПАРГАЛИЕВА"      и организация; либо всё в одной ячейке
+//                                                 через перенос строки)
+// «Генподрядчик» не подходит — это мы сами.
+const ORG_LINE = /^(ип|тоо|ао|тко|ккп|гкп|кх|к\/х|ооо)[\s«"]/i;
+const SUB_LABEL = /^(суб)?подр[яа]д?чик:?$/i;
+
+function subcontractorFromSignatures(rows) {
+  const cellText = (r, c) => String(rows[r]?.[c] ?? '').trim();
+  const orgIn = (lines) => lines.map((l) => l.trim()).find((l) => ORG_LINE.test(l)) || '';
+
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < (rows[r]?.length || 0); c++) {
+      const lines = cellText(r, c).split(/\r?\n/);
+      if (!SUB_LABEL.test(lines[0].trim())) continue;
+      const org = orgIn(lines.slice(1)) || orgIn(Array.from({ length: 5 }, (_, i) => cellText(r + 1 + i, c)));
+      if (org) return org;
+    }
+  }
+  return '';
+}
+
+function parseMeta(rows, tailRows = []) {
   const texts = rows.flat().map((c) => String(c ?? '').trim()).filter(Boolean);
   const find = (re) => texts.find((t) => re.test(t));
 
-  const contract = find(/^к договору/i) || '';
-  const annex = (find(/приложение\s*№/i) || '').match(/№\s*([\w./-]+)/);
-  const sub = (find(/^субподр[яа]д?чик/i) || '').replace(/^субподр[яа]д?чик\s*:?\s*/i, '');
-  const object = (find(/[«"]\s*строительство/i) || find(/[«"].+[»"]/) || '').replace(/^[«"]\s*|\s*[»"]$/g, '');
+  // договор и приложение ищем по всему тексту шапки: «к Договору субподряда» и
+  // «№ П-26-144 от 08.06.2026г.» бывают в одной ячейке, в двух или вместе с «Приложение №7…»
+  const all = texts.join(' ').replace(/\s+/g, ' ');
+  const contractMatch = all.match(/к\s+договору\s+([^№]*?)\s*№\s*([^\s]+)\s+от\s+(\d{2}\.\d{2}\.\d{4})/i);
+  const contract = contractMatch ? `К договору ${contractMatch[1]} № ${contractMatch[2]} от ${contractMatch[3]}` : '';
+  const annex = all.match(/приложение\s*№\s*([\w./-]+)/i);
+  let sub = (find(/^(суб)?подр[яа]д?чик/i) || '').replace(/^(суб)?подр[яа]д?чик\s*:?\s*/i, '');
+  // название объекта — текст в кавычках; после закрывающей может идти хвост «(ДО-ДО).»
+  // (бывает и без кавычек — «Строительство многоэтажных … (поз 59,69,65).»; кавычки
+  // вокруг фамилии субподрядчика за объект не принимаем)
+  const objectCell = find(/[«"]\s*строительство/i) || find(/^строительство/i) || find(/^[«"][^«»"]{15,}[»"]\.?$/) || '';
+  const quoted = objectCell.match(/[«"]\s*([^«»"]+?)\s*[»"]/);
+  const object = (quoted ? quoted[1] : objectCell).replace(/\s+/g, ' ').replace(/^наименование объекта\s*:\s*/i, '').replace(/^[«"]\s*|\s*[»"]$/g, '');
 
   let basis = contract.replace(/\s+года$/i, '').replace(/(\d{4})\s*г\.?$/i, '$1г.');
   if (basis && !/г\.?$/.test(basis)) basis += 'г.';
   if (basis && annex) basis += `, прил.${annex[1]}`;
+
+  if (!sub) sub = subcontractorFromSignatures(tailRows);
 
   return { basis, recipient: sub, object };
 }
@@ -106,7 +157,7 @@ function calculate(items) {
   const groups = new Map(); // ключ работа+ед → { name, unit, qty }
   for (const it of items) {
     const key = `${norm(it.name)}|${normUnit(it.unit)}`;
-    const g = groups.get(key) || { name: it.name, unit: it.unit, qty: 0, rows: 0, bad: false };
+    const g = groups.get(key) || { name: it.name, unit: it.unit, qty: 0, rows: 0, bad: false, idx: groups.size };
     if (Number.isFinite(it.qty)) g.qty += it.qty;
     else g.bad = true;
     g.rows += 1;
@@ -355,15 +406,19 @@ function addM29Sheet(wb, meta, result, start) {
 
   const NUM = '#,##0.00;[Red]-#,##0.00';
   let r = H2 + 1;
-  for (const w of result.works) {
+  // работы без норм (нет в словаре, другая единица) тоже идут строкой «работа» без материалов,
+  // в порядке ВДЦ — нормы добавят позже; со сломанным количеством строку не выводим
+  const m29Works = [...result.works, ...result.unmatched.filter((u) => !u.bad)].sort((a, b) => a.idx - b.idx);
+  for (const w of m29Works) {
     const workRow = r;
     ws.getCell(r, 1).value = 'работа';
     ws.getCell(r, 2).value = w.name;
     ws.getCell(r, 4).value = w.unit;
     ws.getCell(r, 5).value = rnd(w.qty);
+    if (!w.norms) ws.getCell(r, 6).value = 'нет норм';
     const matRows = [];
     r += 1;
-    for (const [id, perUnit] of Object.entries(w.norms)) {
+    for (const [id, perUnit] of Object.entries(w.norms || {})) {
       const mat = materialsById.get(id);
       const limit = mat.unit === 'шт' ? Math.ceil(w.qty * perUnit - 1e-9) : rnd(w.qty * perUnit);
       ws.getCell(r, 1).value = 'материал';
