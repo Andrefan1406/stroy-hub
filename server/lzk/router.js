@@ -8,6 +8,7 @@ const express = require('express');
 const { getAuth } = require('firebase-admin/auth');
 require('../adminAuth'); // инициализирует общее firebase-admin приложение
 const { generate } = require('./build');
+const { logUsage } = require('./usage');
 
 const router = express.Router();
 
@@ -34,9 +35,11 @@ router.post(
       const month = typeof req.query.month === 'string' ? req.query.month : undefined;
       const { file, summary } = await generate(req.body, { month });
       console.log(`[lzk] ${req.userEmail}: ${summary.rows} строк ВДЦ → ${summary.materials.length} материалов`);
+      logUsage({ email: req.userEmail, fileSize: req.body.length, summary });
       res.json({ fileName: 'ЛЗК_и_М-29_черновик.xlsx', fileBase64: file.toString('base64'), summary });
     } catch (err) {
       // ошибки разбора — понятные тексты из build.js; XLSX на мусорном файле кидает свои
+      logUsage({ email: req.userEmail, fileSize: req.body.length, error: err.message });
       res.status(422).json({ error: err.message || 'Не удалось разобрать файл' });
     }
   },

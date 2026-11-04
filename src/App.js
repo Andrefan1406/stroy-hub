@@ -39,6 +39,7 @@ import BlockedUsersAdminPage from "./pages/BlockedUsersAdminPage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
 import RascenkiReindexAdminPage from "./pages/RascenkiReindexAdminPage";
 import LzkDraftPage from "./pages/LzkDraftPage";
+import LzkUsageAdminPage from "./pages/LzkUsageAdminPage";
 import ConcreteDashboardPage from "./pages/ConcreteDashboardPage";
 import RideAccessGate from "./components/RideAccessGate";
 import RideRoleRoute from "./components/RideRoleRoute";
@@ -360,6 +361,16 @@ const App = () => {
             <Protected>
               <AdminRoute>
                 <RascenkiReindexAdminPage />
+              </AdminRoute>
+            </Protected>
+          }
+        />
+        <Route
+          path="/admin/lzk-usage"
+          element={
+            <Protected>
+              <AdminRoute>
+                <LzkUsageAdminPage />
               </AdminRoute>
             </Protected>
           }
