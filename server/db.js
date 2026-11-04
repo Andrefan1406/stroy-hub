@@ -334,6 +334,21 @@ CREATE TABLE IF NOT EXISTS gpr_report_check_rules (
   UNIQUE(email, source_key)
 );
 
+-- lzk_usage — журнал использования сервиса ЛЗК/М-29 (server/lzk/usage.js,
+-- админ-страница /admin/lzk-usage): кто загружал ВДЦ, сколько работ нашлось, какие
+-- не нашлись (unmatched — JSON), какая была ошибка. ПОСТОЯННОЕ хранилище.
+CREATE TABLE IF NOT EXISTS lzk_usage (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  email           TEXT,
+  created_at      TEXT DEFAULT (datetime('now')),
+  file_size       INTEGER,
+  rows_count      INTEGER,
+  works_count     INTEGER,
+  materials_count INTEGER,
+  unmatched       TEXT,
+  error           TEXT
+);
+
 -- manual_user_blocks — ручная блокировка пользователя администратором (см.
 -- server/manualBlock.js, /admin/blocked-users), независимо от пропусков в
 -- отчётах по людям/ГПР. Строка на email; blocked=0 — блокировка снята, но
