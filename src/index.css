@@ -89,3 +89,15 @@ body::before {
   z-index: 60; /* выше AccountBar (50) и панели главной, ниже окон */
   pointer-events: none;
 }
+
+/* Главная: панель с логотипом выше обычной, поэтому плавающую плашку
+   «логин / admin / выход» (AccountBar, position: fixed) опускаем на её середину.
+   Класс ставит HomePage.js на время показа главной. */
+html.has-home-topbar {
+  --account-bar-top: 15px; /* панель 64px, плашка ~34px */
+}
+@media (max-width: 640px) {
+  html.has-home-topbar {
+    --account-bar-top: 11px; /* панель 56px */
+  }
+}

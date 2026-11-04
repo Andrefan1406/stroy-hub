@@ -39,6 +39,12 @@ const HomePage = () => {
   const [gateCheckFailed, setGateCheckFailed] = useState(false);
   const gateTimerRef = useRef(null);
 
+  // Панель главной выше обычной — см. html.has-home-topbar в index.css (положение AccountBar).
+  useEffect(() => {
+    document.documentElement.classList.add('has-home-topbar');
+    return () => document.documentElement.classList.remove('has-home-topbar');
+  }, []);
+
   useEffect(() => {
     if (!currentEmail) return undefined;
     gateTimerRef.current = setTimeout(() => setGateChecksGaveUp(true), GATE_CHECKS_TIMEOUT_MS);

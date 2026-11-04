@@ -52,7 +52,7 @@ const BRAND = "#485875";
 const styles = {
   bar: {
     position: "fixed",
-    top: "calc(env(safe-area-inset-top, 0px) + 4px)",
+    top: "calc(env(safe-area-inset-top, 0px) + var(--account-bar-top, 4px))",
     right: "12px",
     zIndex: 50, // ниже модальных окон (100-200), чтобы не перекрывать их
     display: "flex",

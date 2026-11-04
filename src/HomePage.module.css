@@ -25,14 +25,14 @@
 
 /* Справа в панели место под AccountBar (логин, admin, выход): он закреплён
    position: fixed (top: 8px, высота ~24px) в правом верхнем углу на всех
-   страницах и встаёт сюда сам — высота 40px ставит его по центру панели.
+   страницах и встаёт сюда сам (на главной его top сдвигается под высоту панели, см. --account-bar-top в index.css).
    Панель sticky, чтобы при прокрутке AccountBar оставался на её фоне, а не
    висел поверх плиток. */
 .topbar {
   position: sticky;
   top: env(safe-area-inset-top, 0px); /* под полосой строки статуса iPhone, см. index.css */
   z-index: 40; /* ниже AccountBar (50): он лежит поверх панели, а не под ней */
-  height: 40px;
+  height: 64px;
   background: var(--brand);
 }
 
@@ -47,7 +47,7 @@
 }
 
 .logo {
-  height: 28px;
+  height: 52px;
   width: auto;
   display: block;
 }
@@ -214,6 +214,12 @@
 }
 
 @media (max-width: 640px) {
+  .topbar {
+    height: 56px;
+  }
+  .logo {
+    height: 42px; /* на телефоне не залезает под логин и выход справа */
+  }
   .grid {
     grid-template-columns: 1fr;
   }
