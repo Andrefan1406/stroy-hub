@@ -1,89 +1,79 @@
-import React, { useState, useEffect } from "react";
-import { useLocation } from 'react-router-dom';
-import styles from './RequestPage.module.css';
-import { 
-    objectCategoryOptions, 
-    objectPositionOptions,
-    positionBlockOptions
+// Заявка на брусчатку, лотки и бордюры. Оформление — в стиле заявок на бетон и
+// технику (ConcreteRequestPage.module.css): карточки «Когда / Куда / Что и сколько»,
+// ошибки и подсказки на странице, окна — components/RequestDialog. Подбор марки по
+// серии/цвету/размерам, правило «не раньше чем через 14 дней» и отправка — прежние.
+import React, { useState, useEffect, useRef } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { TbAlertCircle, TbInfoCircle } from 'react-icons/tb';
+import css from './ConcreteRequestPage.module.css';
+import {
+  objectCategoryOptions,
+  objectPositionOptions,
+  positionBlockOptions
 } from './data/constructionData';
-import Select from 'react-select';
+import Dialog from './components/RequestDialog';
+import { Field, SelectField } from './components/RequestFormFields';
 
-const selectMultiLineStyles = {
-  control: (base) => ({
-    ...base,
-    minHeight: '30px',
-    fontSize: '12px',
-    whiteSpace: 'normal',     // перенос текста в поле
-    wordBreak: 'break-word',
-    lineHeight: '1.2',
-    maxWidth: '140px',        // ограничение ширины, чтобы был перенос
-  }),
-  menu: (base) => ({
-    ...base,
-    fontSize: '12px',
-    whiteSpace: 'normal',     // перенос в выпадающем меню
-    wordBreak: 'break-word',
-    lineHeight: '1.2',
-  }),
-  singleValue: (base) => ({
-    ...base,
-    whiteSpace: 'normal',     // перенос выбранного текста
-    wordBreak: 'break-word',
-    overflow: 'visible',
-    textOverflow: 'clip',
-    lineHeight: '1.2',
-  }),
-  option: (base) => ({
-    ...base,
-    whiteSpace: 'normal',     // перенос длинных опций в списке
-    wordBreak: 'break-word',
-    lineHeight: '1.2',
-  }),
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyMz5pFG3eMxFU-W5bYcPEmYCySf2mNsrLSYYFCfLqY6p5-fuNSySuFKmUohEImS_F_zQ/exec';
+// Ответ скрипта прочитать нельзя (no-cors): зависшую отправку обрываем сами
+// и просим убедиться, что заявка не дошла, прежде чем отправлять повторно.
+const SEND_TIMEOUT_MS = 20000;
+const MIN_DAYS_AHEAD = 14;
+
+// Контакты ответственного запоминаем на этом устройстве.
+const RESPONSIBLE_KEY = 'brickRequestResponsible';
+const loadResponsible = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RESPONSIBLE_KEY) || '{}');
+    return { name: saved.name || '', phone: saved.phone || '' };
+  } catch {
+    return { name: '', phone: '' };
+  }
 };
 
 // Справочники для второй группы
 const productBrandOptions = {
-    'Брусчатка': ["Б.1.П.7", "Б.2.П.7", "Б.3.П.7", "Б.5.П.7", "Б.6.П.7", "Б.7.П.7", "Б.8.П.7",
-                  "Б.9.П.7", "Б.10.П.7", "Б.11.П.7", "Б.12.П.7", "Б.13.П.7", "Б.14.П.7", "Б.15.П.7"],
-    'Бордюр': ["БР 100.30.15"],
-    'Лоток': ["50.25.9"]
+  'Брусчатка': ['Б.1.П.7', 'Б.2.П.7', 'Б.3.П.7', 'Б.5.П.7', 'Б.6.П.7', 'Б.7.П.7', 'Б.8.П.7',
+    'Б.9.П.7', 'Б.10.П.7', 'Б.11.П.7', 'Б.12.П.7', 'Б.13.П.7', 'Б.14.П.7', 'Б.15.П.7'],
+  'Бордюр': ['БР 100.30.15'],
+  'Лоток': ['50.25.9']
 };
 
 const brandSeriesOption = {
-    'Б.1.П.7': ['Новый город'], 'Б.10.П.7': ['Крупноформат'], 'Б.11.П.7': ['Крупноформат'],
-    'Б.12.П.7': ['Крупноформат'], 'Б.13.П.7': ['Старый Город'], 'Б.14.П.7': ['Старый Город'],
-    'Б.15.П.7': ['Старый Город'], 'Б.2.П.7': ['Новый город'], 'Б.3.П.7': ['Новый город'],
-    'Б.5.П.7': ['Классика'], 'Б.6.П.7': ['Крупноформат'], 'Б.7.П.7': ['Крупноформат'],
-    'Б.8.П.7': ['Крупноформат'], 'Б.9.П.7': ['Крупноформат']
+  'Б.1.П.7': ['Новый город'], 'Б.10.П.7': ['Крупноформат'], 'Б.11.П.7': ['Крупноформат'],
+  'Б.12.П.7': ['Крупноформат'], 'Б.13.П.7': ['Старый Город'], 'Б.14.П.7': ['Старый Город'],
+  'Б.15.П.7': ['Старый Город'], 'Б.2.П.7': ['Новый город'], 'Б.3.П.7': ['Новый город'],
+  'Б.5.П.7': ['Классика'], 'Б.6.П.7': ['Крупноформат'], 'Б.7.П.7': ['Крупноформат'],
+  'Б.8.П.7': ['Крупноформат'], 'Б.9.П.7': ['Крупноформат']
 };
 
 const branColorsOption = {
-    'Б.1.П.7': 'Серый', 'Б.2.П.7': 'Белый', 'Б.3.П.7': 'Черный', 'Б.6.П.7': 'Серый',
-    'Б.7.П.7': 'Белый', 'Б.8.П.7': 'Черный', 'Б.12.П.7': 'Красный', 'Б.9.П.7': 'Серый',
-    'Б.10.П.7': 'Белый', 'Б.11.П.7': 'Черный', 'Б.5.П.7': 'Серый', 'Б.13.П.7': 'Белый', 
-    'Б.14.П.7': 'Черный', 'Б.15.П.7': 'Серый'   
+  'Б.1.П.7': 'Серый', 'Б.2.П.7': 'Белый', 'Б.3.П.7': 'Черный', 'Б.6.П.7': 'Серый',
+  'Б.7.П.7': 'Белый', 'Б.8.П.7': 'Черный', 'Б.12.П.7': 'Красный', 'Б.9.П.7': 'Серый',
+  'Б.10.П.7': 'Белый', 'Б.11.П.7': 'Черный', 'Б.5.П.7': 'Серый', 'Б.13.П.7': 'Белый',
+  'Б.14.П.7': 'Черный', 'Б.15.П.7': 'Серый'
 };
 
 const branDimensionsOption = {
-    'Б.1.П.7': ['160*160*7,\n160*200*7,\n160*240*7'], 'Б.10.П.7': ['320*320*7'],
-    'Б.11.П.7': ['320*320*7'], 'Б.12.П.7': ['320*160*7'], 'Б.13.П.7': ['120*120*7,\n120*90*7,\n180*120*7'],
-    'Б.14.П.7': ['120*120*7,\n120*90*7,\n180*120*7'], 'Б.15.П.7': ['120*120*7,\n120*90*7,\n180*120*7'],
-    'Б.2.П.7': ['160*160*7,\n160*200*7,\n160*240*7'], 'Б.3.П.7': ['160*160*7,\n160*200*7,\n160*240*7'],
-    'Б.5.П.7': ['100*200*7'], 'Б.6.П.7': ['320*160*7'], 'Б.7.П.7': ['320*160*7'], 'Б.8.П.7': ['320*160*7'],
-    'Б.9.П.7': ['320*320*7']    
+  'Б.1.П.7': ['160*160*7,\n160*200*7,\n160*240*7'], 'Б.10.П.7': ['320*320*7'],
+  'Б.11.П.7': ['320*320*7'], 'Б.12.П.7': ['320*160*7'], 'Б.13.П.7': ['120*120*7,\n120*90*7,\n180*120*7'],
+  'Б.14.П.7': ['120*120*7,\n120*90*7,\n180*120*7'], 'Б.15.П.7': ['120*120*7,\n120*90*7,\n180*120*7'],
+  'Б.2.П.7': ['160*160*7,\n160*200*7,\n160*240*7'], 'Б.3.П.7': ['160*160*7,\n160*200*7,\n160*240*7'],
+  'Б.5.П.7': ['100*200*7'], 'Б.6.П.7': ['320*160*7'], 'Б.7.П.7': ['320*160*7'], 'Б.8.П.7': ['320*160*7'],
+  'Б.9.П.7': ['320*320*7']
 };
 
-// Готовим общий каталог для фильтрации (один раз)
+// Общий каталог для фильтрации (один раз)
 const catalog = {};
 Object.entries(productBrandOptions).forEach(([product, codes]) => {
-    codes.forEach(code => {
-        catalog[code] = {
-            product,
-            series: brandSeriesOption[code] || [],
-            color: branColorsOption[code] || '',
-            dimensions: branDimensionsOption[code] || []
-        };
-    });
+  codes.forEach((code) => {
+    catalog[code] = {
+      product,
+      series: brandSeriesOption[code] || [],
+      color: branColorsOption[code] || '',
+      dimensions: branDimensionsOption[code] || []
+    };
+  });
 });
 
 const emptyBLBRow = () => ({
@@ -92,15 +82,53 @@ const emptyBLBRow = () => ({
   unit: '', quantity: '', note: ''
 });
 
+// Обязательны только эти поля (как и раньше); порядок — порядок обхода формы.
+const FIELD_LABELS = {
+  date: 'Дата', category: 'Категория', object: 'Объект', position: 'Позиция', quantity: 'Количество'
+};
+const FIELD_ERRORS = {
+  category: 'Выберите категорию', object: 'Выберите объект', position: 'Выберите позицию',
+  quantity: 'Введите количество'
+};
+const FORM_ORDER = Object.keys(FIELD_LABELS);
+
+const toIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const ruDate = (iso) => iso.split('-').reverse().join('.');
+
+const isRowEmpty = (row) => Object.entries(row).every(([key, v]) => key === 'unit' || v === '');
+
+// Какие значения второй группы ещё подходят под уже выбранные.
+const filterCodes = (row) => Object.keys(catalog).filter((code) => {
+  const item = catalog[code];
+  return (
+    (!row.product || item.product === row.product) &&
+    (!row.brand || code === row.brand) &&
+    (!row.series || item.series.includes(row.series)) &&
+    (!row.color || item.color === row.color) &&
+    (!row.dimensions || item.dimensions.includes(row.dimensions))
+  );
+});
+
 const BLBRequestPage = () => {
   const location = useLocation();
+  const navigate = useNavigate();
   const [formRows, setFormRows] = useState([emptyBLBRow()]);
+  const [fieldErrors, setFieldErrors] = useState(() => new Set());
+  const [notice, setNotice] = useState(null);
+  const [focusId, setFocusId] = useState(null);
+  const noticeRef = useRef(null);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [copiedRows, setCopiedRows] = useState(() => new Set());
 
   const [showModal, setShowModal] = useState(false);
+  const [showClear, setShowClear] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [userName, setUserName] = useState('');
-  const [userPhone, setUserPhone] = useState('');
+  const [userName, setUserName] = useState(() => loadResponsible().name);
+  const [userPhone, setUserPhone] = useState(() => loadResponsible().phone);
 
+  // Заявка, подготовленная «Умной заявкой».
   useEffect(() => {
     const prefill = location.state?.prefill;
     if (!prefill?.rows?.length) return;
@@ -108,110 +136,181 @@ const BLBRequestPage = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const today = new Date();
-  const startDate = new Date();
-  startDate.setDate(today.getDate() + 14);
-  const formatDate = (date) => date.toISOString().split('T')[0];
-  const minDate = formatDate(startDate);
+  useEffect(() => {
+    if (!focusId) return;
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.focus({ preventScroll: true });
+    }
+    setFocusId(null);
+  }, [focusId]);
 
-  // Добавление строки
-  const addRow = () => {
-    setFormRows(prev => [
-      ...prev,
-      { date: '', category: '', object: '', position: '', block: '',
-        product: '', brand: '', series: '', color: '', dimensions: '',
-        unit: '', quantity: '', note: '' }
-    ]);
+  // Экранная клавиатура открыта — панель отправки не закреплена (как на странице бетона).
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return undefined;
+    const update = () => setKeyboardOpen(vv.scale <= 1.01 && vv.height < window.innerHeight * 0.75);
+    update();
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
+  }, []);
+
+  useEffect(() => {
+    if (notice && !focusId && noticeRef.current) {
+      noticeRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [notice, focusId]);
+
+  // Не раньше чем через 14 дней от сегодняшнего.
+  const minDateObj = new Date();
+  minDateObj.setHours(0, 0, 0, 0);
+  minDateObj.setDate(minDateObj.getDate() + MIN_DAYS_AHEAD);
+  const minDate = toIso(minDateObj);
+
+  const missingFields = (row) => FORM_ORDER.filter((name) => {
+    if (name === 'date') return !row.date || row.date < minDate;
+    return !(row[name] || '').toString().trim();
+  });
+
+  const errorOf = (index, name) => {
+    if (!fieldErrors.has(`${index}:${name}`)) return undefined;
+    if (name === 'date') return formRows[index].date ? `Не раньше ${ruDate(minDate)}` : 'Выберите дату';
+    return FIELD_ERRORS[name];
   };
 
-  // Удаление строки
+  const missingNotice = (rows, hint) => ({
+    kind: 'missing',
+    count: rows.reduce((n, r) => n + r.fields.length, 0),
+    rows,
+    hint
+  });
+
+  const addRow = () => {
+    const last = formRows.length - 1;
+    const missing = missingFields(formRows[last]);
+    if (missing.length) {
+      setFieldErrors(new Set(missing.map((name) => `${last}:${name}`)));
+      setNotice(missingNotice(
+        [{ index: last, fields: missing.map((field) => ({ field, label: FIELD_LABELS[field] })) }],
+        'Заполните текущую строку перед добавлением новой.'
+      ));
+      setFocusId(`r${last}-${missing[0]}`);
+      return;
+    }
+    setNotice(null);
+    const prev = formRows[last];
+    setFormRows([...formRows, {
+      ...emptyBLBRow(),
+      date: prev.date, category: prev.category, object: prev.object, position: prev.position, block: prev.block
+    }]);
+    setCopiedRows((rows) => new Set(rows).add(formRows.length));
+  };
+
   const removeRow = (index) => {
-    setFormRows(prev => prev.filter((_, i) => i !== index));
+    if (formRows.length <= 1) return;
+    setFormRows(formRows.filter((_, i) => i !== index));
+    setCopiedRows(new Set());
+    setFieldErrors(new Set());
+    setNotice(null);
+  };
+
+  const clearForm = () => {
+    setFormRows([emptyBLBRow()]);
+    setCopiedRows(new Set());
+    setFieldErrors(new Set());
+    setNotice(null);
+    setShowClear(false);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
-  
-    const requiredFields = ['date', 'category', 'object', 'position', 'quantity'];
-  
-    const hasEmpty = formRows.some(row =>
-      requiredFields.some(f => !row[f]?.toString().trim())
-    );
-  
-    if (hasEmpty) {
-      alert('Пожалуйста, заполните все обязательные поля.');
-      return;
-    }
-  
-    // Проверка, что дата не раньше чем через 14 дней от текущей даты
-    const minDateObj = new Date();
-    minDateObj.setHours(0, 0, 0, 0); // Обнуляем время
-    minDateObj.setDate(minDateObj.getDate() + 14);
-  
-    const hasInvalidDate = formRows.some(row => {
-      const rowDate = new Date(row.date);
-      rowDate.setHours(0, 0, 0, 0); // Обнуляем время для корректного сравнения
-      return isNaN(rowDate) || rowDate < minDateObj;
+    setNotice(null);
+
+    const errors = new Set();
+    const rows = [];
+    formRows.forEach((row, index) => {
+      const missing = missingFields(row);
+      missing.forEach((name) => errors.add(`${index}:${name}`));
+      if (missing.length) rows.push({ index, fields: missing.map((field) => ({ field, label: FIELD_LABELS[field] })) });
     });
-  
-    if (hasInvalidDate) {
-      alert('Дата не может быть раньше чем через 14 дней от текущей.');
+    setFieldErrors(errors);
+    if (rows.length) {
+      setNotice(missingNotice(rows));
+      setFocusId(`r${rows[0].index}-${rows[0].fields[0].field}`);
       return;
     }
-  
+
+    setSubmitError('');
     setShowModal(true);
   };
 
   // Финальная отправка данных (после ввода ФИО и телефона)
-  const handleFinalSubmit = async () => {
-  setIsSubmitting(true);
+  const handleFinalSubmit = async (e) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    if (!userName.trim() || !userPhone.trim()) {
+      setSubmitError('Пожалуйста, заполните ФИО и номер телефона.');
+      return;
+    }
+    setSubmitError('');
+    setIsSubmitting(true);
 
-  const payload = JSON.stringify(formRows.map(row => ({
-    date: row.date,
-    category: row.category,
-    object: row.object,
-    position: row.position,
-    block: row.block,
-    product: row.product,
-    brand: row.brand,
-    series: row.series,
-    color: row.color,
-    dimensions: row.dimensions,
-    unit: row.unit,
-    quantity: row.quantity,
-    note: row.note,
-    responsibleName: userName,
-    responsiblePhone: userPhone
-  })));
+    const payload = JSON.stringify(formRows.map((row) => ({
+      date: row.date,
+      category: row.category,
+      object: row.object,
+      position: row.position,
+      block: row.block,
+      product: row.product,
+      brand: row.brand,
+      series: row.series,
+      color: row.color,
+      dimensions: row.dimensions,
+      unit: row.unit,
+      quantity: row.quantity,
+      note: row.note,
+      responsibleName: userName,
+      responsiblePhone: userPhone
+    })));
 
-  const formData = new FormData();
-  formData.append('data', payload);
+    const formData = new FormData();
+    formData.append('data', payload);
 
-  try {
-    await fetch('https://script.google.com/macros/s/AKfycbyMz5pFG3eMxFU-W5bYcPEmYCySf2mNsrLSYYFCfLqY6p5-fuNSySuFKmUohEImS_F_zQ/exec', {
-      method: 'POST',
-      mode: 'no-cors',
-      body: formData
-    });
-
-    alert('Заявка отправлена!');
-    setShowModal(false);
-    setUserName('');
-    setUserPhone('');
-    setFormRows([emptyBLBRow()]);
-  } catch (error) {
-    console.error('Ошибка отправки:', error);
-    alert('Ошибка при отправке!');
-  } finally {
-    setIsSubmitting(false);
-  }
-};
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
+    try {
+      await fetch(SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        body: formData,
+        signal: controller.signal
+      });
+      localStorage.setItem(RESPONSIBLE_KEY, JSON.stringify({ name: userName.trim(), phone: userPhone.trim() }));
+      setShowModal(false);
+      setFormRows([emptyBLBRow()]);
+      setCopiedRows(new Set());
+      setFieldErrors(new Set());
+      setSent(true);
+    } catch (error) {
+      console.error('Ошибка отправки:', error);
+      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор без проверки даст дубль.
+      setSubmitError(
+        error && error.name === 'AbortError'
+          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти: уточните у ответственного за заявки на брусчатку, прежде чем отправлять ещё раз, иначе получится дубль.'
+          : 'Заявка не отправлена: нет связи с сервером. Проверьте интернет и нажмите «Отправить заявку» ещё раз — введённые данные сохранены.'
+      );
+    } finally {
+      clearTimeout(timer);
+      setIsSubmitting(false);
+    }
+  };
 
   const handleChange = (e, index) => {
     const { name, value } = e.target;
     const isCleared = value === ''; // флаг, что поле очищено вручную
 
-    setFormRows(prevRows => {
+    setFormRows((prevRows) => {
       const updated = [...prevRows];
       const row = { ...updated[index] };
 
@@ -230,10 +329,10 @@ const BLBRequestPage = () => {
         row.block = '';
       } else if (name === 'block') {
         row.block = value;
-      } else if (['product','brand','series','color','dimensions'].includes(name)) {
+      } else if (['product', 'brand', 'series', 'color', 'dimensions'].includes(name)) {
         row[name] = value;
       } else if (name === 'quantity') {
-        const regex = /^\d{0,6}$/;  // только целые числа
+        const regex = /^\d{0,6}$/; // только целые числа
         if (value === '' || regex.test(value)) {
           row.quantity = value;
         }
@@ -252,23 +351,12 @@ const BLBRequestPage = () => {
 
       // === Автозаполнение, но НЕ если пользователь очистил поле ===
       if (!isCleared) {
-        const allCodes = Object.keys(catalog);
-        const filteredCodes = allCodes.filter(code => {
-          const item = catalog[code];
-          return (
-            (!row.product || item.product === row.product) &&
-            (!row.brand || code === row.brand) &&
-            (!row.series || item.series.includes(row.series)) &&
-            (!row.color || item.color === row.color) &&
-            (!row.dimensions || item.dimensions.includes(row.dimensions))
-          );
-        });
-
-        const productValues = [...new Set(filteredCodes.map(c => catalog[c].product))];
-        const brandValues = filteredCodes.map(c => c);
-        const seriesValues = [...new Set(filteredCodes.flatMap(c => catalog[c].series))];
-        const colorValues = [...new Set(filteredCodes.map(c => catalog[c].color))];
-        const dimensionValues = [...new Set(filteredCodes.flatMap(c => catalog[c].dimensions))];
+        const filteredCodes = filterCodes(row);
+        const productValues = [...new Set(filteredCodes.map((c) => catalog[c].product))];
+        const brandValues = filteredCodes.map((c) => c);
+        const seriesValues = [...new Set(filteredCodes.flatMap((c) => catalog[c].series))];
+        const colorValues = [...new Set(filteredCodes.map((c) => catalog[c].color))];
+        const dimensionValues = [...new Set(filteredCodes.flatMap((c) => catalog[c].dimensions))];
 
         if (!row.product && productValues.length === 1) row.product = productValues[0];
         if (!row.brand && brandValues.length === 1) row.brand = brandValues[0];
@@ -280,320 +368,352 @@ const BLBRequestPage = () => {
       updated[index] = row;
       return updated;
     });
+
+    setFieldErrors((prev) => {
+      if (!prev.has(`${index}:${name}`)) return prev;
+      const next = new Set(prev);
+      next.delete(`${index}:${name}`);
+      return next;
+    });
   };
 
-
-  const categoryOptions = Object.keys(objectCategoryOptions).map(opt => ({
-    value: opt, label: opt
-  }));
+  const formDirty = formRows.length > 1 || !isRowEmpty(formRows[0]);
 
   return (
-    <div className={styles.wideContainer}>
-      <h2>Заявка на брусчатку, лотки и бордюры</h2>
-      <table className={styles.requestTable}>
-        <thead>
-          <tr>
-            <th>Дата</th>
-            <th>Категория</th>
-            <th>Объект</th>
-            <th>Позиция</th>
-            <th>Блок</th>
-            <th>Изделие</th>
-            <th>Марка</th>
-            <th>Серия</th>
-            <th>Цвет</th>
-            <th>Размеры</th>
-            <th>Ед.изм.</th>
-            <th>Кол-во</th>
-            <th>Примечание</th>
-            <th>Действия</th>
-          </tr>
-        </thead>
-        <tbody>
-          {formRows.map((row, index) => {
-            // === Фильтрация второй группы для этой строки ===
-            const allCodes = Object.keys(catalog);
-            const filteredCodes = allCodes.filter(code => {
-              const item = catalog[code];
-              return (
-                (!row.product || item.product === row.product) &&
-                (!row.brand || code === row.brand) &&
-                (!row.series || item.series.includes(row.series)) &&
-                (!row.color || item.color === row.color) &&
-                (!row.dimensions || item.dimensions.includes(row.dimensions))
-              );
-            });
+    <div className={css.page}>
+      <div className={css.content}>
+        <Link to='/' className={css.back}>← На главную</Link>
+        <h1 className={css.title}>Заявка на брусчатку, лотки и бордюры</h1>
 
-            const productOptionsFiltered = [...new Set(filteredCodes.map(c => catalog[c].product))].map(p => ({ value: p, label: p }));
-            const brandOptionsFiltered = filteredCodes.map(c => ({ value: c, label: c }));
-            const seriesOptionsFiltered = [...new Set(filteredCodes.flatMap(c => catalog[c].series))].map(s => ({ value: s, label: s }));
-            const colorOptionsFiltered = [...new Set(filteredCodes.map(c => catalog[c].color))].map(cl => ({ value: cl, label: cl }));
-            const dimensionOptionsFiltered = [...new Set(filteredCodes.flatMap(c => catalog[c].dimensions))].map(d => ({ value: d, label: d }));
+        <p className={css.info}>
+          <TbInfoCircle className={css.infoIcon} aria-hidden='true' />
+          Заявки принимаются не раньше чем за {MIN_DAYS_AHEAD} дней: ближайшая дата — {ruDate(minDate)}.
+        </p>
+
+        <p className={css.legend}>
+          <span className={css.required} aria-hidden='true'>*</span> — обязательное поле. Марку, серию, цвет и размеры можно не выбирать подряд: после выбора части полей остальные подбираются сами.
+        </p>
+
+        <form onSubmit={handleSubmit} noValidate>
+          {formRows.map((row, index) => {
+            const idOf = (name) => `r${index}-${name}`;
+            const onChange = (e) => handleChange(e, index);
+
+            // Что ещё подходит под уже выбранное в этой строке
+            const filteredCodes = filterCodes(row);
+            const productOptions = [...new Set(filteredCodes.map((c) => catalog[c].product))];
+            const seriesOptions = [...new Set(filteredCodes.flatMap((c) => catalog[c].series))];
+            const colorOptions = [...new Set(filteredCodes.map((c) => catalog[c].color))];
+            const dimensionOptions = [...new Set(filteredCodes.flatMap((c) => catalog[c].dimensions))];
+
+            const blocks = positionBlockOptions[row.position] || [];
+            const hasBlocks = blocks.length > 0;
+            const dateError = errorOf(index, 'date');
+            const qtyError = errorOf(index, 'quantity');
+            const unitLabel = row.unit ? `Количество, ${row.unit}` : 'Количество';
 
             return (
-              <tr key={index}>
-                {/* Дата */}
-                <td style={{ minWidth: 100 }}>
-                  <input
-                    type="date"
-                    name="date"
-                    value={row.date}
-                    min={minDate}
-                    onChange={e => handleChange(e, index)}
-                    style={{
-                      width: '100%',
-                      height: '36px',
-                      border: '1px solid #ccc',
-                      borderRadius: 4,
-                      fontSize: '12px',
-                      padding: '2px 6px'
-                    }}
-                  />
-                </td>
-
-                {/* Категория */}
-                <td style={{ minWidth: 140 }}>
-                <Select
-                  options={categoryOptions}
-                  value={categoryOptions.find(opt => opt.value === row.category) || null}
-                  onChange={selected => {
-                    const e = { target: { name: 'category', value: selected ? selected.value : '' } };
-                    handleChange(e, index);
-                  }}
-                  placeholder="Выберите..."
-                  isClearable
-                  styles={selectMultiLineStyles}
-                />
-                </td>
-
-                {/* Объект */}
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(objectCategoryOptions[row.category] || []).map(o => ({ value: o, label: o }))}
-                    value={row.object ? { value: row.object, label: row.object } : null}
-                    onChange={selected =>
-                      handleChange({ target: { name: 'object', value: selected?.value || '' } }, index)
-                    }
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.category}
-                    styles={selectMultiLineStyles}
-                  />
-                </td>
-                {/* Позиция */}
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(objectPositionOptions[row.object] || []).map(p => ({ value: p, label: p }))}
-                    value={row.position ? { value: row.position, label: row.position } : null}
-                    onChange={selected =>
-                      handleChange({ target: { name: 'position', value: selected?.value || '' } }, index)
-                    }
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.object}
-                    styles={selectMultiLineStyles}
-                  />
-                </td>
-                {/* Блок */}
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(positionBlockOptions[row.position] || []).map(b => ({ value: b, label: b }))}
-                    value={row.block ? { value: row.block, label: row.block } : null}
-                    onChange={selected =>
-                      handleChange({ target: { name: 'block', value: selected?.value || '' } }, index)
-                    }
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.position || !(positionBlockOptions[row.position] && positionBlockOptions[row.position].length)}
-                    styles={selectMultiLineStyles}
-                  />
-                </td>
-                {/* Вторая группа (взаимосвязанные поля) */}
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={productOptionsFiltered}
-                    value={row.product ? { value: row.product, label: row.product } : null}
-                    onChange={selected => handleChange({ target: { name: 'product', value: selected?.value || '' } }, index)}
-                    placeholder="Выберите..."
-                    isClearable
-                    isSearchable={false}
-                    styles={selectMultiLineStyles}
-                  />
-                </td>
-                <td style={{ minWidth: 140 }}>
-                  <div style={{ display: 'flex', alignItems: 'center' }}>
-                    <Select
-                      options={brandOptionsFiltered}
-                      value={row.brand ? { value: row.brand, label: row.brand } : null}
-                      isDisabled // запрет выбора вручную
-                      placeholder="Автозаполняется..."
-                      styles={selectMultiLineStyles}
-                    />
-                    {row.brand && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const e = { target: { name: 'brand', value: '' } };
-                          handleChange(e, index); // очистка через handleChange
-                        }}
-                        style={{
-                          marginLeft: '4px',
-                          padding: '0 6px',
-                          background: '#f5f5f5',
-                          border: '1px solid #ccc',
-                          borderRadius: '4px',
-                          cursor: 'pointer',
-                          fontSize: '12px',
-                        }}
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                </td>
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={seriesOptionsFiltered}
-                    value={row.series ? { value: row.series, label: row.series } : null}
-                    onChange={selected => handleChange({ target: { name: 'series', value: selected?.value || '' } }, index)}
-                    placeholder="Выберите..."
-                    isClearable
-                    isSearchable={false}
-                    styles={selectMultiLineStyles}
-                  />
-                </td>
-                <td style={{ minWidth: 120 }}>
-                  <Select
-                    options={colorOptionsFiltered}
-                    value={row.color ? { value: row.color, label: row.color } : null}
-                    onChange={selected => handleChange({ target: { name: 'color', value: selected?.value || '' } }, index)}
-                    placeholder="Выберите..."
-                    isClearable
-                    isSearchable={false}
-                    styles={selectMultiLineStyles}
-                  />
-                </td>
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={dimensionOptionsFiltered}
-                    value={row.dimensions ? { value: row.dimensions, label: row.dimensions } : null}
-                    onChange={selected => handleChange({ target: { name: 'dimensions', value: selected?.value || '' } }, index)}
-                    placeholder="Выберите..."
-                    isClearable
-                    isSearchable={false}
-                    styles={selectMultiLineStyles}
-                  />
-                </td>
-                {/* Ед.изм. */}
-                <td style={{ minWidth: 80 }}>
-                  <input
-                    type="text"
-                    value={row.unit}
-                    readOnly
-                    placeholder="Автозаполняется..."
-                    style={{
-                      width: '100%',
-                      height: '36px',
-                      border: '1px solid #ccc',
-                      borderRadius: 4,
-                      fontSize: '12px',
-                      padding: '2px 6px',
-                      backgroundColor: '#f0f0f0'
-                    }}                    
-                  />
-                </td>
-
-                {/* Кол-во */}
-                <td style={{ minWidth: 100 }}>
-                  <input
-                    type="text"
-                    name="quantity"
-                    value={row.quantity}
-                    onChange={e => handleChange(e, index)}
-                    placeholder="Кол-во"
-                    style={{
-                      width: '100%',
-                      height: '36px',
-                      border: '1px solid #ccc',
-                      borderRadius: 4,
-                      fontSize: '12px',
-                      padding: '2px 6px'
-                    }}
-                  />
-                </td>
-
-                {/* Примечание */}
-                <td>
-                  <textarea
-                    name="note"
-                    value={row.note}
-                    onChange={e => handleChange(e, index)}
-                    rows={2}
-                    placeholder="Примечание..."
-                    style={{ fontSize: '12px', width: '100%' }}
-                  />
-                </td>
-
-                {/* Действия */}
-                <td className={styles.actionsCell}>
+              <section key={index} className={css.card} aria-label={formRows.length > 1 ? `Заявка ${index + 1}` : 'Заявка'}>
+                <div className={css.cardHeader}>
+                  <h2 className={css.cardTitle}>{formRows.length > 1 ? `Заявка ${index + 1}` : 'Заявка'}</h2>
                   {formRows.length > 1 && (
-                    <button
-                      type='button'
-                      className={styles.removeButton}
-                      onClick={() => removeRow(index)}
-                    >
+                    <button type='button' className={css.removeBtn} onClick={() => removeRow(index)}>
                       Удалить
                     </button>
                   )}
-                </td>
-              </tr>
+                </div>
+
+                {copiedRows.has(index) && (
+                  <p className={css.help}>Дата и место подставлены из предыдущей заявки — измените, если нужно.</p>
+                )}
+
+                <div role='group' aria-labelledby={idOf('g-when')} className={css.group}>
+                  <h3 id={idOf('g-when')} className={css.groupTitle}>Когда</h3>
+                  <div className={css.gridWhen}>
+                    <Field label='Дата' required htmlFor={idOf('date')} error={dateError} errorId={`${idOf('date')}-err`}>
+                      <input
+                        id={idOf('date')}
+                        type='date'
+                        name='date'
+                        className={`${css.input} ${dateError ? css.inputError : ''}`}
+                        value={row.date}
+                        min={minDate}
+                        onChange={onChange}
+                        aria-required='true'
+                        aria-invalid={dateError ? true : undefined}
+                        aria-describedby={dateError ? `${idOf('date')}-err` : undefined}
+                      />
+                    </Field>
+                  </div>
+                </div>
+
+                <div role='group' aria-labelledby={idOf('g-where')} className={css.group}>
+                  <h3 id={idOf('g-where')} className={css.groupTitle}>Куда</h3>
+                  <div className={css.gridWhere}>
+                    <SelectField
+                      label='Категория'
+                      name='category'
+                      id={idOf('category')}
+                      required
+                      options={Object.keys(objectCategoryOptions)}
+                      value={row.category}
+                      onChange={onChange}
+                      error={errorOf(index, 'category')}
+                    />
+                    <SelectField
+                      label='Объект'
+                      name='object'
+                      id={idOf('object')}
+                      required
+                      options={objectCategoryOptions[row.category] || []}
+                      value={row.object}
+                      onChange={onChange}
+                      isDisabled={!row.category}
+                      disabledHint='Сначала выберите категорию'
+                      error={errorOf(index, 'object')}
+                    />
+                    <SelectField
+                      label='Позиция'
+                      name='position'
+                      id={idOf('position')}
+                      required
+                      options={objectPositionOptions[row.object] || []}
+                      value={row.position}
+                      onChange={onChange}
+                      isDisabled={!row.object}
+                      disabledHint='Сначала выберите объект'
+                      error={errorOf(index, 'position')}
+                    />
+                    <SelectField
+                      label='Блок'
+                      name='block'
+                      id={idOf('block')}
+                      optional
+                      options={blocks}
+                      value={row.block}
+                      onChange={onChange}
+                      isDisabled={!row.position || !hasBlocks}
+                      disabledHint={row.position && !hasBlocks ? 'Для этой позиции не нужен' : 'Сначала выберите позицию'}
+                    />
+                  </div>
+                </div>
+
+                <div role='group' aria-labelledby={idOf('g-what')} className={css.group}>
+                  <h3 id={idOf('g-what')} className={css.groupTitle}>Что и сколько</h3>
+                  <div className={css.gridWhere}>
+                    <SelectField
+                      label='Изделие'
+                      name='product'
+                      id={idOf('product')}
+                      optional
+                      options={productOptions}
+                      value={row.product}
+                      onChange={onChange}
+                    />
+                    <SelectField
+                      label='Серия'
+                      name='series'
+                      id={idOf('series')}
+                      optional
+                      options={seriesOptions}
+                      value={row.series}
+                      onChange={onChange}
+                    />
+                    <SelectField
+                      label='Цвет'
+                      name='color'
+                      id={idOf('color')}
+                      optional
+                      options={colorOptions}
+                      value={row.color}
+                      onChange={onChange}
+                    />
+                    <SelectField
+                      label='Размеры'
+                      name='dimensions'
+                      id={idOf('dimensions')}
+                      optional
+                      options={dimensionOptions}
+                      value={row.dimensions}
+                      onChange={onChange}
+                    />
+
+                    <Field
+                      label='Марка'
+                      optional
+                      htmlFor={idOf('brand')}
+                      help={row.brand ? undefined : 'Подбирается по серии, цвету и размерам'}
+                      helpId={`${idOf('brand')}-help`}
+                    >
+                      <input
+                        id={idOf('brand')}
+                        type='text'
+                        className={css.input}
+                        value={row.brand}
+                        readOnly
+                        disabled={!row.brand}
+                        placeholder='Подбирается сама'
+                        aria-describedby={row.brand ? undefined : `${idOf('brand')}-help`}
+                      />
+                      {row.brand && (
+                        <button
+                          type='button'
+                          className={css.noticeLink}
+                          onClick={() => handleChange({ target: { name: 'brand', value: '' } }, index)}
+                        >
+                          Сбросить марку
+                        </button>
+                      )}
+                    </Field>
+
+                    <Field label={unitLabel} required htmlFor={idOf('quantity')} error={qtyError} errorId={`${idOf('quantity')}-err`}>
+                      <input
+                        id={idOf('quantity')}
+                        type='text'
+                        inputMode='numeric'
+                        name='quantity'
+                        className={`${css.input} ${qtyError ? css.inputError : ''}`}
+                        value={row.quantity}
+                        onChange={onChange}
+                        placeholder='Введите количество'
+                        autoComplete='off'
+                        aria-required='true'
+                        aria-invalid={qtyError ? true : undefined}
+                        aria-describedby={qtyError ? `${idOf('quantity')}-err` : undefined}
+                      />
+                    </Field>
+                  </div>
+                </div>
+
+                <div className={css.group}>
+                  <Field label='Примечание' optional htmlFor={idOf('note')}>
+                    <textarea
+                      id={idOf('note')}
+                      name='note'
+                      className={css.textarea}
+                      value={row.note}
+                      onChange={onChange}
+                      rows={3}
+                      placeholder='Введите примечание...'
+                    />
+                  </Field>
+                </div>
+              </section>
             );
           })}
-        </tbody>
-      </table>
-      <div className={styles.buttonsContainer}>
-        <button type="button" onClick={addRow} className={styles.addButton}>Добавить строку</button>
-        <div className={styles.centerButtons}>
-          <button type="button" onClick={() => window.location.href = '/'} className={styles.homeButton}>На главную</button>
-          <button type="button" onClick={() => setFormRows([emptyBLBRow()])}
-            className={styles.clearButton}>Очистить заявку</button>
-        </div>
-        <button type="button" onClick={handleSubmit} className={styles.submitButton}>Отправить заявку</button>
-      </div>
-      {/* Модальное окно */}
-      {showModal && (
-        <div className={styles.modalOverlay}>
-          <div className={styles.modal}>
-            <button className={styles.modalClose} onClick={() => setShowModal(false)}>×</button>
-            <h3>Ответственный</h3>
-            <label>
-              ФИО:
-              <input
-                type="text"
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                placeholder="Введите ФИО"
-              />
-            </label>
-            <label>
-              Номер телефона:
-              <input
-                type="text"
-                value={userPhone}
-                onChange={(e) => setUserPhone(e.target.value)}
-                placeholder="Введите номер"
-              />
-            </label>
-            <button
-              className={styles.submitButton}
-              onClick={handleFinalSubmit}
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
+
+          {notice && (
+            <div ref={noticeRef} className={css.noticeError} role='alert'>
+              <p className={css.noticeTitle}>
+                <TbAlertCircle className={css.noticeIcon} aria-hidden='true' />
+                {`Не заполнено полей: ${notice.count}`}
+              </p>
+              {notice.hint && <p className={css.noticeText}>{notice.hint}</p>}
+              <ul className={css.noticeList}>
+                {notice.rows.map((r) => (
+                  <li key={r.index}>
+                    {formRows.length > 1 ? `Заявка ${r.index + 1}: ` : ''}
+                    {r.fields.map((f, i) => (
+                      <React.Fragment key={f.field}>
+                        {i > 0 && ', '}
+                        <button type='button' className={css.noticeLink} onClick={() => setFocusId(`r${r.index}-${f.field}`)}>
+                          {f.label}
+                        </button>
+                      </React.Fragment>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <button type='button' onClick={addRow} className={css.addBtn}>+ Добавить ещё позицию</button>
+
+          <div className={`${css.actions} ${keyboardOpen ? css.actionsStatic : ''}`}>
+            {formDirty && (
+              <button type='button' className={css.btnGhost} onClick={() => setShowClear(true)}>
+                Очистить заявку
+              </button>
+            )}
+            <button type='submit' className={css.btnPrimary}>
+              {formRows.length > 1 ? `Отправить заявки (${formRows.length})` : 'Отправить заявку'}
             </button>
           </div>
-        </div>
-      )}      
+        </form>
+      </div>
+
+      {showModal && (
+        <Dialog title='Ответственный' onClose={() => setShowModal(false)}>
+          <form onSubmit={handleFinalSubmit} className={css.dialogForm} noValidate>
+            <p className={css.dialogSummary}>Позиций в заявке: {formRows.length}</p>
+
+            <Field label='ФИО' required htmlFor='responsible-name'>
+              <input
+                id='responsible-name'
+                type='text'
+                className={css.input}
+                value={userName}
+                onChange={(e) => setUserName(e.target.value)}
+                placeholder='Введите ФИО'
+                autoComplete='name'
+              />
+            </Field>
+
+            <Field label='Номер телефона' required htmlFor='responsible-phone'>
+              <input
+                id='responsible-phone'
+                type='tel'
+                inputMode='tel'
+                className={css.input}
+                value={userPhone}
+                onChange={(e) => setUserPhone(e.target.value)}
+                placeholder='Введите номер'
+                autoComplete='tel'
+              />
+            </Field>
+
+            <p className={css.help}>ФИО и номер запоминаются на этом устройстве, в следующий раз вводить не придётся.</p>
+
+            {submitError && (
+              <div className={css.noticeError} role='alert'>
+                <p className={css.noticeTitle}>
+                  <TbAlertCircle className={css.noticeIcon} aria-hidden='true' />
+                  Не отправлено
+                </p>
+                <p className={css.noticeText}>{submitError}</p>
+              </div>
+            )}
+
+            <button type='submit' className={css.btnPrimary} disabled={isSubmitting}>
+              {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
+            </button>
+          </form>
+        </Dialog>
+      )}
+
+      {showClear && (
+        <Dialog title='Очистить заявку?' onClose={() => setShowClear(false)}>
+          <p className={css.dialogText}>
+            {formRows.length > 1
+              ? `Все позиции (${formRows.length}) будут удалены, останется одна пустая.`
+              : 'Все введённые данные будут удалены.'}
+          </p>
+          <div className={css.dialogActions}>
+            <button type='button' className={css.btnGhost} onClick={() => setShowClear(false)}>Отмена</button>
+            <button type='button' className={css.btnPrimary} onClick={clearForm}>Очистить</button>
+          </div>
+        </Dialog>
+      )}
+
+      {sent && (
+        <Dialog title='Заявка отправлена' onClose={() => setSent(false)}>
+          <p className={css.dialogText}>Заявка на брусчатку, лотки и бордюры отправлена.</p>
+          <div className={css.dialogActions}>
+            <button type='button' className={css.btnGhost} onClick={() => navigate('/')}>На главную</button>
+            <button type='button' className={css.btnPrimary} onClick={() => setSent(false)}>Понятно</button>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 };
