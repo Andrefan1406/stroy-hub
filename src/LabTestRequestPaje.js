@@ -1,8 +1,11 @@
-// Обновлённый компонент с ограничением времени и даты
-import React, { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
-import Select from 'react-select';
-import styles from './RequestPage.module.css';
+// Заявка на лабораторные испытания. Оформление — в стиле остальных заявок
+// (ConcreteRequestPage.module.css): карточки «Что / Когда / Куда / Место в здании»,
+// ошибки и подсказки на странице, окна — components/RequestDialog. Справочники,
+// правила обязательности полей и отправка в Google Apps Script — прежние.
+import React, { useState, useEffect, useRef } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { TbAlertCircle, TbInfoCircle } from 'react-icons/tb';
+import css from './ConcreteRequestPage.module.css';
 import {
   objectCategoryOptions,
   objectPositionOptions,
@@ -10,172 +13,262 @@ import {
   blockFloorOptions,
   concreteConstructiveOptions
 } from './data/constructionData';
+import Dialog from './components/RequestDialog';
+import { Field, SelectField } from './components/RequestFormFields';
 
-const emptyRow = {
-  test: '',
-  date: '',
-  category: '',
-  object: '',
-  position: '',
-  block: '',
-  floor: '',
-  constructive: '',
-  note: ''
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxQJ1OVUlO-Qp9t5J0bAB2zMC5jMgOb79VT3GVi0_xaEazGClzYaR9sVo82gosrDwFj/exec';
+// Ответ скрипта прочитать нельзя (no-cors): зависшую отправку обрываем сами
+// и просим убедиться, что заявка не дошла, прежде чем отправлять повторно.
+const SEND_TIMEOUT_MS = 20000;
+const MAX_DAYS_AHEAD = 7;
+
+// Контакты ответственного запоминаем на этом устройстве.
+const RESPONSIBLE_KEY = 'labRequestResponsible';
+const loadResponsible = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RESPONSIBLE_KEY) || '{}');
+    return { name: saved.name || '', phone: saved.phone || '' };
+  } catch {
+    return { name: '', phone: '' };
+  }
 };
+
+const SOIL_TEST = 'Степень уплотнения грунта';
+const TEST_OPTIONS = [SOIL_TEST, 'Прочность бетона с помощью ИПС'];
+const SOIL_CONSTRUCTIVE = 'Основание';
+const ENGINEERING_NETWORKS = 'Инженерные сети';
+
+const emptyRow = () => ({
+  test: '', date: '', category: '', object: '', position: '',
+  block: '', floor: '', constructive: '', note: ''
+});
+
+// Порядок обхода формы (по нему ищется первое пустое поле, куда переводится фокус).
+const FIELD_LABELS = {
+  test: 'Наименование испытания', date: 'Дата', category: 'Категория', object: 'Объект',
+  position: 'Позиция', block: 'Блок', floor: 'Этаж', constructive: 'Конструктив', note: 'Примечание'
+};
+const FIELD_ERRORS = {
+  test: 'Выберите испытание', category: 'Выберите категорию', object: 'Выберите объект',
+  position: 'Выберите позицию', block: 'Выберите блок', floor: 'Выберите этаж',
+  constructive: 'Выберите конструктив', note: 'Укажите протяжённость, номера колодцев и т. п.'
+};
+const FORM_ORDER = Object.keys(FIELD_LABELS);
+
+const toIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const ruDate = (iso) => iso.split('-').reverse().join('.');
+
+const isSoil = (row) => row.test === SOIL_TEST;
+const hasBlocks = (row) => (positionBlockOptions[row.position] || []).length > 0;
+const isRowEmpty = (row) => Object.values(row).every((v) => v === '');
 
 const LabTestRequestPaje = () => {
   const location = useLocation();
-  const [formRows, setFormRows] = useState([{ ...emptyRow }]);
-  const [showModal, setShowModal] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [userName, setUserName] = useState('');
-  const [userPhone, setUserPhone] = useState('');
+  const navigate = useNavigate();
+  const [formRows, setFormRows] = useState([emptyRow()]);
+  const [fieldErrors, setFieldErrors] = useState(() => new Set());
+  const [notice, setNotice] = useState(null);
+  const [focusId, setFocusId] = useState(null);
+  const noticeRef = useRef(null);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [copiedRows, setCopiedRows] = useState(() => new Set());
 
+  const [showModal, setShowModal] = useState(false);
+  const [showClear, setShowClear] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [userName, setUserName] = useState(() => loadResponsible().name);
+  const [userPhone, setUserPhone] = useState(() => loadResponsible().phone);
+
+  // Заявка, подготовленная «Умной заявкой».
   useEffect(() => {
     const prefill = location.state?.prefill;
     if (!prefill?.rows?.length) return;
-    setFormRows(prefill.rows.map((r) => ({ ...emptyRow, ...r })));
+    setFormRows(prefill.rows.map((r) => ({ ...emptyRow(), ...r })));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!focusId) return;
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.focus({ preventScroll: true });
+    }
+    setFocusId(null);
+  }, [focusId]);
+
+  // Экранная клавиатура открыта — панель отправки не закреплена (как на странице бетона).
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return undefined;
+    const update = () => setKeyboardOpen(vv.scale <= 1.01 && vv.height < window.innerHeight * 0.75);
+    update();
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
+  }, []);
+
+  useEffect(() => {
+    if (notice && !focusId && noticeRef.current) {
+      noticeRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [notice, focusId]);
+
+  // Дата испытания — от сегодняшнего дня до +7 дней.
   const today = new Date();
-  const nextWeek = new Date();
-  nextWeek.setDate(today.getDate() + 7);
+  today.setHours(0, 0, 0, 0);
+  const maxDay = new Date(today);
+  maxDay.setDate(maxDay.getDate() + MAX_DAYS_AHEAD);
+  const minDate = toIso(today);
+  const maxDate = toIso(maxDay);
 
-  const formatDate = (date) => date.toISOString().split('T')[0];
-  const minDate = formatDate(today);
-  const maxDate = formatDate(nextWeek);
+  const missingFields = (row) => FORM_ORDER.filter((name) => {
+    if (name === 'test') return !row.test;
+    if (name === 'date') return !row.date || row.date < minDate || row.date > maxDate;
+    if (name === 'block' || name === 'floor') return !isSoil(row) && hasBlocks(row) && !row[name];
+    if (name === 'constructive') return (isSoil(row) || hasBlocks(row)) && !row.constructive;
+    if (name === 'note') return row.object === ENGINEERING_NETWORKS && !row.note.trim();
+    return !row[name];
+  });
 
-  const addRow = () => {
-    setFormRows(prev => [...prev, { ...emptyRow }]);
+  const errorOf = (index, name) => {
+    if (!fieldErrors.has(`${index}:${name}`)) return undefined;
+    if (name === 'date') {
+      return formRows[index].date ? `Дата — от ${ruDate(minDate)} до ${ruDate(maxDate)}` : 'Выберите дату';
+    }
+    return FIELD_ERRORS[name];
   };
 
-  const removeRow = (index) => {
-    setFormRows(prev => prev.filter((_, i) => i !== index));
-  };
+  const missingNotice = (rows, hint) => ({
+    kind: 'missing',
+    count: rows.reduce((n, r) => n + r.fields.length, 0),
+    rows,
+    hint
+  });
 
   const handleChange = (e, index) => {
     const { name, value } = e.target;
+    setFormRows((prevRows) => prevRows.map((current, i) => {
+      if (i !== index) return current;
+      const row = { ...current, [name]: value };
 
-    setFormRows(prevRows => {
-      const updatedRows = [...prevRows];
-      const row = { ...updatedRows[index] };
-
+      // Сбрасываем только то, что зависит от изменённого поля.
       if (name === 'test') {
-        row.test = value;
-        row.date = '';
-        row.category = '';
-        row.object = '';
-        row.position = '';
-        row.block = '';
-        row.floor = '';
-        row.constructive = value === 'Степень уплотнения грунта' ? 'Основание' : '';
-      } else if (name === 'date') {
-        row.date = value;
-        row.category = '';
-        row.object = '';
-        row.position = '';
-        row.block = '';
-        row.floor = '';
-        row.constructive = row.test === 'Степень уплотнения грунта' ? 'Основание' : '';
+        if (value === SOIL_TEST) {
+          row.block = '';
+          row.floor = '';
+          row.constructive = SOIL_CONSTRUCTIVE;
+        } else if (current.test === SOIL_TEST) {
+          row.constructive = '';
+        }
       } else if (name === 'category') {
-        row.category = value;
         row.object = '';
         row.position = '';
         row.block = '';
         row.floor = '';
-        row.constructive = row.test === 'Степень уплотнения грунта' ? 'Основание' : '';
+        row.constructive = isSoil(row) ? SOIL_CONSTRUCTIVE : '';
       } else if (name === 'object') {
-        row.object = value;
         row.position = '';
         row.block = '';
         row.floor = '';
-        row.constructive = row.test === 'Степень уплотнения грунта' ? 'Основание' : '';
+        row.constructive = isSoil(row) ? SOIL_CONSTRUCTIVE : '';
       } else if (name === 'position') {
-        row.position = value;
         row.block = '';
         row.floor = '';
-        row.constructive = row.test === 'Степень уплотнения грунта' ? 'Основание' : '';
+        row.constructive = isSoil(row) ? SOIL_CONSTRUCTIVE : '';
       } else if (name === 'block') {
-        row.block = value;
         row.floor = '';
-        row.constructive = row.test === 'Степень уплотнения грунта' ? 'Основание' : '';
+        row.constructive = isSoil(row) ? SOIL_CONSTRUCTIVE : '';
       } else if (name === 'floor') {
-        row.floor = value;
-        row.constructive = row.test === 'Степень уплотнения грунта' ? 'Основание' : '';
-      } else if (name === 'constructive') {
-        row.constructive = value;
-      } else {
-        row[name] = value;
+        row.constructive = isSoil(row) ? SOIL_CONSTRUCTIVE : '';
       }
+      return row;
+    }));
 
-      updatedRows[index] = row;
-      return updatedRows;
+    setFieldErrors((prev) => {
+      const next = new Set(prev);
+      next.delete(`${index}:${name}`);
+      // смена испытания или места меняет набор обязательных полей ниже
+      if (['test', 'category', 'object', 'position', 'block', 'floor'].includes(name)) {
+        ['block', 'floor', 'constructive', 'note'].forEach((f) => next.delete(`${index}:${f}`));
+      }
+      return next.size === prev.size ? prev : next;
     });
+  };
+
+  const addRow = () => {
+    const last = formRows.length - 1;
+    const missing = missingFields(formRows[last]);
+    if (missing.length) {
+      setFieldErrors(new Set(missing.map((name) => `${last}:${name}`)));
+      setNotice(missingNotice(
+        [{ index: last, fields: missing.map((field) => ({ field, label: FIELD_LABELS[field] })) }],
+        'Заполните текущую строку перед добавлением новой.'
+      ));
+      setFocusId(`r${last}-${missing[0]}`);
+      return;
+    }
+    setNotice(null);
+    const prev = formRows[last];
+    // Следующий конструктив на том же месте: всё, кроме конструктива и примечания, как в предыдущей.
+    setFormRows([...formRows, {
+      ...prev,
+      constructive: isSoil(prev) ? SOIL_CONSTRUCTIVE : '',
+      note: ''
+    }]);
+    setCopiedRows((rows) => new Set(rows).add(formRows.length));
+  };
+
+  const removeRow = (index) => {
+    if (formRows.length <= 1) return;
+    setFormRows(formRows.filter((_, i) => i !== index));
+    setCopiedRows(new Set());
+    setFieldErrors(new Set());
+    setNotice(null);
+  };
+
+  const clearForm = () => {
+    setFormRows([emptyRow()]);
+    setCopiedRows(new Set());
+    setFieldErrors(new Set());
+    setNotice(null);
+    setShowClear(false);
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    setNotice(null);
 
-    const requiredFields = ['date', 'category', 'object', 'position'];
-
-    const hasEmptyRequiredField = formRows.some(row => {
-      const activeFields = [...requiredFields];
-      const hasBlocks = positionBlockOptions[row.position];
-
-      if (row.test === 'Степень уплотнения грунта') {
-        activeFields.push('constructive');
-      } else if (hasBlocks) {
-        activeFields.push('block', 'floor', 'constructive');
-      } else {
-        activeFields.push('test');
-      }
-
-      if (row.object === 'Инженерные сети' && !row.note?.toString().trim()) {
-        return true;
-      }
-
-      return activeFields.some(field => !row[field]?.toString().trim());
+    const errors = new Set();
+    const rows = [];
+    formRows.forEach((row, index) => {
+      const missing = missingFields(row);
+      missing.forEach((name) => errors.add(`${index}:${name}`));
+      if (missing.length) rows.push({ index, fields: missing.map((field) => ({ field, label: FIELD_LABELS[field] })) });
     });
-
-    if (hasEmptyRequiredField) {
-      alert('Пожалуйста, заполните все обязательные поля.');
+    setFieldErrors(errors);
+    if (rows.length) {
+      setNotice(missingNotice(rows));
+      setFocusId(`r${rows[0].index}-${rows[0].fields[0].field}`);
       return;
     }
 
+    setSubmitError('');
     setShowModal(true);
   };
 
-  const handleFinalSubmit = async () => {
-    const requiredFields = ['date', 'category', 'object', 'position'];
-
-    const hasEmptyRequiredField = formRows.some(row => {
-      const activeFields = [...requiredFields];
-      const hasBlocks = positionBlockOptions[row.position];
-
-      if (row.test === 'Степень уплотнения грунта') {
-        activeFields.push('constructive');
-      } else if (hasBlocks) {
-        activeFields.push('block', 'floor', 'constructive');
-      } else {
-        activeFields.push('test');
-      }
-
-      if (row.object === 'Инженерные сети' && !row.note?.toString().trim()) {
-        return true;
-      }
-
-      return activeFields.some(field => !row[field]?.toString().trim());
-    });
-
-    if (hasEmptyRequiredField) {
-      alert('Пожалуйста, заполните все обязательные поля. Для объекта "Инженерные сети" обязательно заполните примечание.');
+  const handleFinalSubmit = async (e) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    if (!userName.trim() || !userPhone.trim()) {
+      setSubmitError('Пожалуйста, заполните ФИО и номер телефона.');
       return;
     }
-
+    setSubmitError('');
     setIsSubmitting(true);
 
-    const payload = formRows.map(row => ({
+    const payload = formRows.map((row) => ({
       test: row.test,
       date: row.date,
       category: row.category,
@@ -189,471 +282,334 @@ const LabTestRequestPaje = () => {
       responsiblePhone: userPhone
     }));
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
     try {
-      await fetch('https://script.google.com/macros/s/AKfycbxQJ1OVUlO-Qp9t5J0bAB2zMC5jMgOb79VT3GVi0_xaEazGClzYaR9sVo82gosrDwFj/exec', {
+      await fetch(SCRIPT_URL, {
         method: 'POST',
         mode: 'no-cors',
         body: JSON.stringify(payload),
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal
       });
-
-      alert('Заявка отправлена!');
+      localStorage.setItem(RESPONSIBLE_KEY, JSON.stringify({ name: userName.trim(), phone: userPhone.trim() }));
       setShowModal(false);
-      setUserName('');
-      setUserPhone('');
-      setFormRows([{ ...emptyRow }]);
+      setFormRows([emptyRow()]);
+      setCopiedRows(new Set());
+      setFieldErrors(new Set());
+      setSent(true);
     } catch (error) {
       console.error('Ошибка отправки:', error);
-      alert('Ошибка при отправке!');
+      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор без проверки даст дубль.
+      setSubmitError(
+        error && error.name === 'AbortError'
+          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти: уточните у лаборатории, прежде чем отправлять ещё раз, иначе получится дубль.'
+          : 'Заявка не отправлена: нет связи с сервером. Проверьте интернет и нажмите «Отправить заявку» ещё раз — введённые данные сохранены.'
+      );
     } finally {
+      clearTimeout(timer);
       setIsSubmitting(false);
     }
   };
 
-  const categoryOptions = Object.keys(objectCategoryOptions).map(opt => ({
-    value: opt,
-    label: opt
-  }));
-
-  const isSoilCompactionTest = (row) => row.test === 'Степень уплотнения грунта';
+  const formDirty = formRows.length > 1 || !isRowEmpty(formRows[0]);
 
   return (
-    <div className={styles.wideContainer}>
-      <h2>Заявка на лабораторные испытания</h2>
+    <div className={css.page}>
+      <div className={css.content}>
+        <Link to='/' className={css.back}>← На главную</Link>
+        <h1 className={css.title}>Заявка на лабораторные испытания</h1>
 
-      <form onSubmit={handleSubmit}>
-        <table className={styles.requestTable}>
-          <thead>
-            <tr>
-              <th>Наименование испытания</th>
-              <th>Дата</th>
-              <th>Категория</th>
-              <th>Объект</th>
-              <th>Позиция</th>
-              <th>Блок</th>
-              <th>Этаж</th>
-              <th>Конструктив</th>
-              <th>Примечание</th>
-              <th>Действия</th>
-            </tr>
-          </thead>
+        <p className={css.info}>
+          <TbInfoCircle className={css.infoIcon} aria-hidden='true' />
+          Испытание можно заказать на ближайшие {MAX_DAYS_AHEAD} дней: с {ruDate(minDate)} по {ruDate(maxDate)}.
+        </p>
 
-          <tbody>
-            {formRows.map((row, index) => (
-              <tr key={index}>
-                <td style={{ minWidth: 100 }}>
-                  <Select
-                    options={[
-                      { value: 'Степень уплотнения грунта', label: 'Степень уплотнения грунта' },
-                      { value: 'Прочность бетона с помощью ИПС', label: 'Прочность бетона с помощью ИПС' }
-                    ]}
-                    value={row.test ? { value: row.test, label: row.test } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'test',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px'
-                      })
-                    }}
-                  />
-                </td>
+        <p className={css.legend}>
+          <span className={css.required} aria-hidden='true'>*</span> — обязательное поле. Часть полей становится обязательной после выбора в полях выше.
+        </p>
 
-                <td style={{ minWidth: 80 }}>
-                  <div
-                    style={{
-                      border: '1px solid #ccc',
-                      borderRadius: 4,
-                      padding: '2px 8px',
-                      minHeight: '30px',
-                      fontSize: '12px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      backgroundColor: 'white',
-                    }}
-                  >
-                    <input
-                      type="date"
-                      name="date"
-                      value={row.date}
-                      min={minDate}
-                      max={maxDate}
-                      onChange={e => handleChange(e, index)}
-                      style={{
-                        border: 'none',
-                        outline: 'none',
-                        fontSize: '12px',
-                        width: '100%',
-                        background: 'transparent',
-                        appearance: 'none',
-                      }}
-                    />
-                  </div>
-                </td>
+        <form onSubmit={handleSubmit} noValidate>
+          {formRows.map((row, index) => {
+            const idOf = (name) => `r${index}-${name}`;
+            const onChange = (e) => handleChange(e, index);
 
-                <td style={{ minWidth: 160 }}>
-                  <Select
-                    options={categoryOptions}
-                    value={categoryOptions.find(opt => opt.value === row.category) || null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'category',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
+            const soil = isSoil(row);
+            const blocks = positionBlockOptions[row.position] || [];
+            const withBlocks = blocks.length > 0;
+            const dateError = errorOf(index, 'date');
+            const networks = row.object === ENGINEERING_NETWORKS;
+            const noteError = errorOf(index, 'note');
 
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(objectCategoryOptions[row.category] || []).map(obj => ({
-                      value: obj,
-                      label: obj
-                    }))}
-                    value={row.object ? { value: row.object, label: row.object } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'object',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.category}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(objectPositionOptions[row.object] || []).map(pos => ({
-                      value: pos,
-                      label: pos
-                    }))}
-                    value={row.position ? { value: row.position, label: row.position } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'position',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={!row.object}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(positionBlockOptions[row.position] || []).map(b => ({
-                      value: b,
-                      label: b
-                    }))}
-                    value={row.block ? { value: row.block, label: row.block } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'block',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={isSoilCompactionTest(row) || !row.position || !positionBlockOptions[row.position]}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={(blockFloorOptions[row.block] || []).map(f => ({
-                      value: f,
-                      label: f
-                    }))}
-                    value={row.floor ? { value: row.floor, label: row.floor } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'floor',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={isSoilCompactionTest(row) || !row.block || !positionBlockOptions[row.position]}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 140 }}>
-                  <Select
-                    options={
-                      isSoilCompactionTest(row)
-                        ? [{ value: 'Основание', label: 'Основание' }]
-                        : (concreteConstructiveOptions[row.floor] || []).map(c => ({
-                            value: c,
-                            label: c
-                          }))
-                    }
-                    value={row.constructive ? { value: row.constructive, label: row.constructive } : null}
-                    onChange={selected => {
-                      const e = {
-                        target: {
-                          name: 'constructive',
-                          value: selected ? selected.value : ''
-                        }
-                      };
-                      handleChange(e, index);
-                    }}
-                    placeholder="Выберите..."
-                    isClearable
-                    isDisabled={isSoilCompactionTest(row) || !row.floor || !positionBlockOptions[row.position]}
-                    styles={{
-                      control: base => ({
-                        ...base,
-                        minHeight: '30px',
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        lineHeight: '1.2',
-                      }),
-                      menu: base => ({
-                        ...base,
-                        fontSize: '12px',
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                      }),
-                      singleValue: base => ({
-                        ...base,
-                        whiteSpace: 'normal',
-                        wordWrap: 'break-word',
-                        overflow: 'visible',
-                        textOverflow: 'clip',
-                      })
-                    }}
-                  />
-                </td>
-
-                <td style={{ minWidth: 220 }}>
-                  <textarea
-                    name="note"
-                    value={row.note}
-                    onChange={e => handleChange(e, index)}
-                    rows={2}
-                    required={row.object === 'Инженерные сети'}
-                    placeholder={
-                      row.object === 'Инженерные сети'
-                        ? 'Укажите протяженность, номера колодцев и т.п.'
-                        : 'Введите примечание...'
-                    }
-                    style={{
-                      width: '100%',
-                      resize: 'vertical',
-                      border: row.object === 'Инженерные сети' && !row.note?.trim()
-                        ? '1px solid #d32f2f'
-                        : '1px solid #ccc',
-                      borderRadius: '4px',
-                      padding: '6px',
-                      backgroundColor: row.object === 'Инженерные сети' ? '#fff8e1' : 'white'
-                    }}
-                  />
-                </td>
-
-                <td className={styles.actionsCell}>
+            return (
+              <section key={index} className={css.card} aria-label={formRows.length > 1 ? `Заявка ${index + 1}` : 'Заявка'}>
+                <div className={css.cardHeader}>
+                  <h2 className={css.cardTitle}>{formRows.length > 1 ? `Заявка ${index + 1}` : 'Заявка'}</h2>
                   {formRows.length > 1 && (
-                    <button
-                      type="button"
-                      className={styles.removeButton}
-                      onClick={() => removeRow(index)}
-                    >
+                    <button type='button' className={css.removeBtn} onClick={() => removeRow(index)}>
                       Удалить
                     </button>
                   )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </div>
 
-        <div className={styles.buttonsContainer}>
-          <button type="button" onClick={addRow} className={styles.addButton}>
-            Добавить строку
-          </button>
-          <button type="submit" className={styles.submitButton}>
-            Отправить заявку
-          </button>
-        </div>
-      </form>
+                {copiedRows.has(index) && (
+                  <p className={css.help}>Испытание, дата и место подставлены из предыдущей заявки — выберите другой конструктив или измените, если нужно.</p>
+                )}
 
-      {showModal && (
-        <div className={styles.modalOverlay}>
-          <div className={styles.modal}>
-            <button className={styles.modalClose} onClick={() => setShowModal(false)}>
-              ×
-            </button>
+                <div role='group' aria-labelledby={idOf('g-what')} className={css.group}>
+                  <h3 id={idOf('g-what')} className={css.groupTitle}>Что и когда</h3>
+                  <div className={css.gridWhere}>
+                    <SelectField
+                      label='Наименование испытания'
+                      name='test'
+                      id={idOf('test')}
+                      required
+                      options={TEST_OPTIONS}
+                      value={row.test}
+                      onChange={onChange}
+                      error={errorOf(index, 'test')}
+                    />
+                    <Field label='Дата' required htmlFor={idOf('date')} error={dateError} errorId={`${idOf('date')}-err`}>
+                      <input
+                        id={idOf('date')}
+                        type='date'
+                        name='date'
+                        className={`${css.input} ${dateError ? css.inputError : ''}`}
+                        value={row.date}
+                        min={minDate}
+                        max={maxDate}
+                        onChange={onChange}
+                        aria-required='true'
+                        aria-invalid={dateError ? true : undefined}
+                        aria-describedby={dateError ? `${idOf('date')}-err` : undefined}
+                      />
+                    </Field>
+                  </div>
+                </div>
 
-            <h3>Ответственный</h3>
+                <div role='group' aria-labelledby={idOf('g-where')} className={css.group}>
+                  <h3 id={idOf('g-where')} className={css.groupTitle}>Куда</h3>
+                  <div className={css.gridWhere}>
+                    <SelectField
+                      label='Категория'
+                      name='category'
+                      id={idOf('category')}
+                      required
+                      options={Object.keys(objectCategoryOptions)}
+                      value={row.category}
+                      onChange={onChange}
+                      error={errorOf(index, 'category')}
+                    />
+                    <SelectField
+                      label='Объект'
+                      name='object'
+                      id={idOf('object')}
+                      required
+                      options={objectCategoryOptions[row.category] || []}
+                      value={row.object}
+                      onChange={onChange}
+                      isDisabled={!row.category}
+                      disabledHint='Сначала выберите категорию'
+                      error={errorOf(index, 'object')}
+                    />
+                    <SelectField
+                      label='Позиция'
+                      name='position'
+                      id={idOf('position')}
+                      required
+                      options={objectPositionOptions[row.object] || []}
+                      value={row.position}
+                      onChange={onChange}
+                      isDisabled={!row.object}
+                      disabledHint='Сначала выберите объект'
+                      error={errorOf(index, 'position')}
+                    />
+                  </div>
+                </div>
 
-            <label>
-              ФИО:
-              <input
-                type="text"
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                placeholder="Введите ФИО"
-              />
-            </label>
+                <div role='group' aria-labelledby={idOf('g-where-in')} className={css.group}>
+                  <h3 id={idOf('g-where-in')} className={css.groupTitle}>Место в здании</h3>
+                  <div className={css.gridWhere}>
+                    <SelectField
+                      label='Блок'
+                      name='block'
+                      id={idOf('block')}
+                      required={!soil && withBlocks}
+                      optional={soil || !withBlocks}
+                      options={blocks}
+                      value={row.block}
+                      onChange={onChange}
+                      isDisabled={soil || !row.position || !withBlocks}
+                      disabledHint={soil ? 'Для этого испытания не нужен' : (row.position && !withBlocks ? 'Для этой позиции не нужен' : 'Сначала выберите позицию')}
+                      error={errorOf(index, 'block')}
+                    />
+                    <SelectField
+                      label='Этаж'
+                      name='floor'
+                      id={idOf('floor')}
+                      required={!soil && withBlocks}
+                      optional={soil || !withBlocks}
+                      options={blockFloorOptions[row.block] || []}
+                      value={row.floor}
+                      onChange={onChange}
+                      isDisabled={soil || !row.block || !withBlocks}
+                      disabledHint={soil ? 'Для этого испытания не нужен' : 'Сначала выберите блок'}
+                      error={errorOf(index, 'floor')}
+                    />
+                    <SelectField
+                      label='Конструктив'
+                      name='constructive'
+                      id={idOf('constructive')}
+                      required={soil || withBlocks}
+                      optional={!soil && !withBlocks}
+                      options={soil ? [SOIL_CONSTRUCTIVE] : (concreteConstructiveOptions[row.floor] || [])}
+                      value={row.constructive}
+                      onChange={onChange}
+                      isDisabled={soil || !row.floor || !withBlocks}
+                      disabledHint={soil ? SOIL_CONSTRUCTIVE : 'Сначала выберите этаж'}
+                      error={errorOf(index, 'constructive')}
+                    />
+                  </div>
+                </div>
 
-            <label>
-              Номер телефона:
-              <input
-                type="text"
-                value={userPhone}
-                onChange={(e) => setUserPhone(e.target.value)}
-                placeholder="Введите номер"
-              />
-            </label>
+                <div className={css.group}>
+                  <Field
+                    label='Примечание'
+                    required={networks}
+                    optional={!networks}
+                    htmlFor={idOf('note')}
+                    error={noteError}
+                    errorId={`${idOf('note')}-err`}
+                  >
+                    <textarea
+                      id={idOf('note')}
+                      name='note'
+                      className={`${css.textarea} ${noteError ? css.inputError : ''}`}
+                      value={row.note}
+                      onChange={onChange}
+                      rows={3}
+                      placeholder={networks ? 'Укажите протяжённость, номера колодцев и т. п.' : 'Введите примечание...'}
+                      aria-required={networks || undefined}
+                      aria-invalid={noteError ? true : undefined}
+                      aria-describedby={noteError ? `${idOf('note')}-err` : undefined}
+                    />
+                  </Field>
+                </div>
+              </section>
+            );
+          })}
 
-            <button
-              className={styles.submitButton}
-              onClick={handleFinalSubmit}
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
+          {notice && (
+            <div ref={noticeRef} className={css.noticeError} role='alert'>
+              <p className={css.noticeTitle}>
+                <TbAlertCircle className={css.noticeIcon} aria-hidden='true' />
+                {`Не заполнено полей: ${notice.count}`}
+              </p>
+              {notice.hint && <p className={css.noticeText}>{notice.hint}</p>}
+              <ul className={css.noticeList}>
+                {notice.rows.map((r) => (
+                  <li key={r.index}>
+                    {formRows.length > 1 ? `Заявка ${r.index + 1}: ` : ''}
+                    {r.fields.map((f, i) => (
+                      <React.Fragment key={f.field}>
+                        {i > 0 && ', '}
+                        <button type='button' className={css.noticeLink} onClick={() => setFocusId(`r${r.index}-${f.field}`)}>
+                          {f.label}
+                        </button>
+                      </React.Fragment>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <button type='button' onClick={addRow} className={css.addBtn}>+ Добавить ещё испытание</button>
+
+          <div className={`${css.actions} ${keyboardOpen ? css.actionsStatic : ''}`}>
+            {formDirty && (
+              <button type='button' className={css.btnGhost} onClick={() => setShowClear(true)}>
+                Очистить заявку
+              </button>
+            )}
+            <button type='submit' className={css.btnPrimary}>
+              {formRows.length > 1 ? `Отправить заявки (${formRows.length})` : 'Отправить заявку'}
             </button>
           </div>
-        </div>
+        </form>
+      </div>
+
+      {showModal && (
+        <Dialog title='Ответственный' onClose={() => setShowModal(false)}>
+          <form onSubmit={handleFinalSubmit} className={css.dialogForm} noValidate>
+            <p className={css.dialogSummary}>Испытаний в заявке: {formRows.length}</p>
+
+            <Field label='ФИО' required htmlFor='responsible-name'>
+              <input
+                id='responsible-name'
+                type='text'
+                className={css.input}
+                value={userName}
+                onChange={(e) => setUserName(e.target.value)}
+                placeholder='Введите ФИО'
+                autoComplete='name'
+              />
+            </Field>
+
+            <Field label='Номер телефона' required htmlFor='responsible-phone'>
+              <input
+                id='responsible-phone'
+                type='tel'
+                inputMode='tel'
+                className={css.input}
+                value={userPhone}
+                onChange={(e) => setUserPhone(e.target.value)}
+                placeholder='Введите номер'
+                autoComplete='tel'
+              />
+            </Field>
+
+            <p className={css.help}>ФИО и номер запоминаются на этом устройстве, в следующий раз вводить не придётся.</p>
+
+            {submitError && (
+              <div className={css.noticeError} role='alert'>
+                <p className={css.noticeTitle}>
+                  <TbAlertCircle className={css.noticeIcon} aria-hidden='true' />
+                  Не отправлено
+                </p>
+                <p className={css.noticeText}>{submitError}</p>
+              </div>
+            )}
+
+            <button type='submit' className={css.btnPrimary} disabled={isSubmitting}>
+              {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
+            </button>
+          </form>
+        </Dialog>
+      )}
+
+      {showClear && (
+        <Dialog title='Очистить заявку?' onClose={() => setShowClear(false)}>
+          <p className={css.dialogText}>
+            {formRows.length > 1
+              ? `Все строки (${formRows.length}) будут удалены, останется одна пустая.`
+              : 'Все введённые данные будут удалены.'}
+          </p>
+          <div className={css.dialogActions}>
+            <button type='button' className={css.btnGhost} onClick={() => setShowClear(false)}>Отмена</button>
+            <button type='button' className={css.btnPrimary} onClick={clearForm}>Очистить</button>
+          </div>
+        </Dialog>
+      )}
+
+      {sent && (
+        <Dialog title='Заявка отправлена' onClose={() => setSent(false)}>
+          <p className={css.dialogText}>Заявка на лабораторные испытания отправлена.</p>
+          <div className={css.dialogActions}>
+            <button type='button' className={css.btnGhost} onClick={() => navigate('/')}>На главную</button>
+            <button type='button' className={css.btnPrimary} onClick={() => setSent(false)}>Понятно</button>
+          </div>
+        </Dialog>
       )}
     </div>
   );
