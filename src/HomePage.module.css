@@ -71,6 +71,38 @@
   padding: 32px 16px 48px;
 }
 
+/* Кнопка «На главную» на внутренних страницах в стиле главной: над заголовком,
+   зона нажатия 44px, подчёркивание как у ссылок-действий. */
+.backLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 44px;
+  margin: -8px 0 4px -6px; /* стрелка встаёт ровно под край заголовка */
+  padding: 0 10px 0 6px;
+  border-radius: 8px;
+  color: var(--brand);
+  font-size: 15px;
+  font-weight: 500;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (hover: hover) {
+  .backLink:hover {
+    background: #eceef2;
+  }
+}
+
+.backLink:active {
+  background: #e2e5ea;
+}
+
+.backLink:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
 .title {
   margin: 0;
   font-size: 28px;
