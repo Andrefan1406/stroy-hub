@@ -1,17 +1,44 @@
-import React, { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
-import styles from './RequestPage.module.css';
+// Заявка геодезистов. Оформление — в стиле заявок на бетон, технику, брусчатку, ж/б
+// и электриков (ConcreteRequestPage.module.css): карточки «Куда / Что сделать»,
+// ошибки и подсказки на странице, окна — components/RequestDialog. Данные и отправка
+// в Google Apps Script (google-apps-scripts/geo_script.js) — прежние.
+import React, { useState, useEffect, useRef } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { getAuth } from 'firebase/auth';
-import { objectCategoryOptions, objectPositionOptions, konstruktivOptions, workTypeForKonstruktiv } from './data/constructionData';
+import { TbAlertCircle } from 'react-icons/tb';
+import css from './ConcreteRequestPage.module.css';
+import {
+  objectCategoryOptions,
+  objectPositionOptions,
+  konstruktivOptions,
+  workTypeForKonstruktiv
+} from './data/constructionData';
+import Dialog from './components/RequestDialog';
+import { Field, SelectField } from './components/RequestFormFields';
 
+// Скрипт Google Apps Script для записи в таблицу (адрес — в переменной окружения сборки).
 const SCRIPT_URL = process.env.REACT_APP_GEO_SCRIPT_URL || '';
+// Ответ скрипта прочитать нельзя (no-cors): зависшую отправку обрываем сами
+// и просим убедиться, что заявка не дошла, прежде чем отправлять повторно.
+const SEND_TIMEOUT_MS = 20000;
 
-// ─── Вспомогательные ────────────────────────────────────────────────────────
+// Контакты заявителя запоминаем на этом устройстве.
+const RESPONSIBLE_KEY = 'geoRequestResponsible';
+const loadResponsible = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RESPONSIBLE_KEY) || '{}');
+    return { fullName: saved.fullName || '', position: saved.position || '', phone: saved.phone || '' };
+  } catch {
+    return { fullName: '', position: '', phone: '' };
+  }
+};
 
 const getCurrentDate = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
+
+const applicantPositions = ['Начальник участка', 'Производитель работ', 'Мастер', 'Геодезист'];
 
 const emptyRow = () => ({
   objectCategory: '',
@@ -22,14 +49,36 @@ const emptyRow = () => ({
   workDescription: '',
 });
 
-// ─── Компонент ──────────────────────────────────────────────────────────────
+// Обязательны только эти поля (как и раньше); порядок — порядок обхода формы.
+const FIELD_LABELS = { objectCategory: 'Категория объекта', object: 'Объект', konstruktiv: 'Конструктив' };
+const FIELD_ERRORS = { objectCategory: 'Выберите категорию', object: 'Выберите объект', konstruktiv: 'Выберите конструктив' };
+const FORM_ORDER = Object.keys(FIELD_LABELS);
+
+const missingFields = (row) => FORM_ORDER.filter((name) => !row[name]);
+const isRowEmpty = (row) => Object.values(row).every((v) => v === '');
 
 const GeoRequestPage = () => {
   const location = useLocation();
-  const [isMobile, setIsMobile] = useState(false);
+  const navigate = useNavigate();
   const [selectedDate, setSelectedDate] = useState(getCurrentDate());
   const [rows, setRows] = useState([emptyRow()]);
+  const [fieldErrors, setFieldErrors] = useState(() => new Set());
+  const [notice, setNotice] = useState(null);
+  const [focusId, setFocusId] = useState(null);
+  const noticeRef = useRef(null);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [copiedRows, setCopiedRows] = useState(() => new Set());
 
+  const [showModal, setShowModal] = useState(false);
+  const [showClear, setShowClear] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [userFullName, setUserFullName] = useState(() => loadResponsible().fullName);
+  const [userPosition, setUserPosition] = useState(() => loadResponsible().position);
+  const [userPhone, setUserPhone] = useState(() => loadResponsible().phone);
+
+  // Заявка, подготовленная «Умной заявкой».
   useEffect(() => {
     const prefill = location.state?.prefill;
     if (!prefill) return;
@@ -39,72 +88,147 @@ const GeoRequestPage = () => {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [userFullName, setUserFullName] = useState('');
-  const [userPhone, setUserPhone] = useState('');
-  const [userPosition, setUserPosition] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const positionOptions = ['Начальник участка', 'Производитель работ', 'Мастер', 'Геодезист'];
 
   useEffect(() => {
-    const check = () => {
-      setIsMobile(window.innerWidth <= 768 && window.matchMedia('(orientation: portrait)').matches);
-    };
-    check();
-    window.addEventListener('resize', check);
-    window.addEventListener('orientationchange', check);
-    return () => {
-      window.removeEventListener('resize', check);
-      window.removeEventListener('orientationchange', check);
-    };
+    if (!focusId) return;
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      el.focus({ preventScroll: true });
+    }
+    setFocusId(null);
+  }, [focusId]);
+
+  // Экранная клавиатура открыта — панель отправки не закреплена (как на странице бетона).
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return undefined;
+    const update = () => setKeyboardOpen(vv.scale <= 1.01 && vv.height < window.innerHeight * 0.75);
+    update();
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
   }, []);
 
+  useEffect(() => {
+    if (notice && !focusId && noticeRef.current) {
+      noticeRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [notice, focusId]);
+
   const handleDateChange = (e) => {
-    if (e.target.value < getCurrentDate()) {
-      alert('Нельзя выбрать дату меньше текущей!');
+    const newDate = e.target.value;
+    if (newDate < getCurrentDate()) {
+      setNotice({ kind: 'rule', message: 'Нельзя выбрать дату меньше текущей.' });
       return;
     }
-    setSelectedDate(e.target.value);
+    setNotice(null);
+    setSelectedDate(newDate);
   };
 
   const handleChange = (index, field, value) => {
-    setRows(prev => {
-      const next = [...prev];
-      next[index] = { ...next[index], [field]: value };
-      if (field === 'objectCategory') { next[index].object = ''; next[index].position = ''; }
-      if (field === 'object')         { next[index].position = ''; }
-      if (field === 'konstruktiv')    { next[index].workType = ''; }
+    setRows((prev) => prev.map((row, i) => {
+      if (i !== index) return row;
+      const next = { ...row, [field]: value };
+      if (field === 'objectCategory') { next.object = ''; next.position = ''; }
+      if (field === 'object') next.position = '';
+      if (field === 'konstruktiv') next.workType = '';
+      return next;
+    }));
+    setFieldErrors((prev) => {
+      if (!prev.has(`${index}:${field}`)) return prev;
+      const next = new Set(prev);
+      next.delete(`${index}:${field}`);
       return next;
     });
   };
 
-  const addRow = () => setRows(prev => [...prev, emptyRow()]);
-  const removeRow = (i) => setRows(prev => prev.filter((_, idx) => idx !== i));
+  const missingNotice = (list, hint) => ({
+    kind: 'missing',
+    count: list.reduce((n, r) => n + r.fields.length, 0),
+    rows: list,
+    hint
+  });
 
-  const isRowComplete = (row) => row.objectCategory && row.object && row.konstruktiv;
-
-  const handleSubmitClick = () => {
-    const auth = getAuth();
-    const user = auth.currentUser;
-    if (!user) { alert('Пожалуйста, войдите в систему.'); return; }
-    if (rows.some(r => !isRowComplete(r))) {
-      alert('Заполните обязательные поля: Категория объекта, Объект и Конструктив.');
+  const addRow = () => {
+    const last = rows.length - 1;
+    const missing = missingFields(rows[last]);
+    if (missing.length) {
+      setFieldErrors(new Set(missing.map((name) => `${last}:${name}`)));
+      setNotice(missingNotice(
+        [{ index: last, fields: missing.map((field) => ({ field, label: FIELD_LABELS[field] })) }],
+        'Заполните текущую строку перед добавлением новой.'
+      ));
+      setFocusId(`r${last}-${missing[0]}`);
       return;
     }
-    setIsModalOpen(true);
+    setNotice(null);
+    const prev = rows[last];
+    setRows([...rows, {
+      ...emptyRow(),
+      objectCategory: prev.objectCategory, object: prev.object, position: prev.position
+    }]);
+    setCopiedRows((set) => new Set(set).add(rows.length));
   };
 
-  const handleModalSubmit = async (e) => {
+  const removeRow = (index) => {
+    if (rows.length <= 1) return;
+    setRows(rows.filter((_, i) => i !== index));
+    setCopiedRows(new Set());
+    setFieldErrors(new Set());
+    setNotice(null);
+  };
+
+  const clearForm = () => {
+    setRows([emptyRow()]);
+    setCopiedRows(new Set());
+    setFieldErrors(new Set());
+    setNotice(null);
+    setShowClear(false);
+  };
+
+  const handleSubmit = (e) => {
     e.preventDefault();
-    if (isSubmitting) return;
-    if (!userFullName || !userPhone || !userPosition) {
-      alert('Пожалуйста, заполните ФИО, должность и номер телефона.');
+    setNotice(null);
+
+    if (!getAuth().currentUser) {
+      setNotice({ kind: 'rule', message: 'Пожалуйста, войдите в систему.' });
       return;
     }
+
+    const errors = new Set();
+    const list = [];
+    rows.forEach((row, index) => {
+      const missing = missingFields(row);
+      missing.forEach((name) => errors.add(`${index}:${name}`));
+      if (missing.length) list.push({ index, fields: missing.map((field) => ({ field, label: FIELD_LABELS[field] })) });
+    });
+    setFieldErrors(errors);
+    if (list.length) {
+      setNotice(missingNotice(list));
+      setFocusId(`r${list[0].index}-${list[0].fields[0].field}`);
+      return;
+    }
+
+    setSubmitError('');
+    setShowModal(true);
+  };
+
+  const handleFinalSubmit = async (e) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    if (!userFullName.trim() || !userPhone.trim() || !userPosition.trim()) {
+      setSubmitError('Пожалуйста, заполните ФИО, должность и номер телефона.');
+      return;
+    }
+    // Раньше без адреса скрипта страница ничего не отправляла, но писала «Заявка отправлена».
+    if (!SCRIPT_URL) {
+      setSubmitError('Отправка заявок геодезистов не настроена: нет адреса скрипта. Сообщите администратору сайта.');
+      return;
+    }
+    setSubmitError('');
     setIsSubmitting(true);
 
-    const payload = rows.map(row => ({
+    const payload = rows.map((row) => ({
       date: selectedDate,
       objectCategory: row.objectCategory,
       object: row.object,
@@ -116,235 +240,300 @@ const GeoRequestPage = () => {
       phone: userPhone,
     }));
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
     try {
-      if (SCRIPT_URL) {
-        await fetch(SCRIPT_URL, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-      }
-      alert('Заявка отправлена!');
+      await fetch(SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      localStorage.setItem(RESPONSIBLE_KEY, JSON.stringify({
+        fullName: userFullName.trim(), position: userPosition.trim(), phone: userPhone.trim()
+      }));
       setRows([emptyRow()]);
-      setUserFullName('');
-      setUserPhone('');
-      setUserPosition('');
-      setIsModalOpen(false);
+      setCopiedRows(new Set());
+      setFieldErrors(new Set());
+      setShowModal(false);
+      setSent(true);
     } catch (err) {
       console.error(err);
-      alert('Ошибка при отправке заявки!');
+      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор без проверки даст дубль.
+      setSubmitError(
+        err && err.name === 'AbortError'
+          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти: уточните у геодезической службы, прежде чем отправлять ещё раз, иначе получится дубль.'
+          : 'Заявка не отправлена: нет связи с сервером. Проверьте интернет и нажмите «Отправить заявку» ещё раз — введённые данные сохранены.'
+      );
     } finally {
+      clearTimeout(timer);
       setIsSubmitting(false);
     }
   };
 
-  const handleClear = () => {
-    if (window.confirm('Очистить все строки?')) setRows([emptyRow()]);
-  };
-
-  // ─── Render helpers ───────────────────────────────────────────────────────
-
-  const renderWorkType = (row, i, asSelect = true) => {
-    const options = workTypeForKonstruktiv[row.konstruktiv];
-    if (!options) return <span style={{ color: '#bbb', fontSize: 13 }}>—</span>;
-    if (!asSelect) {
-      return (
-        <>
-          <label>Вид работы</label>
-          <select value={row.workType} onChange={e => handleChange(i, 'workType', e.target.value)}>
-            <option value="">Выберите</option>
-            {options.map(o => <option key={o}>{o}</option>)}
-          </select>
-        </>
-      );
-    }
-    return (
-      <select value={row.workType} onChange={e => handleChange(i, 'workType', e.target.value)}>
-        <option value="">Выберите</option>
-        {options.map(o => <option key={o}>{o}</option>)}
-      </select>
-    );
-  };
-
-  // ─── Render ───────────────────────────────────────────────────────────────
+  const formDirty = rows.length > 1 || !isRowEmpty(rows[0]);
 
   return (
-    <div className={styles.container}>
-      <div className={styles.headerBlock}>
-        <h2>Заявка геодезистов</h2>
-        <div className={styles.dateBlock}>
-          <label htmlFor="geoDateInput">Дата:</label>
-          <input
-            id="geoDateInput"
-            type="date"
-            value={selectedDate}
-            min={getCurrentDate()}
-            onChange={handleDateChange}
-          />
-        </div>
-      </div>
+    <div className={css.page}>
+      <div className={css.content}>
+        <Link to='/' className={css.back}>← На главную</Link>
+        <h1 className={css.title}>Заявка геодезистов</h1>
 
-      {isMobile ? (
-        /* ── Мобильная версия ─────────────────────────────────────────── */
-        rows.map((row, i) => (
-          <div key={i} className={styles.formBlock}>
-            <label>Категория объекта *</label>
-            <select value={row.objectCategory} onChange={e => handleChange(i, 'objectCategory', e.target.value)}>
-              <option value="">Выберите категорию</option>
-              {Object.keys(objectCategoryOptions).map(c => <option key={c}>{c}</option>)}
-            </select>
+        <p className={css.legend}>
+          <span className={css.required} aria-hidden='true'>*</span> — обязательное поле.
+        </p>
 
-            <label>Объект *</label>
-            <select value={row.object} onChange={e => handleChange(i, 'object', e.target.value)} disabled={!row.objectCategory}>
-              <option value="">Выберите объект</option>
-              {(objectCategoryOptions[row.objectCategory] || []).map(o => <option key={o}>{o}</option>)}
-            </select>
+        <section className={css.card} aria-label='Дата заявки'>
+          <div className={css.gridWhen}>
+            <Field label='Дата заявки' required htmlFor='request-date'>
+              <input
+                id='request-date'
+                type='date'
+                className={css.input}
+                value={selectedDate}
+                min={getCurrentDate()}
+                onChange={handleDateChange}
+              />
+            </Field>
+          </div>
+        </section>
 
-            <label>Позиция / строение</label>
-            <select value={row.position} onChange={e => handleChange(i, 'position', e.target.value)} disabled={!row.object}>
-              <option value="">Выберите позицию</option>
-              {(objectPositionOptions[row.object] || []).map(p => <option key={p}>{p}</option>)}
-            </select>
+        <form onSubmit={handleSubmit} noValidate>
+          {rows.map((row, index) => {
+            const idOf = (name) => `r${index}-${name}`;
+            const errorOf = (name) => (fieldErrors.has(`${index}:${name}`) ? FIELD_ERRORS[name] : undefined);
+            const onChange = (e) => handleChange(index, e.target.name, e.target.value);
+            const workTypes = workTypeForKonstruktiv[row.konstruktiv] || [];
+            const hasWorkTypes = workTypes.length > 0;
 
-            <label>Конструктив *</label>
-            <select value={row.konstruktiv} onChange={e => handleChange(i, 'konstruktiv', e.target.value)}>
-              <option value="">Выберите конструктив</option>
-              {konstruktivOptions.map(k => <option key={k}>{k}</option>)}
-            </select>
+            return (
+              <section key={index} className={css.card} aria-label={rows.length > 1 ? `Работа ${index + 1}` : 'Работа'}>
+                <div className={css.cardHeader}>
+                  <h2 className={css.cardTitle}>{rows.length > 1 ? `Работа ${index + 1}` : 'Работа'}</h2>
+                  {rows.length > 1 && (
+                    <button type='button' className={css.removeBtn} onClick={() => removeRow(index)}>
+                      Удалить
+                    </button>
+                  )}
+                </div>
 
-            {workTypeForKonstruktiv[row.konstruktiv] && renderWorkType(row, i, false)}
+                {copiedRows.has(index) && (
+                  <p className={css.help}>Место подставлено из предыдущей работы — измените, если нужно.</p>
+                )}
 
-            <label>Описание работ</label>
-            <textarea
-              value={row.workDescription}
-              onChange={e => handleChange(i, 'workDescription', e.target.value)}
-              placeholder="Укажите детали работ..."
-              rows={3}
-              style={{ width: '100%', boxSizing: 'border-box' }}
-            />
+                <div role='group' aria-labelledby={idOf('g-where')} className={css.group}>
+                  <h3 id={idOf('g-where')} className={css.groupTitle}>Куда</h3>
+                  <div className={css.gridWhere}>
+                    <SelectField
+                      label='Категория объекта'
+                      name='objectCategory'
+                      id={idOf('objectCategory')}
+                      required
+                      options={Object.keys(objectCategoryOptions)}
+                      value={row.objectCategory}
+                      onChange={onChange}
+                      error={errorOf('objectCategory')}
+                    />
+                    <SelectField
+                      label='Объект'
+                      name='object'
+                      id={idOf('object')}
+                      required
+                      options={objectCategoryOptions[row.objectCategory] || []}
+                      value={row.object}
+                      onChange={onChange}
+                      isDisabled={!row.objectCategory}
+                      disabledHint='Сначала выберите категорию'
+                      error={errorOf('object')}
+                    />
+                    <SelectField
+                      label='Позиция или строение'
+                      name='position'
+                      id={idOf('position')}
+                      optional
+                      options={objectPositionOptions[row.object] || []}
+                      value={row.position}
+                      onChange={onChange}
+                      isDisabled={!row.object}
+                      disabledHint='Сначала выберите объект'
+                    />
+                  </div>
+                </div>
 
-            {rows.length > 1 && (
-              <button className={styles.removeButton} style={{ width: 'auto' }} onClick={() => removeRow(i)}>
-                Удалить строку
+                <div role='group' aria-labelledby={idOf('g-what')} className={css.group}>
+                  <h3 id={idOf('g-what')} className={css.groupTitle}>Что сделать</h3>
+                  <div className={css.gridWhere}>
+                    <SelectField
+                      label='Конструктив'
+                      name='konstruktiv'
+                      id={idOf('konstruktiv')}
+                      required
+                      options={konstruktivOptions}
+                      value={row.konstruktiv}
+                      onChange={onChange}
+                      error={errorOf('konstruktiv')}
+                    />
+                    <SelectField
+                      label='Вид работы'
+                      name='workType'
+                      id={idOf('workType')}
+                      optional
+                      options={workTypes}
+                      value={row.workType}
+                      onChange={onChange}
+                      isDisabled={!hasWorkTypes}
+                      disabledHint={row.konstruktiv ? 'Для этого конструктива не нужен' : 'Сначала выберите конструктив'}
+                    />
+                  </div>
+                  <div className={css.group}>
+                    <Field label='Описание работ' optional htmlFor={idOf('workDescription')}>
+                      <textarea
+                        id={idOf('workDescription')}
+                        name='workDescription'
+                        className={css.textarea}
+                        value={row.workDescription}
+                        onChange={onChange}
+                        rows={3}
+                        placeholder='Укажите детали работ...'
+                      />
+                    </Field>
+                  </div>
+                </div>
+              </section>
+            );
+          })}
+
+          {notice && (
+            <div ref={noticeRef} className={css.noticeError} role='alert'>
+              <p className={css.noticeTitle}>
+                <TbAlertCircle className={css.noticeIcon} aria-hidden='true' />
+                {notice.kind === 'missing' ? `Не заполнено полей: ${notice.count}` : 'Заявку пока нельзя отправить'}
+              </p>
+              {notice.kind === 'rule' && <p className={css.noticeText}>{notice.message}</p>}
+              {notice.kind === 'missing' && (
+                <>
+                  {notice.hint && <p className={css.noticeText}>{notice.hint}</p>}
+                  <ul className={css.noticeList}>
+                    {notice.rows.map((r) => (
+                      <li key={r.index}>
+                        {rows.length > 1 ? `Работа ${r.index + 1}: ` : ''}
+                        {r.fields.map((f, i) => (
+                          <React.Fragment key={f.field}>
+                            {i > 0 && ', '}
+                            <button type='button' className={css.noticeLink} onClick={() => setFocusId(`r${r.index}-${f.field}`)}>
+                              {f.label}
+                            </button>
+                          </React.Fragment>
+                        ))}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+
+          <button type='button' onClick={addRow} className={css.addBtn}>+ Добавить ещё работу</button>
+
+          <div className={`${css.actions} ${keyboardOpen ? css.actionsStatic : ''}`}>
+            {formDirty && (
+              <button type='button' className={css.btnGhost} onClick={() => setShowClear(true)}>
+                Очистить заявку
               </button>
             )}
+            <button type='submit' className={css.btnPrimary}>
+              {rows.length > 1 ? `Отправить заявки (${rows.length})` : 'Отправить заявку'}
+            </button>
           </div>
-        ))
-      ) : (
-        /* ── Десктоп: таблица ─────────────────────────────────────────── */
-        <div className={styles.tableContainer}>
-          <table className={styles.requestTable}>
-            <thead>
-              <tr>
-                <th>Категория объекта</th>
-                <th>Объект</th>
-                <th>Позиция</th>
-                <th>Конструктив</th>
-                <th>Вид работы</th>
-                <th>Описание работ</th>
-                <th>Действия</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i}>
-                  <td>
-                    <select value={row.objectCategory} onChange={e => handleChange(i, 'objectCategory', e.target.value)}>
-                      <option value="">Выберите</option>
-                      {Object.keys(objectCategoryOptions).map(c => <option key={c}>{c}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <select value={row.object} onChange={e => handleChange(i, 'object', e.target.value)} disabled={!row.objectCategory}>
-                      <option value="">Выберите</option>
-                      {(objectCategoryOptions[row.objectCategory] || []).map(o => <option key={o}>{o}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <select value={row.position} onChange={e => handleChange(i, 'position', e.target.value)} disabled={!row.object}>
-                      <option value="">—</option>
-                      {(objectPositionOptions[row.object] || []).map(p => <option key={p}>{p}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    <select value={row.konstruktiv} onChange={e => handleChange(i, 'konstruktiv', e.target.value)}>
-                      <option value="">Выберите</option>
-                      {konstruktivOptions.map(k => <option key={k}>{k}</option>)}
-                    </select>
-                  </td>
-                  <td>
-                    {renderWorkType(row, i, true)}
-                  </td>
-                  <td>
-                    <textarea
-                      value={row.workDescription}
-                      onChange={e => handleChange(i, 'workDescription', e.target.value)}
-                      placeholder="Укажите детали..."
-                      rows={2}
-                      style={{ width: '100%', minWidth: 160, boxSizing: 'border-box', resize: 'vertical' }}
-                    />
-                  </td>
-                  <td>
-                    {rows.length > 1 && (
-                      <button className={styles.removeButton} onClick={() => removeRow(i)}>✕</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* ── Кнопки действий ─────────────────────────────────────────────── */}
-      <div className={styles.buttonsContainer}>
-        <button className={styles.addButton} onClick={addRow}>Добавить строку</button>
-        <button className={styles.submitButton} onClick={handleSubmitClick}>Отправить заявку</button>
-        <button className={styles.removeButton} style={{ width: 'auto', marginTop: 0 }} onClick={handleClear}>
-          Очистить заявку
-        </button>
+        </form>
       </div>
 
-      {/* ── Модальное окно: данные заявителя ────────────────────────────── */}
-      {isModalOpen && (
-        <div className={styles.modalOverlay}>
-          <div className={styles.modalContent}>
-            <button className={styles.modalClose} onClick={() => setIsModalOpen(false)}>✕</button>
-            <h3>Данные заявителя</h3>
-            <form onSubmit={handleModalSubmit}>
-              <label>ФИО</label>
+      {showModal && (
+        <Dialog title='Данные заявителя' onClose={() => setShowModal(false)}>
+          <form onSubmit={handleFinalSubmit} className={css.dialogForm} noValidate>
+            <p className={css.dialogSummary}>
+              Работ в заявке: {rows.length} · дата {selectedDate.split('-').reverse().join('.')}
+            </p>
+
+            <Field label='ФИО' required htmlFor='applicant-name'>
               <input
-                type="text"
+                id='applicant-name'
+                type='text'
+                className={css.input}
                 value={userFullName}
-                onChange={e => setUserFullName(e.target.value)}
-                placeholder="Иванов Иван Иванович"
-                required
+                onChange={(e) => setUserFullName(e.target.value)}
+                placeholder='Иванов Иван Иванович'
+                autoComplete='name'
               />
-              <label>Должность</label>
+            </Field>
+
+            <Field label='Должность' required htmlFor='applicant-position'>
               <select
+                id='applicant-position'
+                className={css.input}
                 value={userPosition}
-                onChange={e => setUserPosition(e.target.value)}
-                required
-                style={{ padding: '8px', marginTop: '5px', border: '1px solid #ddd', borderRadius: '4px' }}
+                onChange={(e) => setUserPosition(e.target.value)}
               >
-                <option value="">Выберите должность</option>
-                {positionOptions.map(p => <option key={p}>{p}</option>)}
+                <option value=''>Выберите должность</option>
+                {applicantPositions.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
-              <label>Телефон</label>
+            </Field>
+
+            <Field label='Телефон' required htmlFor='applicant-phone'>
               <input
-                type="tel"
+                id='applicant-phone'
+                type='tel'
+                inputMode='tel'
+                className={css.input}
                 value={userPhone}
-                onChange={e => setUserPhone(e.target.value)}
-                placeholder="+7 (XXX) XXX-XX-XX"
-                required
+                onChange={(e) => setUserPhone(e.target.value)}
+                placeholder='+7 (XXX) XXX-XX-XX'
+                autoComplete='tel'
               />
-              <button type="submit" className={styles.submitButton} disabled={isSubmitting}>
-                {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
-              </button>
-            </form>
+            </Field>
+
+            <p className={css.help}>ФИО, должность и телефон запоминаются на этом устройстве, в следующий раз вводить не придётся.</p>
+
+            {submitError && (
+              <div className={css.noticeError} role='alert'>
+                <p className={css.noticeTitle}>
+                  <TbAlertCircle className={css.noticeIcon} aria-hidden='true' />
+                  Не отправлено
+                </p>
+                <p className={css.noticeText}>{submitError}</p>
+              </div>
+            )}
+
+            <button type='submit' className={css.btnPrimary} disabled={isSubmitting}>
+              {isSubmitting ? 'Отправка...' : 'Отправить заявку'}
+            </button>
+          </form>
+        </Dialog>
+      )}
+
+      {showClear && (
+        <Dialog title='Очистить заявку?' onClose={() => setShowClear(false)}>
+          <p className={css.dialogText}>
+            {rows.length > 1
+              ? `Все работы (${rows.length}) будут удалены, останется одна пустая.`
+              : 'Все введённые данные будут удалены.'}
+          </p>
+          <div className={css.dialogActions}>
+            <button type='button' className={css.btnGhost} onClick={() => setShowClear(false)}>Отмена</button>
+            <button type='button' className={css.btnPrimary} onClick={clearForm}>Очистить</button>
           </div>
-        </div>
+        </Dialog>
+      )}
+
+      {sent && (
+        <Dialog title='Заявка отправлена' onClose={() => setSent(false)}>
+          <p className={css.dialogText}>Заявка геодезистов отправлена.</p>
+          <div className={css.dialogActions}>
+            <button type='button' className={css.btnGhost} onClick={() => navigate('/')}>На главную</button>
+            <button type='button' className={css.btnPrimary} onClick={() => setSent(false)}>Понятно</button>
+          </div>
+        </Dialog>
       )}
     </div>
   );
