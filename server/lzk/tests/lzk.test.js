@@ -564,3 +564,42 @@ test('решётка для короба, ревизионный люк, обш�
   assert.equal(lim['плитка керамическая|м2'], 10.5); // 10 × 1,05, как у облицовки стен
   assert.equal(lim['клей плиточный (кафельный)|кг'], 160); // 10 × 16
 });
+
+test('ВДЦ поз.63 (правка): межкомнатные и входные двери, замки межкомнатных, утепление стен (МОП)', async () => {
+  const buf = await makeVdc([
+    ['Установка межкомнатных дверей', 'шт', 5],
+    ['Установка входной двери', 'шт', 1],
+    ['Монтаж замков, защелок, ручек межкомнатных дверей', 'шт', 5],
+    ['Утепление стен (МОП)', 'м2', 22.1],
+  ]);
+  const { summary } = await generate(buf, { month: '2026-11' });
+  assert.equal(summary.unmatched.length, 0);
+  const lim = Object.fromEntries(summary.materials.map((m) => [`${m.name}|${m.unit}`, m.limit]));
+  assert.equal(lim['полотно дверное|шт'], 5); // межкомнатные: 5 × 1
+  assert.equal(lim['дверь металлическая|шт'], 1); // входная: 1 × 1
+  assert.equal(lim['анкер торцевой|шт'], 6); // входная: 1 × 6
+  assert.equal(lim['ручка дверная|шт'], 5); // замки межкомнатных: 5 × 1
+  assert.equal(lim['держатель теплоизоляции|шт'], 111); // 22,1 × 5 = 110,5 → вверх
+  assert.equal(lim['пеноплекс|м3'], 1.86); // 22,1 × 0,084
+});
+
+test('«Монтаж замков, защелок, входной двери»: работа без материалов — не в «Не учтено», строкой в М-29', async () => {
+  const buf = await makeVdc([
+    ['Монтаж замков, защелок, входной двери', 'шт', 3],
+    ['Монтаж замков, защелок, входной двери', 'шт', 2],
+    [WALL, 'м3', 1],
+  ]);
+  const { file, summary } = await generate(buf, { month: '2026-11' });
+  assert.equal(summary.unmatched.length, 0);
+  assert.equal(summary.works.find((w) => w.name === 'Монтаж замков, защелок, входной двери').qty, 5);
+
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(file);
+  const ws = wb.getWorksheet('М-29');
+  let row = 0;
+  ws.eachRow((r, n) => { if (r.getCell(2).value === 'Монтаж замков, защелок, входной двери') row = n; });
+  assert.ok(row > 0);
+  assert.equal(ws.getCell(row, 5).value, 5); // лимит = объём работы
+  assert.notEqual(ws.getCell(row + 1, 1).value, 'материал'); // материалов под строкой нет
+  assert.equal(ws.getCell(row, 6).value, null); // и пометки «нет норм» нет: так задумано
+});
