@@ -26,12 +26,13 @@ const norm = (s) =>
     .trim()
     .replace(/[.\s]+$/, ''); // «…250 мм.» = «…250 мм»
 
-// Единицы в файлах бывают «м3», «м³», «М3» — сравниваем в одном виде.
+// Единицы в файлах бывают «м3», «м³», «М3», «мп», «м.п.», «м.пог.» — сравниваем в одном виде.
 const normUnit = (s) =>
   norm(s)
     .replace(/³/g, '3')
     .replace(/²/g, '2')
-    .replace(/\.$/, '');
+    .replace(/[.\s]/g, '')
+    .replace(/^(мпог|погм)$/, 'мп');
 
 const toNumber = (v) => {
   if (typeof v === 'number') return v;
@@ -57,7 +58,7 @@ function findWork(name) {
 // Заголовки столбцов в разных формах ВДЦ: «Наименование работ», «Наименование видов
 // работ, затрат»; «Кол-во», «Количество», «Объем работ, кол-во» (бывает «Обьем»).
 const NAME_HEADER = /^наименование(\s+(видов\s+)?работ|$)/;
-const UNIT_HEADER = /^(ед\.?\s*изм|единиц\S*\s+изм)/;
+const UNIT_HEADER = /^(ед\.?\s*из\s*м|единиц\S*\s+из\s*м)/; // «Ед. изм.», «Ед.из м.» (перенос в шапке), «Единицы измерения»
 const QTY_HEADER = /^(кол-?во|кол\.|количество|об[ъь]?[её]м)/;
 
 // Что в шапке есть из нужных трёх столбцов (для ошибки: показать, что нашли, а чего нет).
@@ -107,7 +108,10 @@ function parseContractPrice(buffer) {
       if (!unit && String(row[qtyCol] ?? '').trim() === '') continue;
       // демонтаж — материалы на него не нужны, в лимиты не попадает (и в «Не учтено» тоже)
       if (/^демонтаж/.test(norm(name))) continue;
-      items.push({ name, unit, qty: toNumber(row[qtyCol]) });
+      // поставка материала («Декоративная окраска (материал)», «Поставка …») — не работа, убираем совсем
+      if (/\(материал\)|^поставка\s/.test(norm(name))) continue;
+      const sanitary = /сан\.?\s*узел/i.test(row.map((c) => String(c ?? '')).join(' '));
+      items.push({ name, unit, qty: toNumber(row[qtyCol]), sanitary });
     }
     return { items, meta: parseMeta(rows.slice(0, headerIdx), rows.slice(headerIdx + 1)) };
   }
@@ -178,9 +182,10 @@ function calculate(items) {
   const groups = new Map(); // ключ работа+ед → { name, unit, qty }
   for (const it of items) {
     const key = `${norm(it.name)}|${normUnit(it.unit)}`;
-    const g = groups.get(key) || { name: it.name, unit: it.unit, qty: 0, rows: 0, bad: false, idx: groups.size };
+    const g = groups.get(key) || { name: it.name, unit: it.unit, qty: 0, rows: 0, bad: false, idx: groups.size, sanQty: 0 };
     if (Number.isFinite(it.qty)) g.qty += it.qty;
     else g.bad = true;
+    if (it.sanitary && Number.isFinite(it.qty)) g.sanQty += it.qty;
     g.rows += 1;
     groups.set(key, g);
   }
@@ -205,8 +210,19 @@ function calculate(items) {
       unmatched.push({ ...g, qty, reason: 'в части строк не число в «Кол-во»' });
       continue;
     }
-    works.push({ ...g, qty, priceName: work.name, norms: work.norms });
+    const extraNorms = g.sanQty > 0 ? work.extras?.sanitary || null : null;
+    const extraQty = Math.round(g.sanQty * 1e6) / 1e6;
+    works.push({ ...g, qty, priceName: work.name, norms: work.norms, extraNorms, extraQty });
+    for (const [id, perUnit] of Object.entries(extraNorms || {})) {
+      const amount = extraQty * perUnit;
+      totals.set(id, (totals.get(id) || 0) + amount);
+      breakdown.push({ work: `${work.name} (санузлы)`, material: materialsById.get(id), perUnit, qty: extraQty, unit: work.unit, amount });
+    }
     for (const [id, perUnit] of Object.entries(work.norms)) {
+      if (perUnit === null) {
+        breakdown.push({ work: work.name, material: materialsById.get(id), perUnit: null, qty, unit: work.unit, amount: null });
+        continue;
+      }
       const amount = qty * perUnit;
       totals.set(id, (totals.get(id) || 0) + amount);
       breakdown.push({ work: work.name, material: materialsById.get(id), perUnit, qty, unit: work.unit, amount });
@@ -438,15 +454,32 @@ function addM29Sheet(wb, meta, result, start) {
     ws.getCell(r, 5).value = rnd(w.qty);
     if (!w.norms) ws.getCell(r, 6).value = 'нет норм';
     const matRows = [];
+    const factRows = new Set(); // материалы с нормой «факт»: лимита нет, считает участок
+    const manualRows = new Set(); // материалы только для санузлов: лимит есть, «по норме» вносит участок
     r += 1;
     for (const [id, perUnit] of Object.entries(w.norms || {})) {
       const mat = materialsById.get(id);
-      const limit = mat.unit === 'шт' ? Math.ceil(w.qty * perUnit - 1e-9) : rnd(w.qty * perUnit);
+      const isFact = perUnit === null;
+      const limit = isFact ? null : mat.unit === 'шт' ? Math.ceil(w.qty * perUnit - 1e-9) : rnd(w.qty * perUnit);
       ws.getCell(r, 1).value = 'материал';
       ws.getCell(r, 2).value = mat.name.charAt(0).toUpperCase() + mat.name.slice(1);
       ws.getCell(r, 4).value = mat.unit;
-      ws.getCell(r, 5).value = limit;
+      if (!isFact) ws.getCell(r, 5).value = limit;
+      ws.getCell(r, 6).value = isFact ? 'факт' : perUnit;
+      if (isFact) factRows.add(r);
+      matRows.push(r);
+      r += 1;
+    }
+
+    for (const [id, perUnit] of Object.entries(w.extraNorms || {})) {
+      const mat = materialsById.get(id);
+      const amount = w.extraQty * perUnit;
+      ws.getCell(r, 1).value = 'материал';
+      ws.getCell(r, 2).value = `${mat.name.charAt(0).toUpperCase()}${mat.name.slice(1)} (санузлы)`;
+      ws.getCell(r, 4).value = mat.unit;
+      ws.getCell(r, 5).value = mat.unit === 'шт' ? Math.ceil(amount - 1e-9) : rnd(amount);
       ws.getCell(r, 6).value = perUnit;
+      manualRows.add(r);
       matRows.push(r);
       r += 1;
     }
@@ -464,13 +497,13 @@ function addM29Sheet(wb, meta, result, start) {
       const F = L(cF);
       ws.getCell(workRow, cW).value = { formula: `IF(${N}${workRow}="","",${N}${workRow})` };
       for (const mr of matRows) {
-        ws.getCell(mr, cN).value = { formula: `IF(${N}${workRow}="","",${N}${workRow}*$F${mr})` };
+        if (!factRows.has(mr) && !manualRows.has(mr)) ws.getCell(mr, cN).value = { formula: `IF(${N}${workRow}="","",${N}${workRow}*$F${mr})` };
         ws.getCell(mr, cD).value = { formula: `IF(OR(${F}${mr}="",${N}${mr}=""),"",${N}${mr}-${F}${mr})` };
         ws.getCell(mr, cW).value = { formula: `IF(${F}${mr}="","",${F}${mr})` };
       }
     });
     const writeOffs = (row) => months.map((_, i) => `${L(colOf(i, 3))}${row}`).join(',');
-    for (const row of [workRow, ...matRows]) {
+    for (const row of [workRow, ...matRows].filter((x) => !factRows.has(x))) {
       ws.getCell(row, remainCol).value = { formula: `E${row}-SUM(${writeOffs(row)})` };
     }
 
@@ -535,7 +568,7 @@ function addCalcSheet(wb, result) {
   ws.addRow(['Расход материалов по видам работ']).font = { bold: true, size: 12 };
   head(ws.addRow(['№', 'Работа (по расценкам)', 'Материал', 'Ед.', 'Норма на ед. работы', 'Расход']));
   result.breakdown.forEach((b, i) => {
-    const row = ws.addRow([i + 1, b.work, b.material.name, b.material.unit, b.perUnit, Math.round(b.amount * 1000) / 1000]);
+    const row = ws.addRow([i + 1, b.work, b.material.name, b.material.unit, b.perUnit ?? 'по факту', b.amount === null ? '' : Math.round(b.amount * 1000) / 1000]);
     body(row);
   });
 }
