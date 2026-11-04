@@ -32,7 +32,7 @@ const normUnit = (s) =>
     .replace(/³/g, '3')
     .replace(/²/g, '2')
     .replace(/[.\s]/g, '')
-    .replace(/^(мпог|погм)$/, 'мп');
+    .replace(/^(м|мпог|погм)$/, 'мп'); // «м», «пог.м.», «м.пог.» = погонные метры
 
 const toNumber = (v) => {
   if (typeof v === 'number') return v;
@@ -47,10 +47,19 @@ const materialsById = new Map(NORMS.materials.map((m) => [m.id, m]));
 
 // Название из ВДЦ → норма расхода (или null). Подходят и название «из отчётов»
 // (словарь), и сразу название по расценкам.
-function findWork(name) {
+function lookupWork(name) {
   const key = norm(name);
   const priceName = dictionary.get(key);
   return worksByName.get(priceName ? norm(priceName) : key) || null;
+}
+
+// Сначала название как есть; если не нашлось — без пояснения в скобках в конце
+// («Облицовка фартука … плиткой (кухня)», «…слой(короб возле лифта)»).
+function findWork(name) {
+  const direct = lookupWork(name);
+  if (direct) return direct;
+  const stripped = String(name).replace(/\s*\([^)]*\)\s*$/, '');
+  return stripped !== String(name) ? lookupWork(stripped) : null;
 }
 
 // --- Разбор ВДЦ -----------------------------------------------------------
@@ -165,7 +174,8 @@ function parseMeta(rows, tailRows = []) {
   // вокруг фамилии субподрядчика за объект не принимаем)
   const objectCell = find(/[«"]\s*строительство/i) || find(/^строительство/i) || find(/^[«"][^«»"]{15,}[»"]\.?$/) || '';
   const quoted = objectCell.match(/[«"]\s*([^«»"]+?)\s*[»"]/);
-  const object = (quoted ? quoted[1] : objectCell).replace(/\s+/g, ' ').replace(/^наименование объекта\s*:\s*/i, '').replace(/^[«"]\s*|\s*[»"]$/g, '');
+  const objectTail = quoted ? objectCell.slice(objectCell.indexOf(quoted[0]) + quoted[0].length).trim() : '';
+  const object = ((quoted ? quoted[1] : objectCell) + (/^(поз|блок)/i.test(objectTail) ? ` ${objectTail}` : '')).replace(/\s+/g, ' ').replace(/^наименование объекта\s*:\s*/i, '').replace(/^[«"]\s*|\s*[»"]$/g, '');
 
   let basis = contract.replace(/\s+года$/i, '').replace(/(\d{4})\s*г\.?$/i, '$1г.');
   if (basis && !/г\.?$/.test(basis)) basis += 'г.';
