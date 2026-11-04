@@ -544,3 +544,23 @@ test('ВДЦ поз.63 блок 5 (MK.Invest): единица «м», поясн
   assert.match(summary.meta.object, /благоустройства\) Блок 5$/);
   assert.equal(summary.meta.recipient, 'ТОО «MK.Invest Project»');
 });
+
+test('решётка для короба, ревизионный люк, обшивка короба с подрезкой: нормы по указанию ПТО', async () => {
+  const { findWork } = require('../build');
+  assert.equal(findWork('Устройство решетки для короба').name, 'монтаж решеток вентиляционных');
+  assert.equal(findWork('Обшивка короба с подрезкой').name, 'облицовка стен керамической плиткой');
+  assert.equal(findWork('Установка ревизионного люка').name, 'установка ревизионного люка');
+
+  const buf = await makeVdc([
+    ['Устройство решетки для короба', 'шт', 2],
+    ['Установка ревизионного люка', 'шт', 3],
+    ['Обшивка короба с подрезкой', 'м2', 10],
+  ]);
+  const { summary } = await generate(buf, { month: '2026-11' });
+  assert.equal(summary.unmatched.length, 0);
+  const lim = Object.fromEntries(summary.materials.map((m) => [`${m.name}|${m.unit}`, m.limit]));
+  assert.equal(lim['решетка вентиляционная|шт'], 2);
+  assert.equal(lim['ревизионный люк|шт'], 3);
+  assert.equal(lim['плитка керамическая|м2'], 10.5); // 10 × 1,05, как у облицовки стен
+  assert.equal(lim['клей плиточный (кафельный)|кг'], 160); // 10 × 16
+});
