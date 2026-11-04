@@ -285,6 +285,17 @@
   text-wrap: pretty;
 }
 
+/* Окно подачи закрыто: красный тон и значок тревоги, а не только цвет — текст тоже говорит «закрыт». */
+.infoClosed {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+.infoClosed .infoIcon {
+  color: var(--danger);
+}
+
 .infoIcon {
   flex: none;
   margin-top: 1px;
@@ -469,6 +480,13 @@
 .btnGhost:hover {
   background: #e8ebf0;
   color: var(--text);
+}
+
+/* Форма внутри окна (заявка на технику): поля с тем же интервалом, что и у прямых детей окна. */
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .dialogActions {
