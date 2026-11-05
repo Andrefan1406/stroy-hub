@@ -296,6 +296,9 @@ const HomePage = () => {
           <Tile icon={<TbFileSpreadsheet />} to="/lzk-draft">
             Черновики ЛЗК и М-29 по ВДЦ
           </Tile>
+          <Tile icon={<TbFileSpreadsheet />} to="/vdc-ar">
+            Черновик ВДЦ на внутреннюю отделку по чертежам АР
+          </Tile>
         </Section>
 
         {/* Кнопка поездок — только у кого есть роль в системе поездок, поэтому
