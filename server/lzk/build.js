@@ -41,6 +41,8 @@ const toNumber = (v) => {
   return Number(s);
 };
 
+// Норма «blank» в norms.json: материал выводится в М-29, но лимит и норма — пустые ячейки (заполняет участок)
+const BLANK = 'blank';
 const dictionary = new Map(Object.entries(NORMS.dictionary).map(([k, v]) => [norm(k), v]));
 const worksByName = new Map(NORMS.works.map((w) => [norm(w.name), w]));
 const materialsById = new Map(NORMS.materials.map((m) => [m.id, m]));
@@ -203,6 +205,7 @@ function calculate(items) {
   const works = [];
   const unmatched = [];
   const totals = new Map(); // id материала → количество
+  const noLimit = new Set(); // материалы без нормы у работ с lzkAll: попадают в ЛЗК строкой без лимита
   const breakdown = []; // строки листа «Расчёт»
 
   for (const g of groups.values()) {
@@ -229,8 +232,9 @@ function calculate(items) {
       breakdown.push({ work: `${work.name} (санузлы)`, material: materialsById.get(id), perUnit, qty: extraQty, unit: work.unit, amount });
     }
     for (const [id, perUnit] of Object.entries(work.norms)) {
-      if (perUnit === null) {
-        breakdown.push({ work: work.name, material: materialsById.get(id), perUnit: null, qty, unit: work.unit, amount: null });
+      if (perUnit === null || perUnit === BLANK) {
+        if (work.lzkAll) noLimit.add(id); // у остальных работ «факт»-материалы в ЛЗК не выводятся
+        breakdown.push({ work: work.name, material: materialsById.get(id), perUnit, qty, unit: work.unit, amount: null });
         continue;
       }
       const amount = qty * perUnit;
@@ -242,8 +246,9 @@ function calculate(items) {
   // Порядок материалов — как в таблице норм; штучные округляем вверх (дробную
   // деталь со склада не выдают), остальные — до сотых.
   const materials = NORMS.materials
-    .filter((m) => totals.has(m.id))
+    .filter((m) => totals.has(m.id) || noLimit.has(m.id))
     .map((m) => {
+      if (!totals.has(m.id)) return { ...m, limit: null };
       const raw = totals.get(m.id);
       const limit = m.unit === 'шт' ? Math.ceil(raw - 1e-9) : Math.round(raw * 100) / 100;
       return { ...m, limit };
@@ -346,7 +351,7 @@ async function buildWorkbook({ meta, result, monthStr }) {
     ws.getCell(r, 1).value = i + 1;
     ws.getCell(r, 2).value = mat.name.charAt(0).toUpperCase() + mat.name.slice(1);
     ws.getCell(r, 3).value = mat.unit;
-    ws.getCell(r, 4).value = mat.limit;
+    ws.getCell(r, 4).value = mat.limit; // null — лимита нет (норма «факт»): ячейка пустая
     ws.getCell(r, 4).numFmt = mat.unit === 'шт' ? '#,##0' : '#,##0.00';
 
     const totalRefs = [];
@@ -358,7 +363,7 @@ async function buildWorkbook({ meta, result, monthStr }) {
       totalRefs.push(`${colL(m.totalCol)}${r}`);
     }
     ws.getCell(r, issuedCol).value = { formula: totalRefs.join('+'), result: 0 };
-    ws.getCell(r, remainCol).value = { formula: `D${r}-${colL(issuedCol)}${r}`, result: mat.limit };
+    if (mat.limit !== null) ws.getCell(r, remainCol).value = { formula: `D${r}-${colL(issuedCol)}${r}`, result: mat.limit };
     ws.getCell(r, issuedCol).numFmt = numFmt;
     ws.getCell(r, remainCol).numFmt = numFmt;
 
@@ -469,13 +474,14 @@ function addM29Sheet(wb, meta, result, start) {
     r += 1;
     for (const [id, perUnit] of Object.entries(w.norms || {})) {
       const mat = materialsById.get(id);
-      const isFact = perUnit === null;
+      const isBlank = perUnit === BLANK;
+      const isFact = perUnit === null || isBlank;
       const limit = isFact ? null : mat.unit === 'шт' ? Math.ceil(w.qty * perUnit - 1e-9) : rnd(w.qty * perUnit);
       ws.getCell(r, 1).value = 'материал';
       ws.getCell(r, 2).value = mat.name.charAt(0).toUpperCase() + mat.name.slice(1);
       ws.getCell(r, 4).value = mat.unit;
       if (!isFact) ws.getCell(r, 5).value = limit;
-      ws.getCell(r, 6).value = isFact ? 'факт' : perUnit;
+      ws.getCell(r, 6).value = isBlank ? null : isFact ? 'факт' : perUnit;
       if (isFact) factRows.add(r);
       matRows.push(r);
       r += 1;
@@ -578,7 +584,7 @@ function addCalcSheet(wb, result) {
   ws.addRow(['Расход материалов по видам работ']).font = { bold: true, size: 12 };
   head(ws.addRow(['№', 'Работа (по расценкам)', 'Материал', 'Ед.', 'Норма на ед. работы', 'Расход']));
   result.breakdown.forEach((b, i) => {
-    const row = ws.addRow([i + 1, b.work, b.material.name, b.material.unit, b.perUnit ?? 'по факту', b.amount === null ? '' : Math.round(b.amount * 1000) / 1000]);
+    const row = ws.addRow([i + 1, b.work, b.material.name, b.material.unit, b.perUnit === BLANK ? '' : b.perUnit ?? 'по факту', b.amount === null ? '' : Math.round(b.amount * 1000) / 1000]);
     body(row);
   });
 }

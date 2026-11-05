@@ -167,7 +167,7 @@ const LzkDraftPage = () => {
                 <tr key={i}>
                   <td style={s.td}>{m.name}</td>
                   <td style={{ ...s.td, ...s.num }}>
-                    {fmtNum(m.limit)} {m.unit}
+                    {m.limit == null ? `без лимита, ${m.unit}` : `${fmtNum(m.limit)} ${m.unit}`}
                   </td>
                 </tr>
               ))}

@@ -281,8 +281,8 @@ test('субподрядчик из блока подписей, если в ш�
 test('М-29: работа без норм выводится агрегированной строкой без материалов, остаётся в «Не учтено»', async () => {
   const buf = await makeVdc([
     [WALL, 'м3', 2],
-    ['Монтаж плит перекрытия', 'шт', 28],
-    ['Монтаж плит перекрытия', 'шт', 28],
+    ['Устройство кровли из профнастила', 'шт', 28],
+    ['Устройство кровли из профнастила', 'шт', 28],
   ]);
   const { file, summary } = await generate(buf, { month: '2026-11' });
   assert.equal(summary.unmatched.length, 1);
@@ -293,10 +293,10 @@ test('М-29: работа без норм выводится агрегиров�
   const rows = [];
   ws.eachRow((row, n) => { if (n > 12) rows.push(row.getCell(1).value); });
   const idx = rows.filter((v) => v === 'работа').length;
-  assert.equal(idx, 2); // кладка и монтаж плит
+  assert.equal(idx, 2); // кладка и кровля
 
   let mountRow = 0;
-  ws.eachRow((row, n) => { if (row.getCell(2).value === 'Монтаж плит перекрытия') mountRow = n; });
+  ws.eachRow((row, n) => { if (row.getCell(2).value === 'Устройство кровли из профнастила') mountRow = n; });
   assert.ok(mountRow > 0);
   assert.equal(ws.getCell(mountRow, 5).value, 56); // 28 + 28, сгруппировано
   assert.equal(ws.getCell(mountRow, 4).value, 'шт');
@@ -602,4 +602,46 @@ test('«Монтаж замков, защелок, входной двери»: 
   assert.equal(ws.getCell(row, 5).value, 5); // лимит = объём работы
   assert.notEqual(ws.getCell(row + 1, 1).value, 'материал'); // материалов под строкой нет
   assert.equal(ws.getCell(row, 6).value, null); // и пометки «нет норм» нет: так задумано
+});
+
+test('ВДЦ №2 блок 3/2 (Сабитов): газоблок «200» по нормам, монтаж плит перекрытия — материалы без лимитов', async () => {
+  const buf = await makeVdc([
+    ['Устройство кирпичной кладки перегородок', 'м2', 317.72],
+    ['Устройство кирпичной кладки стен', 'м3', 209.8],
+    ['Устройство кладки из газоблока 200', 'м3', 10.8],
+    ['Монтаж плит перекрытия', 'шт', 33],
+    ['Устройство кладки из газоблока 200', 'м3', 10.8],
+    ['Монтаж плит перекрытия', 'шт', 33],
+  ]);
+  const { file, summary } = await generate(buf, { month: '2026-11' });
+  assert.equal(summary.works.find((w) => w.name === 'Устройство кладки из газоблока 200').qty, 21.6);
+  assert.equal(summary.works.find((w) => w.name === 'Монтаж плит перекрытия').qty, 66);
+  assert.equal(summary.unmatched.length, 0);
+
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(file);
+  const ws = wb.getWorksheet('М-29');
+  let row = 0;
+  ws.eachRow((r, n) => { if (r.getCell(2).value === 'Монтаж плит перекрытия') row = n; });
+  assert.ok(row > 0);
+  assert.equal(ws.getCell(row, 5).value, 66); // у работы лимит = объём
+  const mats = [1, 2, 3, 4].map((i) => ({
+    name: ws.getCell(row + i, 2).value, unit: ws.getCell(row + i, 4).value, limit: ws.getCell(row + i, 5).value, norm: ws.getCell(row + i, 6).value, code: ws.getCell(row + i, 3).value,
+  }));
+  assert.deepEqual(mats.map((m) => m.name), ['ПБ2.72.12-8С (плита перекрытия)', 'ПБ2.72.15-8С (плита перекрытия)', 'Арматура 12', 'Раствор м-100']);
+  assert.deepEqual(mats.map((m) => m.unit), ['шт', 'шт', 'тн', 'м3']);
+  assert.deepEqual(mats.map((m) => m.limit), [null, null, null, null]); // количество не указываем
+  assert.deepEqual(mats.map((m) => m.norm), [null, null, 'факт', 'факт']); // у плит пусто, у арматуры и раствора «факт»
+  assert.deepEqual(mats.map((m) => m.code), [null, null, null, null]); // столбец «код» не заполняем
+
+  // в листе «ЛЗК» эти материалы тоже есть — со строкой, но без лимита
+  const lzk = wb.getWorksheet('ЛЗК');
+  const inLzk = {};
+  lzk.eachRow((r, n) => { if (n >= 9) inLzk[String(r.getCell(2).value)] = { limit: r.getCell(4).value, remain: r.getCell(lzk.columnCount).value }; });
+  for (const name of ['ПБ2.72.12-8С (плита перекрытия)', 'ПБ2.72.15-8С (плита перекрытия)', 'Арматура 12', 'Раствор м-100']) {
+    assert.ok(inLzk[name], `в ЛЗК нет «${name}»`);
+    assert.equal(inLzk[name].limit, null);
+    assert.equal(inLzk[name].remain, null);
+  }
+  assert.ok(inLzk['Кирпич м100'].limit > 0); // у остальных материалов лимиты на месте
 });
