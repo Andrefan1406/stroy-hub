@@ -15,6 +15,8 @@ import { attachLoggias, checkLoggiaAreas, findLoggiaFloorAreas, proposeLoggias }
 import { CEILINGS_EXCLUDED_UP_TO, collectMeasureTasks, summarizeWorks, totalsOf, worksForFlat } from "../vdc/works";
 import { findCeilingHeight, parseManual, taskTotal } from "../vdc/measure";
 import MeasureDialog from "../vdc/MeasureDialog";
+import { loadProject, saveProject } from "../vdc/projectApi";
+import { applyAxisLabels, axisLabelsOf, collectState, describeState, normalizeState, projectKeyFor } from "../vdc/projectState";
 
 const TEP_TITLE = "тэп по типам квартир";
 const FINISHING_TITLE = "ведомость отделки помещений";
@@ -323,6 +325,15 @@ const VdcArDraftPage = () => {
   const [wallHeight, setWallHeight] = useState("");
   const [dialogKey, setDialogKey] = useState(null);
 
+  const [projectKey, setProjectKey] = useState(null); // шифр чертежа из штампа («АВ/24-11/187-1.6-АР») или имя файла
+  const [restoreOffer, setRestoreOffer] = useState(null); // найденное сохранение: { key, state, updatedAt, updatedBy, source }
+  const [saveEnabled, setSaveEnabled] = useState(false); // автосохранение включается после выбора «восстановить / с нуля»
+  const [saveStatus, setSaveStatus] = useState(null);
+  const [saveRetry, setSaveRetry] = useState(0);
+  const [axisOverrides, setAxisOverrides] = useState([]);
+  const [notice, setNotice] = useState("");
+  const lastSaved = useRef("");
+
   const [result, setResult] = useState(null);
   const [view, setView] = useState("works"); // works — работы с ценами; finish — виды отделки с объёмами
   const [copied, setCopied] = useState("");
@@ -344,6 +355,20 @@ const VdcArDraftPage = () => {
     setExplPicked({});
     setFinPicked({});
     setSectionsText("");
+    setTasks([]);
+    setMeasureLines({});
+    setManualValues({});
+    setCalibrations({});
+    setWallHeight("");
+    setLoggias([]);
+    setLoggiasConfirmed(false);
+    setAxisOverrides([]);
+    setProjectKey(null);
+    setRestoreOffer(null);
+    setSaveEnabled(false);
+    setSaveStatus(null);
+    setNotice("");
+    lastSaved.current = "";
     try {
       const opened = await openPdf(file);
       setDoc(opened);
@@ -355,6 +380,18 @@ const VdcArDraftPage = () => {
         .then((pages) => {
           setScan(pages);
           setScanProgress(null);
+          // проект узнаём по шифру в штампе: есть сохранённое — предлагаем восстановить
+          const key = projectKeyFor(pages, file);
+          setProjectKey(key);
+          if (key) {
+            loadProject(key)
+              .then((res) => {
+                if (res.found) setRestoreOffer({ ...res, key });
+                else setSaveEnabled(true);
+                if (res.serverError) setSaveStatus({ state: "error", at: new Date().toISOString(), error: res.serverError });
+              })
+              .catch(() => setSaveEnabled(true));
+          }
           const withTep = pages.find((p) => p.text.toLowerCase().includes(TEP_TITLE));
           if (withTep) setTepPageNo((cur) => cur || String(withTep.page));
         })
@@ -454,13 +491,77 @@ const VdcArDraftPage = () => {
       setError(notes.join(" "));
       return;
     }
-    setLayout(built);
+    setLayout(applyAxisLabels(built, axisOverrides));
     setLayoutNotes(notes);
-    setLoggias(proposeLoggias(Object.fromEntries(built.map((e) => [e.page, e.rooms || []]))).map((l) => ({ ...l, proposed: l.k, k: String(l.k).replace(".", ",") })));
-    setLoggiasConfirmed(false);
+    // коэффициенты лоджий: уже подтверждённые (или восстановленные из сохранения) сохраняются, остальные предлагаем заново
+    const prevK = new Map(loggias.map((l) => [l.key, l.k]));
+    const proposed = proposeLoggias(Object.fromEntries(built.map((e) => [e.page, e.rooms || []]))).map((l) => ({ ...l, proposed: l.k, k: prevK.get(l.key) ?? String(l.k).replace(".", ",") }));
+    setLoggias(proposed);
+    setLoggiasConfirmed(loggiasConfirmed && proposed.length > 0 && proposed.every((l) => prevK.has(l.key)));
     setResult(null);
     setStep(5);
   };
+
+  // ---------- Сохранение проекта: обмеры и решения не пропадают при перезагрузке сервера или страницы ----------
+  const restoreSaved = () => {
+    const st = normalizeState(restoreOffer.state);
+    if (st.tepPage) setTepPageNo(st.tepPage);
+    if (st.sections) setSectionsText(st.sections);
+    setExplPicked(st.explPicked);
+    setFinPicked(st.finPicked);
+    setAxisOverrides(st.axisLabels);
+    setLoggias(st.loggias.map((l) => ({ ...l })));
+    setLoggiasConfirmed(st.loggiasConfirmed);
+    if (st.wallHeight) setWallHeight(st.wallHeight);
+    setCalibrations(st.calibrations);
+    setMeasureLines(st.measureLines);
+    setManualValues(st.manualValues);
+    lastSaved.current = JSON.stringify(restoreOffer.state);
+    setRestoreOffer(null);
+    setSaveEnabled(true);
+    setNotice("Сохранённые данные восстановлены: пройдите шаги — введённое уже подставлено (листы, оси, коэффициенты, обмеры).");
+  };
+  const startFresh = () => {
+    setRestoreOffer(null);
+    setSaveEnabled(true);
+  };
+
+  // последние оси квартир запоминаем, чтобы пересборка листов не теряла правки
+  useEffect(() => {
+    if (layout) setAxisOverrides(axisLabelsOf(layout));
+  }, [layout]);
+
+  const projectState = useMemo(
+    () => collectState({
+      numPages, tepPage: tepPageNo, sections: sectionsText, explPicked, finPicked, axisLabels: layout ? axisLabelsOf(layout) : axisOverrides,
+      loggias, loggiasConfirmed, wallHeight, calibrations, measureLines, manualValues,
+    }),
+    [numPages, tepPageNo, sectionsText, explPicked, finPicked, layout, axisOverrides, loggias, loggiasConfirmed, wallHeight, calibrations, measureLines, manualValues],
+  );
+
+  // автосохранение: через 1,5 с после последней правки; при ошибке — повтор через 15 с
+  useEffect(() => {
+    if (!saveEnabled || !projectKey || step < 3) return undefined;
+    const json = JSON.stringify(projectState);
+    if (json === lastSaved.current) return undefined;
+    const timer = setTimeout(async () => {
+      setSaveStatus({ state: "saving" });
+      const r = await saveProject(projectKey, projectState);
+      if (r.ok) {
+        lastSaved.current = json;
+        setSaveStatus({ state: "saved", at: r.updatedAt, source: r.source });
+      } else {
+        setSaveStatus({ state: "error", at: r.updatedAt, error: r.error });
+        setTimeout(() => setSaveRetry((n) => n + 1), 15000);
+      }
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [saveEnabled, projectKey, step, projectState, saveRetry]);
+
+  const saveLabel = !saveStatus ? null
+    : saveStatus.state === "saving" ? "Сохраняем…"
+    : saveStatus.state === "saved" ? `✓ Сохранено на сервере в ${new Date(saveStatus.at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}`
+    : `⚠ На сервере не сохранено (${saveStatus.error}); копия есть в этом браузере, повторим автоматически`;
 
   // ---------- Шаг 5: оси квартир (правка подписей) ----------
   const setAxis = (pageIdx, flatIdx, section, value) => {
@@ -633,6 +734,16 @@ const VdcArDraftPage = () => {
     setManualValues({});
     setCalibrations({});
     setDialogKey(null);
+    setLoggias([]);
+    setLoggiasConfirmed(false);
+    setAxisOverrides([]);
+    setWallHeight("");
+    setProjectKey(null);
+    setRestoreOffer(null);
+    setSaveEnabled(false);
+    setSaveStatus(null);
+    setNotice("");
+    lastSaved.current = "";
     setResult(null);
     setError("");
   };
@@ -650,6 +761,7 @@ const VdcArDraftPage = () => {
       <div style={s.header}>
         <button onClick={() => navigate("/")} style={s.back}>← Назад</button>
         <h1 style={s.title}>Черновик ВДЦ на внутреннюю отделку по чертежам АР</h1>
+        {saveLabel && <span style={saveStatus.state === "error" ? s.saveWarn : s.saveOk}>{saveLabel}</span>}
       </div>
 
       <ol style={s.steps}>
@@ -659,6 +771,33 @@ const VdcArDraftPage = () => {
           </li>
         ))}
       </ol>
+
+      {notice && <div style={s.okBox}>{notice}</div>}
+
+      {restoreOffer && (
+        <div style={{ ...s.card, ...s.restoreCard }}>
+          <h2 style={s.h2}>Найдены сохранённые данные проекта «{restoreOffer.key}»</h2>
+          <div style={s.meta}>
+            Сохранил(а): {restoreOffer.updatedBy || "—"}
+            {restoreOffer.updatedAt ? ` · ${new Date(restoreOffer.updatedAt).toLocaleString("ru-RU")}` : ""}
+            {restoreOffer.source === "browser" ? " · копия из этого браузера (сервер недоступен)" : " · хранится на сервере"}
+          </div>
+          <div style={s.hint}>
+            Что сохранено: {describeState(restoreOffer.state).join("; ") || "ничего существенного"}. Если восстановить, все эти значения
+            подставятся на своих шагах — обмеры повторять не придётся.
+          </div>
+          {restoreOffer.state?.numPages && doc && restoreOffer.state.numPages !== doc.numPages && (
+            <div style={s.warnBox}>
+              Сохранено для файла из {restoreOffer.state.numPages} листов, сейчас открыт файл из {doc.numPages}: возможно, это другая редакция
+              чертежей. После восстановления проверьте номера листов, калибровку и обмеры.
+            </div>
+          )}
+          <div style={s.actions}>
+            <button onClick={startFresh} style={s.btnGhost}>Начать с нуля (сохранённое будет заменено)</button>
+            <button onClick={restoreSaved} style={s.btn}>Восстановить сохранённое</button>
+          </div>
+        </div>
+      )}
 
       {error && <div style={s.errorBox}>{error}</div>}
 
@@ -1003,8 +1142,8 @@ const VdcArDraftPage = () => {
 
           {tasks.some((t) => t.kind === "walls") && (
             <label style={s.row}>
-              <span style={s.label}>Высота стен лоджий, м</span>
-              <input type="text" inputMode="decimal" value={wallHeight} onChange={(e) => setWallHeight(e.target.value)} style={s.input} aria-label="Высота стен лоджий, м" />
+              <span style={s.label}>Высота от пола до потолка, м</span>
+              <input type="text" inputMode="decimal" value={wallHeight} onChange={(e) => setWallHeight(e.target.value)} style={s.input} aria-label="Высота от пола до потолка, м" />
               <span style={s.small}>
                 {ceilingHeight ? `предложено из общих данных (лист ${ceilingHeight.page}): «высота от пола до потолка» ${String(ceilingHeight.value).replace(".", ",")} м — проверьте` : "укажите высоту"}
               </span>
@@ -1180,6 +1319,10 @@ const s = {
   table: { width: "100%", borderCollapse: "collapse", fontSize: "13px" },
   th: { textAlign: "center", padding: "8px 6px", borderBottom: "2px solid #ddd", background: "#f7f7f7", fontSize: "13px", position: "sticky", top: 0 },
   td: { padding: "6px 6px", borderBottom: "1px solid #f0f0f0", verticalAlign: "top" },
+  okBox: { background: "#e7f6ec", color: "#1a7f37", borderRadius: "8px", padding: "10px 12px", fontSize: "13px", marginBottom: "12px" },
+  restoreCard: { border: "2px solid #1a5fb4", marginBottom: "16px" },
+  saveOk: { fontSize: "12px", color: "#1a7f37", marginLeft: "auto" },
+  saveWarn: { fontSize: "12px", color: "#8a5a00", marginLeft: "auto", maxWidth: "420px" },
   tab: { background: "#fff", color: "#1a5fb4", border: "1px solid #1a5fb4", borderRadius: "999px", padding: "6px 14px", fontSize: "13px", cursor: "pointer" },
   tabActive: { background: "#1a5fb4", color: "#fff", border: "1px solid #1a5fb4", borderRadius: "999px", padding: "6px 14px", fontSize: "13px", fontWeight: 600, cursor: "pointer" },
   small: { fontSize: "11px", color: "#777", marginTop: "2px" },
