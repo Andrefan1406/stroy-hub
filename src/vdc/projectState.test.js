@@ -1,4 +1,4 @@
-import { applyAxisLabels, axisLabelsOf, collectState, describeState, findProjectCode, normalizeState, pickedList, pickedMap, projectKeyFor } from "./projectState";
+import { applyAxisLabels, axisLabelsOf, collectState, describeState, findObjectName, findPosition, findProjectCode, normalizeState, pickedList, pickedMap, projectKeyFor } from "./projectState";
 
 describe("ключ проекта по шифру из штампа", () => {
   it("шифр находится, даже если разбит на части; берётся самый частый", () => {
@@ -89,6 +89,20 @@ describe("состояние проекта", () => {
     expect(back).toMatchObject({ numPages: null, tepPage: "", sections: "", explPicked: {}, loggiasConfirmed: false, measureLines: {}, manualValues: {} });
     expect(back.loggias).toEqual([{ key: "a", k: "1" }]);
     expect(normalizeState(null).axisLabels).toEqual([]);
+  });
+
+  it("наименование объекта берётся с титульного листа / штампа", () => {
+    const title = 'Стадия: РП - рабочий проект Раздел: АР "Строительство многоэтажных жилых домов (поз.1.6, 1.7) и многоэтажного жилого дома со встроенными коммерческими помещениями (поз.1.5) с инженерными сетями и благоустройством в 1 микрорайоне 26 жилого района г. Усть-Каменогорска, ВКО." АВ/24-11/187-1.6';
+    const pages = [{ page: 1, text: title }, { page: 2, text: title }, { page: 3, text: "Общие данные" }];
+    expect(findObjectName(pages)).toBe("Строительство многоэтажных жилых домов (поз.1.6, 1.7) и многоэтажного жилого дома со встроенными коммерческими помещениями (поз.1.5) с инженерными сетями и благоустройством в 1 микрорайоне 26 жилого района г. Усть-Каменогорска, ВКО");
+    expect(findObjectName([{ page: 1, text: "Общие данные" }])).toBeNull();
+  });
+
+  it("позиция дома из штампа", () => {
+    const stamp = "ВКО.\" АВ/24-11/187-1.6 Многоэтажный жилой дом Поз. 1.6";
+    const pages = [{ page: 1, text: stamp }, { page: 5, text: "План Многоэтажный жилой дом Поз. 1.6 Лист" }, { page: 6, text: "(поз.1.6, 1.7) и жилого дома" }];
+    expect(findPosition(pages)).toBe("Многоэтажный жилой дом поз.1.6");
+    expect(findPosition([{ page: 1, text: "Общие данные" }])).toBeNull();
   });
 
   it("список и карта листов", () => {

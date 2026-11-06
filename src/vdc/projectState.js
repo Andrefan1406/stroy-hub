@@ -19,6 +19,36 @@ export function findProjectCode(pages) {
   return best ? best[0] : null;
 }
 
+// Наименование объекта с титульного листа или штампа: «Строительство … ВКО.» в кавычках; берём самое частое по листам
+// (на титуле и штампе одно и то же), без пробелов перед знаками препинания.
+const OBJECT_RE = /["«“]\s*(Строительство[^"«»“”]{15,600}?)\s*["»”]/g;
+export function findObjectName(pages) {
+  const count = new Map();
+  for (const p of pages || []) {
+    const seen = new Set();
+    for (const m of String(p.text ?? "").matchAll(OBJECT_RE)) {
+      const name = m[1].replace(/\s+/g, " ").replace(/\s+([.,;:)])/g, "$1").replace(/\(\s+/g, "(").replace(/\.$/, "").trim();
+      seen.add(name);
+    }
+    seen.forEach((n) => count.set(n, (count.get(n) || 0) + 1));
+  }
+  const best = [...count.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)[0];
+  return best ? best[0] : null;
+}
+
+// Позиция дома из штампа: «Многоэтажный жилой дом Поз. 1.6» → «Многоэтажный жилой дом поз.1.6»; самая частая по листам.
+const POSITION_RE = /([А-ЯЁ][а-яё-]+(?:\s+[а-яё-]+){0,3}\s+(?:дом|здание)[а-яё]*)\s+Поз\.?\s*(\d+(?:\.\d+)*)/g;
+export function findPosition(pages) {
+  const count = new Map();
+  for (const p of pages || []) {
+    const seen = new Set();
+    for (const m of String(p.text ?? "").matchAll(POSITION_RE)) seen.add(`${m[1].replace(/\s+/g, " ")} поз.${m[2]}`);
+    seen.forEach((v) => count.set(v, (count.get(v) || 0) + 1));
+  }
+  const best = [...count.entries()].sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : null;
+}
+
 // Ключ проекта: шифр чертежа, а без него — имя и размер файла.
 export const projectKeyFor = (pages, file) => findProjectCode(pages) || (file ? `файл:${file.name}:${file.size}` : null);
 
