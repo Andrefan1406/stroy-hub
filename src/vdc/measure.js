@@ -38,19 +38,34 @@ export function findCeilingHeight(pages) {
   return null;
 }
 
-// Замеры задачи → количество: сумма длин (м) или площадей стен «длина × высота» (м²).
-// lines — линии на листах; calibrations — { лист: метров в пункте PDF }; height — высота стен, м (для задач «стены»).
+// Замеры задачи → количество: сумма длин (м) или площадей стен «длина × высота» (м²) за вычетом проёмов.
+// Проём — линия с deduct: для стен площадь проёма = ширина × высота проёма (у каждого своя), для плинтуса — ширина.
+// lines — линии на листах; calibrations — { лист: метров в пункте PDF }; height — высота от пола до потолка, м (для задач «стены»).
+// → { total (с вычетом), gross, deducted, uncounted }
 export function taskTotal(lines, calibrations, { kind, height } = {}) {
-  let total = 0;
+  let gross = 0;
+  let deducted = 0;
   let uncounted = 0;
   for (const m of lines || []) {
-    const calc = kind === "walls" ? "wall" : "length";
-    const q = measurementQuantity({ ...m, kind: "line", calc, height: kind === "walls" ? height : undefined, count: 1, deduct: false }, calibrations?.[m.page]);
+    const isWalls = kind === "walls";
+    const q = measurementQuantity(
+      { ...m, kind: "line", calc: isWalls ? "wall" : "length", height: isWalls ? (m.deduct ? m.height : height) : undefined, count: 1, deduct: false },
+      calibrations?.[m.page],
+    );
     if (q === null) uncounted += 1;
-    else total += q;
+    else if (m.deduct) deducted += q;
+    else gross += q;
   }
-  return { total: Math.round(total * 100) / 100, uncounted };
+  const round = (v) => Math.round(v * 100) / 100;
+  return { total: round(Math.max(0, gross - deducted)), gross: round(gross), deducted: round(deducted), uncounted };
 }
+
+// Типовые проёмы: тип → название и высота по умолчанию, м (дверь и окно — стандартные, витраж задаёт пользователь)
+export const OPENING_TYPES = {
+  door: { label: "Дверь", height: "2,1" },
+  window: { label: "Окно", height: "1,5" },
+  glazing: { label: "Витраж / другой проём", height: "" },
+};
 
 // Введено вручную («12,5», «12.5») → число; пусто или не число → null
 export function parseManual(value) {

@@ -8,9 +8,11 @@ import plan11 from "./__fixtures__/plan-p11.json";
 // которые вызывают те же обратные вызовы, что и настоящий холст.
 jest.mock("../takeoff/TakeoffCanvas", () => {
   const React = require("react");
-  return function FakeCanvas({ onFinish, onCalibrated, measurements, labelFor }) {
+  return function FakeCanvas({ onFinish, onCalibrated, measurements, labelFor, mode, polarStep, deduct }) {
     return (
       <div>
+        <div data-testid="canvas-props">{JSON.stringify({ mode, polarStep, deduct })}</div>
+        <button onClick={() => onFinish({ kind: "line", points: [{ x: 0, y: 0 }, { x: 25, y: 0 }] })}>нарисовать-короткую</button>
         <button onClick={() => onFinish({ kind: "line", points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] })}>нарисовать-линию</button>
         <button onClick={() => onCalibrated([{ x: 0, y: 0 }, { x: 91, y: 0 }])}>отметить-размер</button>
         <div data-testid="labels">{measurements.map((m) => labelFor(m)).join("|")}</div>
@@ -95,5 +97,55 @@ describe("окно обмера", () => {
     expect(screen.getByText(/Итого по задаче: 9,60 м²/)).toBeTruthy(); // 3,5277 × 2,72
     fireEvent.change(screen.getByLabelText ? screen.getByDisplayValue("2,72") : screen.getByDisplayValue("2,72"), { target: { value: "3" } });
     expect(screen.getByText(/Итого по задаче: 10,58 м²/)).toBeTruthy(); // 3,5277 × 3
+  });
+
+  it("проёмы: вычитаются из площади стен (ширина × высота проёма), высоту можно поправить у каждого", () => {
+    render(<Harness task={wallsTask} />);
+    fireEvent.click(screen.getByText("Принять масштаб 1:100"));
+    fireEvent.click(screen.getByText(/✏️ Обвести стены/));
+    expect(JSON.parse(screen.getByTestId("canvas-props").textContent)).toMatchObject({ mode: "line", deduct: false });
+    fireEvent.click(screen.getByText("нарисовать-линию")); // стены: 3,5277 × 2,72 = 9,60 м²
+    expect(screen.getByText(/Итого по задаче: 9,60 м²/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText(/🚪 Проём/));
+    expect(JSON.parse(screen.getByTestId("canvas-props").textContent)).toMatchObject({ mode: "opening", deduct: true });
+    fireEvent.click(screen.getByText("нарисовать-короткую")); // дверь: 0,8819 м × 2,1 м = 1,85 м²
+    expect(screen.getByText("Проёмы (вычитаются)")).toBeTruthy();
+    expect(screen.getByText(/Стены 9,60 − проёмы 1,85 м²/)).toBeTruthy();
+    expect(screen.getByText(/Итого по задаче: 7,74 м²/)).toBeTruthy();
+
+    // у окна своя высота: 1,5 м → вычет 1,32 м²
+    fireEvent.change(screen.getByLabelText("Высота проёма 1, м"), { target: { value: "1,5" } });
+    expect(screen.getByText(/Итого по задаче: 8,27 м²/)).toBeTruthy();
+  });
+
+  it("тип проёма подставляет типовую высоту: дверь 2,1, окно 1,5, витраж — вводится вручную", () => {
+    render(<Harness task={wallsTask} />);
+    expect(screen.getByLabelText("Высота проёма, м").value).toBe("2,1");
+    fireEvent.change(screen.getByLabelText("Тип проёма"), { target: { value: "window" } });
+    expect(screen.getByLabelText("Высота проёма, м").value).toBe("1,5");
+    fireEvent.change(screen.getByLabelText("Тип проёма"), { target: { value: "glazing" } });
+    expect(screen.getByLabelText("Высота проёма, м").value).toBe("");
+  });
+
+  it("плинтус: проём вычитает только ширину, высота не спрашивается", () => {
+    render(<Harness task={plinthTask} />);
+    expect(screen.queryByLabelText("Высота проёма, м")).toBeNull();
+    fireEvent.click(screen.getByText("Принять масштаб 1:100"));
+    fireEvent.click(screen.getByText(/✏️ Обвести/));
+    fireEvent.click(screen.getByText("нарисовать-линию")); // 3,53 м
+    fireEvent.click(screen.getByText(/🚪 Проём/));
+    fireEvent.click(screen.getByText("нарисовать-короткую")); // дверь 0,88 м
+    expect(screen.getByText(/Длина 3,53 − проёмы 0,88 м/)).toBeTruthy();
+    expect(screen.getByText(/Итого по задаче: 2,65 м/)).toBeTruthy();
+  });
+
+  it("полярное отслеживание: по умолчанию шаг 45°, шаг передаётся холсту и попадает в подсказку", () => {
+    render(<Harness task={plinthTask} />);
+    expect(JSON.parse(screen.getByTestId("canvas-props").textContent).polarStep).toBe(45);
+    expect(screen.getByText(/Удерживайте Shift — линия зафиксируется по углам, кратным 45°/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Шаг полярного отслеживания"), { target: { value: "15" } });
+    expect(JSON.parse(screen.getByTestId("canvas-props").textContent).polarStep).toBe(15);
+    expect(screen.getByText(/кратным 15°/)).toBeTruthy();
   });
 });

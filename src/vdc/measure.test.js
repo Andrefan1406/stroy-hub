@@ -1,4 +1,4 @@
-import { findCeilingHeight, parseManual, suggestScale, taskTotal } from "./measure";
+import { OPENING_TYPES, findCeilingHeight, parseManual, suggestScale, taskTotal } from "./measure";
 import { findAxisRows } from "./plan";
 import { metersPerUnitFromDistance, metersPerUnitFromScale } from "../takeoff/model";
 import plan11 from "./__fixtures__/plan-p11.json";
@@ -58,5 +58,46 @@ describe("замеры → количество", () => {
     expect(parseManual("")).toBeNull();
     expect(parseManual("abc")).toBeNull();
     expect(parseManual("0")).toBeNull();
+  });
+});
+
+describe("проёмы: вычет из площади стен и длины плинтуса", () => {
+  const mpu = metersPerUnitFromScale(100);
+  const wall = { id: "w", page: 11, points: [{ x: 0, y: 0 }, { x: 400, y: 0 }] }; // 400 пунктов ≈ 14,11 м
+  const door = { id: "d", page: 11, deduct: true, height: "2,1", points: [{ x: 0, y: 0 }, { x: 25, y: 0 }] }; // 25 пунктов ≈ 0,88 м
+  const win = { id: "o", page: 11, deduct: true, height: "1,5", points: [{ x: 0, y: 0 }, { x: 50, y: 0 }] }; // 50 пунктов ≈ 1,76 м
+
+  it("стены: длина × высота минус ширина × высота каждого проёма", () => {
+    const r = taskTotal([wall, door, win], { 11: mpu }, { kind: "walls", height: "2,72" });
+    const grossExpected = 400 * mpu * 2.72;
+    const deductExpected = 25 * mpu * 2.1 + 50 * mpu * 1.5;
+    expect(r.gross).toBeCloseTo(grossExpected, 2);
+    expect(r.deducted).toBeCloseTo(deductExpected, 2);
+    expect(r.total).toBeCloseTo(grossExpected - deductExpected, 1);
+    expect(r.uncounted).toBe(0);
+  });
+
+  it("у каждого проёма своя высота; проём без высоты не считается и помечается", () => {
+    const noHeight = { ...door, id: "x", height: "" };
+    const r = taskTotal([wall, noHeight], { 11: mpu }, { kind: "walls", height: "2,72" });
+    expect(r.deducted).toBe(0);
+    expect(r.uncounted).toBe(1);
+  });
+
+  it("плинтус: проём вычитает только ширину", () => {
+    const r = taskTotal([wall, door], { 11: mpu }, { kind: "plinth" });
+    expect(r.gross).toBeCloseTo(400 * mpu, 2);
+    expect(r.deducted).toBeCloseTo(25 * mpu, 2);
+    expect(r.total).toBeCloseTo(375 * mpu, 1);
+  });
+
+  it("проёмов больше стен — итог не уходит в минус", () => {
+    const big = { ...win, points: [{ x: 0, y: 0 }, { x: 900, y: 0 }] };
+    expect(taskTotal([wall, big], { 11: mpu }, { kind: "walls", height: "2,72" }).total).toBe(0);
+  });
+
+  it("одно лишь число типов проёмов: у витража высоту нужно указать", () => {
+    expect(OPENING_TYPES.door.height).toBe("2,1");
+    expect(OPENING_TYPES.glazing.height).toBe("");
   });
 });

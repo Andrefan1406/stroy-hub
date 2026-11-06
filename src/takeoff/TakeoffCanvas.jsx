@@ -22,6 +22,7 @@ import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef,
 import { renderPage, renderTinted } from "./pdf";
 import { centroid, polygonArea, polylineLength } from "./model";
 import { placeRect, rectOf } from "./masonry";
+import { polarAngle, snapPolar } from "./polar";
 
 const SELECTED = "#0040ff"; // выделенный замер
 const UNCOUNTED = "#ff6d00"; // замер, не вошедший в итог
@@ -29,11 +30,6 @@ const MIN_K = 0.05;
 const MAX_K = 40;
 const clampK = (k) => Math.min(MAX_K, Math.max(MIN_K, k));
 const fmt = (v, d = 2) => v.toLocaleString("ru-RU", { maximumFractionDigits: d, minimumFractionDigits: d });
-
-function snapOrtho(p, last) {
-  if (!last) return p;
-  return Math.abs(p.x - last.x) >= Math.abs(p.y - last.y) ? { x: p.x, y: last.y } : { x: last.x, y: p.y };
-}
 
 // Подпись линии — у середины самого длинного отрезка.
 function lineLabelPoint(points) {
@@ -54,7 +50,7 @@ function lineLabelPoint(points) {
 const TakeoffCanvas = forwardRef(function TakeoffCanvas(
   {
     pdf, pageNumber, measurements, selectedId, mode, deduct, metersPerUnit, labelFor, colorFor, onSelect, onFinish, onCalibrated, onStatus,
-    onEdit, revisionView, compareLayers, alignSnap, onAlignClick, marks, extent,
+    onEdit, revisionView, compareLayers, alignSnap, onAlignClick, marks, extent, polarStep = 90,
   },
   ref
 ) {
@@ -67,6 +63,7 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
   const [draft, setDraft] = useState([]);
   const [hover, setHover] = useState(null);
   const [space, setSpace] = useState(false);
+  const [shift, setShift] = useState(false); // Shift зажат — полярное отслеживание (шаг polarStep, по умолчанию 90° = горизонталь/вертикаль)
   const pan = useRef(null);
   const drag = useRef(null); // перетаскивание точки выделенного замера
 
@@ -167,6 +164,7 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
   useEffect(() => {
     const isTyping = () => ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
     const down = (e) => {
+      if (e.key === "Shift") setShift(true);
       if (isTyping()) return;
       if (e.code === "Space") {
         e.preventDefault();
@@ -177,12 +175,18 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
         setDraft((d) => d.slice(0, -1));
       } else if (drawing && e.key === "Enter") finish(draft);
     };
-    const up = (e) => { if (e.code === "Space") setSpace(false); };
+    const up = (e) => {
+      if (e.code === "Space") setSpace(false);
+      if (e.key === "Shift") setShift(false);
+    };
+    const blur = () => setShift(false);
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
     return () => {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
     };
   }, [drawing, draft, finish]);
 
@@ -226,7 +230,7 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
     let p = toWorld(e.clientX, e.clientY);
     if (d.type === "vertex") {
       const prev = m.points[d.index - 1] || (m.kind === "area" ? m.points[m.points.length - 1] : m.points[d.index + 1]);
-      if (e.shiftKey) p = snapOrtho(p, prev);
+      if (e.shiftKey) p = snapPolar(p, prev, polarStep);
       onEdit(m.id, { points: m.points.map((q, i) => (i === d.index ? p : q)) });
     } else if (d.type === "rect") {
       const next = [d.fixed, p];
@@ -265,7 +269,7 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
     }
     if (e.button !== 0 || !drawing || !page) return;
     let p = toWorld(e.clientX, e.clientY);
-    if (e.shiftKey) p = snapOrtho(p, draft[draft.length - 1]);
+    if (e.shiftKey) p = snapPolar(p, draft[draft.length - 1], polarStep);
     const next = [...draft, p];
     if (mode === "calibrate" && next.length === 2) {
       setDraft([]);
@@ -298,7 +302,7 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
     }
     if (drawing) {
       let p = toWorld(e.clientX, e.clientY);
-      if (e.shiftKey) p = snapOrtho(p, draft[draft.length - 1]);
+      if (e.shiftKey) p = snapPolar(p, draft[draft.length - 1], polarStep);
       setHover(p);
     }
   };
@@ -317,6 +321,8 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
   const { tx, ty, k } = view;
   const px = (n) => n / k; // экранные пиксели -> единицы страницы
   const live = hover && draft.length ? [...draft, hover] : draft;
+  const lastPt = draft[draft.length - 1];
+  const polarOn = shift && drawing && !!lastPt && !!hover && Math.hypot(hover.x - lastPt.x, hover.y - lastPt.y) > 0.5;
   let liveText = "";
   if (drawing && live.length >= 2) {
     const units = mode === "area" && live.length >= 3 ? polygonArea(live) : polylineLength(live);
@@ -328,6 +334,7 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
     else if (!metersPerUnit) liveText = "лист не откалиброван";
     else if (mode === "area" && live.length >= 3) liveText = `${fmt(units * metersPerUnit * metersPerUnit)} м²`;
     else liveText = `${fmt(units * metersPerUnit)} м`;
+    if (polarOn) liveText = `${fmt(polarAngle(lastPt, hover), 0)}° · ${liveText}`;
   }
   const draftColor = mode === "calibrate" ? "#e65100" : deduct ? "#c62828" : "#1565c0";
 
@@ -468,6 +475,14 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
                 {mode === "area" && live.length >= 3 && (
                   <polygon points={live.map((p) => `${p.x},${p.y}`).join(" ")} fill={draftColor} fillOpacity={0.12} stroke="none" />
                 )}
+                {polarOn && (() => {
+                  const d = Math.hypot(hover.x - lastPt.x, hover.y - lastPt.y);
+                  const ux = (hover.x - lastPt.x) / d;
+                  const uy = (hover.y - lastPt.y) / d;
+                  const far = Math.max(page.width, page.height) * 2;
+                  return <line x1={lastPt.x - ux * far} y1={lastPt.y - uy * far} x2={lastPt.x + ux * far} y2={lastPt.y + uy * far}
+                    stroke="#ff9100" strokeWidth={0.9} vectorEffect="non-scaling-stroke" strokeDasharray="2 5" />;
+                })()}
                 {mode !== "rect" && (
                   <polyline points={live.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={draftColor}
                     strokeWidth={0.6} vectorEffect="non-scaling-stroke" strokeDasharray="6 3" />

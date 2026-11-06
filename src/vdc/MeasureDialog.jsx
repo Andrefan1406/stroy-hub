@@ -1,11 +1,13 @@
 // Окно обмера: лист PDF с чертежом и инструмент замеров из подсчёта объёмов (src/takeoff). Пользователь
-// калибрует лист (по размеру на чертеже или по масштабу), обводит линией плинтус или стены, и получает длину в метрах.
+// калибрует лист (по размеру на чертеже или по масштабу), обводит линией плинтус или стены, отмечает проёмы
+// (они вычитаются) и получает длину или площадь. Shift при обводке — полярное отслеживание по углам.
 // Окно измеряет ОДНУ задачу для одной квартиры типа — значение потом подставляется во все квартиры этого типа.
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import TakeoffCanvas from "../takeoff/TakeoffCanvas";
-import { distance, metersPerUnitFromDistance, metersPerUnitFromScale } from "../takeoff/model";
+import { distance, metersPerUnitFromDistance, metersPerUnitFromScale, polylineLength } from "../takeoff/model";
+import { POLAR_STEPS } from "../takeoff/polar";
 import { findAxisRows } from "./plan";
-import { suggestScale, taskTotal } from "./measure";
+import { OPENING_TYPES, parseManual, suggestScale, taskTotal } from "./measure";
 
 const SCALES = [20, 25, 50, 75, 100, 150, 200, 250, 500];
 const fmt = (v) => Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -15,12 +17,15 @@ export default function MeasureDialog({
   doc, numPages, task, flatsHint, initialPage, itemsOf, lines, onLinesChange, calibrations, onCalibrate, height, onHeightChange, onClose,
 }) {
   const [pageNo, setPageNo] = useState(String(initialPage || 1));
-  const [mode, setMode] = useState("select"); // select | line | calibrate
+  const [mode, setMode] = useState("select"); // select | line | opening | calibrate
   const [selectedId, setSelectedId] = useState(null);
   const [calibPoints, setCalibPoints] = useState(null);
   const [calibMeters, setCalibMeters] = useState("");
   const [status, setStatus] = useState("");
   const [note, setNote] = useState("");
+  const [polarStep, setPolarStep] = useState(45); // шаг угла при зажатом Shift
+  const [openingType, setOpeningType] = useState("door");
+  const [openingHeight, setOpeningHeight] = useState(OPENING_TYPES.door.height);
 
   const page = Number(pageNo);
   const pageValid = Number.isInteger(page) && page >= 1 && page <= numPages;
@@ -36,17 +41,26 @@ export default function MeasureDialog({
   }, [page, pageValid, itemsOf]);
 
   const total = useMemo(() => taskTotal(lines, calibrations, { kind: task.kind, height }), [lines, calibrations, task.kind, height]);
-  const pageLines = useMemo(() => lines.filter((l) => l.page === page).map((l) => ({ ...l, calc: isWalls ? "wall" : "length", height: isWalls ? height : undefined })), [lines, page, isWalls, height]);
+  const pageLines = useMemo(
+    () => lines.filter((l) => l.page === page).map((l) => ({ ...l, calc: isWalls ? "wall" : "length", height: isWalls ? (l.deduct ? l.height : height) : undefined })),
+    [lines, page, isWalls, height],
+  );
+  const openings = useMemo(() => lines.filter((l) => l.deduct), [lines]);
 
+  // подпись линии на холсте: у проёма со знаком «−»
   const labelFor = useCallback((m) => {
     const t = taskTotal([m], calibrations, { kind: task.kind, height });
-    return t.uncounted ? "" : `${fmt(t.total)} ${task.unit}`;
+    if (t.uncounted) return "";
+    return m.deduct ? `−${fmt(t.deducted)} ${task.unit}` : `${fmt(t.gross)} ${task.unit}`;
   }, [calibrations, task.kind, task.unit, height]);
 
   const onFinish = useCallback(({ kind, points }) => {
-    if (mode !== "line" || kind !== "line") return;
-    onLinesChange([...lines, { id: newId(), page, kind: "line", points, count: 1 }]);
-  }, [mode, lines, page, onLinesChange]);
+    if (kind !== "line") return;
+    if (mode === "line") onLinesChange([...lines, { id: newId(), page, kind: "line", points, count: 1 }]);
+    else if (mode === "opening") {
+      onLinesChange([...lines, { id: newId(), page, kind: "line", points, count: 1, deduct: true, openingType, height: isWalls ? openingHeight : undefined }]);
+    }
+  }, [mode, lines, page, onLinesChange, openingType, openingHeight, isWalls]);
 
   const onEdit = useCallback((id, patch) => onLinesChange(lines.map((l) => (l.id === id ? { ...l, ...patch } : l))), [lines, onLinesChange]);
   const removeLine = (id) => {
@@ -79,6 +93,13 @@ export default function MeasureDialog({
     setNote("");
   };
 
+  const pickOpeningType = (type) => {
+    setOpeningType(type);
+    setOpeningHeight(OPENING_TYPES[type].height);
+  };
+
+  const widthOf = (l) => (mpu && l.page === page ? polylineLength(l.points) * mpu : calibrations[l.page] ? polylineLength(l.points) * calibrations[l.page] : null);
+
   const toolBtn = (m, label, title) => (
     <button type="button" title={title} onClick={() => { setMode(mode === m ? "select" : m); setNote(""); }} style={mode === m ? { ...s.tool, ...s.toolOn } : s.tool}>
       {label}
@@ -99,8 +120,9 @@ export default function MeasureDialog({
         <div style={s.hint}>
           {flatsHint}
           {isWalls
-            ? " Обведите линией стены помещения по периметру (щёлкайте по углам, двойной щелчок или Enter — конец линии); площадь = длина × высота."
-            : " Обведите линией плинтус вдоль стен без дверных проёмов (щёлкайте по углам, двойной щелчок или Enter — конец линии). Линий может быть несколько — они сложатся."}
+            ? " Обведите линией стены помещения по периметру (щёлкайте по углам, двойной щелчок или Enter — конец линии); площадь = длина × высота от пола до потолка. Двери, окна и другие проёмы отметьте отдельно кнопкой «Проём» — их площадь вычтется."
+            : " Обведите линией плинтус вдоль стен (щёлкайте по углам, двойной щелчок или Enter — конец линии). Дверные проёмы можно не обходить, а отметить кнопкой «Проём» — их ширина вычтется. Линий может быть несколько — они сложатся."}
+          {` Удерживайте Shift — линия зафиксируется по углам, кратным ${polarStep}°.`}
         </div>
 
         <div style={s.bar}>
@@ -118,8 +140,32 @@ export default function MeasureDialog({
               {SCALES.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
-          {toolBtn("line", "✏️ Обвести", "Линия по точкам")}
+        </div>
+
+        <div style={s.bar}>
+          {toolBtn("line", isWalls ? "✏️ Обвести стены" : "✏️ Обвести", "Линия по точкам")}
+          {toolBtn("opening", "🚪 Проём (вычет)", "Два щелчка по краям проёма (ширина), двойной щелчок по второму краю — готово")}
+          {isWalls && (
+            <>
+              <label style={s.row}>
+                тип
+                <select value={openingType} onChange={(e) => pickOpeningType(e.target.value)} style={s.sel} aria-label="Тип проёма">
+                  {Object.entries(OPENING_TYPES).map(([key, t]) => <option key={key} value={key}>{t.label}</option>)}
+                </select>
+              </label>
+              <label style={s.row}>
+                высота проёма, м
+                <input value={openingHeight} onChange={(e) => setOpeningHeight(e.target.value)} style={{ ...s.num, width: 64 }} aria-label="Высота проёма, м" />
+              </label>
+            </>
+          )}
           {toolBtn("select", "✋ Прокрутка / выбор", "Перетаскивание листа; выбор линии — Delete удалит")}
+          <label style={s.row}>
+            Shift — шаг угла
+            <select value={polarStep} onChange={(e) => setPolarStep(Number(e.target.value))} style={s.sel} aria-label="Шаг полярного отслеживания">
+              {POLAR_STEPS.map((a) => <option key={a} value={a}>{a === 90 ? "90° (гориз./верт.)" : `${a}°`}</option>)}
+            </select>
+          </label>
           <button type="button" style={s.tool} disabled={!selectedId} onClick={() => removeLine(selectedId)}>Удалить выбранную</button>
           <button type="button" style={s.tool} disabled={!lines.length} onClick={() => { onLinesChange([]); setSelectedId(null); }}>Очистить всё</button>
         </div>
@@ -148,7 +194,8 @@ export default function MeasureDialog({
               measurements={pageLines}
               selectedId={selectedId}
               mode={mode}
-              deduct={false}
+              deduct={mode === "opening"}
+              polarStep={polarStep}
               metersPerUnit={mpu}
               labelFor={labelFor}
               colorFor={() => "#1565c0"}
@@ -163,13 +210,38 @@ export default function MeasureDialog({
           )}
         </div>
 
+        {openings.length > 0 && (
+          <div style={s.openings}>
+            <div style={s.openingsTitle}>Проёмы (вычитаются)</div>
+            {openings.map((o, i) => {
+              const w = widthOf(o);
+              const area = w && parseManual(o.height) ? w * parseManual(o.height) : null;
+              return (
+                <div key={o.id} style={s.openingRow}>
+                  <span>{i + 1}. {OPENING_TYPES[o.openingType]?.label || "Проём"} · лист {o.page}</span>
+                  <span>ширина {w ? `${fmt(w)} м` : "— (лист не откалиброван)"}</span>
+                  {isWalls && (
+                    <label style={s.row}>
+                      высота, м
+                      <input value={o.height || ""} onChange={(e) => onEdit(o.id, { height: e.target.value })} style={{ ...s.num, width: 64 }} aria-label={`Высота проёма ${i + 1}, м`} />
+                    </label>
+                  )}
+                  <b>{isWalls ? (area ? `−${fmt(area)} м²` : "высота не задана") : w ? `−${fmt(w)} м` : ""}</b>
+                  <button type="button" style={s.tool} onClick={() => removeLine(o.id)}>Удалить</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         <div style={s.bottom}>
           {isWalls && (
             <label style={s.row}>
-              Высота стен, м
-              <input value={height} onChange={(e) => onHeightChange(e.target.value)} style={{ ...s.num, width: 80 }} />
+              Высота от пола до потолка, м
+              <input value={height} onChange={(e) => onHeightChange(e.target.value)} style={{ ...s.num, width: 80 }} aria-label="Высота от пола до потолка, м" />
             </label>
           )}
+          {total.deducted > 0 && <span style={s.muted}>{isWalls ? "Стены" : "Длина"} {fmt(total.gross)} − проёмы {fmt(total.deducted)} {task.unit}</span>}
           <span style={s.total}>Итого по задаче: {total.total ? `${fmt(total.total)} ${task.unit}` : "—"}</span>
           {total.uncounted > 0 && <span style={s.warn}>{total.uncounted} лин. не посчитано (нет калибровки{isWalls ? " или высоты" : ""})</span>}
           <span style={s.muted}>{status}</span>
@@ -201,6 +273,9 @@ const s = {
   accept: { background: "#8a5a00", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" },
   canvasBox: { position: "relative", flex: 1, minHeight: 260, border: "1px solid #ddd", borderRadius: 8, overflow: "hidden" },
   empty: { padding: 20, color: "#777" },
+  openings: { border: "1px solid #f0d4d4", background: "#fff8f8", borderRadius: 8, padding: "6px 10px", maxHeight: 130, overflow: "auto", fontSize: 13 },
+  openingsTitle: { fontWeight: 700, color: "#a03030", marginBottom: 4 },
+  openingRow: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", padding: "3px 0" },
   bottom: { display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 14 },
   total: { fontWeight: 700 },
 };
