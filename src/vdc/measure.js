@@ -60,11 +60,11 @@ export function taskTotal(lines, calibrations, { kind, height } = {}) {
   return { total: round(Math.max(0, gross - deducted)), gross: round(gross), deducted: round(deducted), uncounted };
 }
 
-// Типовые проёмы: тип → название и высота по умолчанию, м (дверь и окно — стандартные, витраж задаёт пользователь)
+// Типовые проёмы: тип → название и высота по умолчанию, м (можно исправить: у каждого проёма высота своя)
 export const OPENING_TYPES = {
   door: { label: "Дверь", height: "2,1" },
   window: { label: "Окно", height: "1,5" },
-  glazing: { label: "Витраж / другой проём", height: "" },
+  glazing: { label: "Витраж / другой проём", height: "1,82" },
 };
 
 // Введено вручную («12,5», «12.5») → число; пусто или не число → null

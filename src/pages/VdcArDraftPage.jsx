@@ -9,14 +9,16 @@ import { parseTep } from "../vdc/tepParser";
 import { detectSections, firstSectionId, parseSectionIds } from "../vdc/sections";
 import { findExplicationTitle, parseExplication } from "../vdc/explication";
 import { planFlats } from "../vdc/plan";
+import { buildVdcWorkbook, objectLine, parseIsoDate } from "../vdc/exportXlsx";
 import { assembleBlocks, attachFinishing, splitFirstBlock, typeCodeFromName } from "../vdc/blocks";
 import { checkFinishing, checkRoomNames, parseFinishing, parseLegend } from "../vdc/finishing";
 import { attachLoggias, checkLoggiaAreas, findLoggiaFloorAreas, proposeLoggias } from "../vdc/loggias";
-import { CEILINGS_EXCLUDED_UP_TO, collectMeasureTasks, summarizeWorks, totalsOf, worksForFlat } from "../vdc/works";
+import { CEILINGS_EXCLUDED_UP_TO, collectMeasureTasks, findRate, summarizeWorks, totalsOf, worksForFlat } from "../vdc/works";
 import { findCeilingHeight, parseManual, taskTotal } from "../vdc/measure";
 import MeasureDialog from "../vdc/MeasureDialog";
+import { buildDoorDirectory, DEFAULT_DOOR_SPLIT, doorsInContour, doorWorkLines, DOOR_CATEGORIES, interiorCheck, parseDoorSpec, splitIsValid, summarizeDoors } from "../vdc/doors";
 import { loadProject, saveProject } from "../vdc/projectApi";
-import { applyAxisLabels, axisLabelsOf, collectState, describeState, normalizeState, projectKeyFor } from "../vdc/projectState";
+import { applyAxisLabels, axisLabelsOf, collectState, describeState, findObjectName, findPosition, normalizeState, projectKeyFor } from "../vdc/projectState";
 
 const TEP_TITLE = "тэп по типам квартир";
 const FINISHING_TITLE = "ведомость отделки помещений";
@@ -337,6 +339,15 @@ const VdcArDraftPage = () => {
   const [result, setResult] = useState(null);
   const [view, setView] = useState("works"); // works — работы с ценами; finish — виды отделки с объёмами
   const [copied, setCopied] = useState("");
+  const [gprStart, setGprStart] = useState(""); // начало и окончание графика производства работ (для Excel)
+  const [gprEnd, setGprEnd] = useState("");
+  const [exportMsg, setExportMsg] = useState(null);
+  const [doorCats, setDoorCats] = useState({}); // категории дверей, исправленные вручную: { 'Д-9': 'entrance' }
+  const [doorEntrance, setDoorEntrance] = useState("1"); // входных дверей на квартиру
+  const [doorInterior, setDoorInterior] = useState({}); // межкомнатных дверей в квартире по типам, вручную: { '1': { single: '4', double: '1' } }
+  const [doorLeaves, setDoorLeaves] = useState({}); // число створок, исправленное вручную: { 'Д-7': 2 }
+  const [doorThreshold, setDoorThreshold] = useState("0,9"); // декоративный порожек, м.п на каждую дверь
+  const [doorSplit, setDoorSplit] = useState(DEFAULT_DOOR_SPLIT); // деление расценки межкомнатной двери, %
 
   const numPages = doc?.numPages || 0;
   const tepPageValid = Number.isInteger(Number(tepPageNo)) && Number(tepPageNo) >= 1 && Number(tepPageNo) <= numPages;
@@ -675,7 +686,11 @@ const VdcArDraftPage = () => {
   useEffect(() => {
     if (ceilingHeight && wallHeight === "") setWallHeight(String(ceilingHeight.value).replace(".", ","));
   }, [ceilingHeight, wallHeight]);
-  const dialogTask = tasks.find((t) => t.key === dialogKey) || null;
+  // задача обмера: из списка работ или подсчёт дверей по контуру квартиры типа (ключ «тип|doors»)
+  const dialogTask = tasks.find((t) => t.key === dialogKey)
+    || (dialogKey && dialogKey.endsWith("|doors")
+      ? { key: dialogKey, code: dialogKey.split("|")[0], roomNo: "", roomName: "Двери", kind: "doors", unit: "шт", label: "Двери квартиры (контур)", works: [] }
+      : null);
   // где на плане искать квартиры типа: подписи осей первой секции с листа первой экспликации
   const flatsHintFor = (code) => {
     const e = layout?.[0];
@@ -684,7 +699,57 @@ const VdcArDraftPage = () => {
     return labels.length ? `на плане листа ${e.page}: ${[...new Set(labels)].join(", ")} (достаточно одной)` : `план — лист ${e.page}`;
   };
 
-  const split = useMemo(() => (result ? splitFirstBlock(result.rows, result.firstId) : null), [result]);
+  // Двери: справочник марок из спецификации (лист с «Спецификацией элементов заполнения…») и метки на планах типовых этажей
+  const doors = useMemo(() => {
+    if (!scan || !layout) return null;
+    let spec = [];
+    for (const pg of scan) {
+      if (!/спецификаци\S*\s+элементов\s+заполнения/i.test(pg.text)) continue;
+      const found = parseDoorSpec(pg.items);
+      if (found.length > spec.length) spec = found;
+    }
+    if (!spec.length) return null;
+    const plans = layout.map((e) => ({ page: e.page, floors: e.floors, items: scan[e.page - 1]?.items || [] }));
+    return buildDoorDirectory(spec, plans);
+  }, [scan, layout]);
+
+  // планы типовых этажей с квартирами — для сверки по этажам
+  const doorPlans = useMemo(() => (scan && layout ? layout.map((e) => ({ page: e.page, floors: e.floors, items: scan[e.page - 1]?.items || [], flats: e.flats })) : []), [scan, layout]);
+  // справочник дверей с категориями и числом створок, исправленными вручную
+  const doorDir = useMemo(
+    () => (doors || []).map((d) => ({ ...d, category: doorCats[d.mark] || d.category, leaves: doorLeaves[d.mark] || d.leaves })),
+    [doors, doorCats, doorLeaves],
+  );
+  const interiorMarks = useMemo(() => doorDir.filter((d) => d.category === "interior").map((d) => d.mark), [doorDir]);
+  const flatTypes = useMemo(() => [...new Set((layout || []).flatMap((e) => e.flats.map((f) => f.code)))], [layout]);
+  // подсчёт по контурам квартир: { тип: { entrance, single, double } } — только для типов, где контур обведён
+  const doorsByContour = useMemo(() => {
+    const out = {};
+    for (const code of flatTypes) {
+      const contours = measureLines[`${code}|doors`] || [];
+      if (!contours.length) continue;
+      const found = contours.flatMap((c) => doorsInContour(scan?.[c.page - 1]?.items || [], c.points, doorDir));
+      out[code] = summarizeDoors(found);
+    }
+    return out;
+  }, [flatTypes, measureLines, scan, doorDir]);
+  // итоговые числа по типам: контур важнее ручного ввода
+  const doorInteriorFinal = useMemo(
+    () => Object.fromEntries(flatTypes.map((c) => [c, doorsByContour[c] ? { single: doorsByContour[c].single, double: doorsByContour[c].double } : doorInterior[c] || {}])),
+    [flatTypes, doorsByContour, doorInterior],
+  );
+  const doorEntranceByType = useMemo(() => Object.fromEntries(Object.entries(doorsByContour).map(([c, v]) => [c, v.entrance])), [doorsByContour]);
+  const doorRate = useMemo(() => findRate("Установка двери", ""), []);
+  const thresholdRate = useMemo(() => findRate("Устройство декоративных порожков", ""), []);
+  const doorCheck = useMemo(() => interiorCheck(doorPlans, interiorMarks, doorInteriorFinal), [doorPlans, interiorMarks, doorInteriorFinal]);
+  // строки по дверям добавляются к работам квартир: входная — одна строка, межкомнатные — по доле расценки
+  const finalRows = useMemo(() => {
+    if (!result) return null;
+    if (!doors || !doorRate) return result.rows;
+    const settings = { entrance: doorEntrance, entranceByType: doorEntranceByType, interior: doorInteriorFinal, split: doorSplit, threshold: doorThreshold };
+    return result.rows.map((r) => ({ ...r, works: { ...r.works, lines: [...r.works.lines.filter((l) => !l.door), ...doorWorkLines(r, settings, doorRate, thresholdRate)] } }));
+  }, [result, doors, doorRate, thresholdRate, doorEntrance, doorEntranceByType, doorInteriorFinal, doorSplit, doorThreshold]);
+  const split = useMemo(() => (finalRows ? splitFirstBlock(finalRows, result.firstId) : null), [finalRows, result]);
   const viewSwitch = (
     <div style={s.row}>
       <button onClick={() => setView("works")} style={view === "works" ? s.tabActive : s.tab}>Работы и расценки</button>
@@ -692,6 +757,30 @@ const VdcArDraftPage = () => {
     </div>
   );
   const otherIds = result ? result.sections.filter((id) => id !== result.firstId) : [];
+
+  // Excel: на каждый блок вкладки «ВДЦ БЛОК N» и «ГПР БЛОК N» (сетка по неделям или по 3 дня, Гант — условным форматированием)
+  const exportExcel = async () => {
+    const start = parseIsoDate(gprStart);
+    const end = parseIsoDate(gprEnd);
+    if (!start || !end) return setExportMsg({ ok: false, text: "Укажите начало и окончание графика." });
+    if (end < start) return setExportMsg({ ok: false, text: "Окончание графика раньше начала." });
+    try {
+      setExportMsg({ ok: true, text: "Формируем файл…" });
+      const { workbook, skipped, grid } = await buildVdcWorkbook({ rows: finalRows, sections: result.sections, schedule: { start, end }, objectName: objectLine(findObjectName(scan)), position: findPosition(scan) || "" });
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `ВДЦ внутренняя отделка ${(fileName || "").replace(/\.pdf$/i, "")}.xlsx`.trim();
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      setExportMsg({ ok: true, text: `Файл сформирован: сетка графика — по ${grid?.step === 3 ? "3 дня" : "неделям"}.${skipped ? ` Строк без объёма или цены не включено: ${skipped}.` : ""}` });
+    } catch (e) {
+      setExportMsg({ ok: false, text: `Не удалось сформировать Excel: ${e.message}` });
+    }
+  };
 
   const copyRows = async (key, rows) => {
     const num = (v) => (v === null || v === undefined ? "" : String(v).replace(".", ","));
@@ -1251,6 +1340,116 @@ const VdcArDraftPage = () => {
             </div>
           )}
 
+          {doors && (
+            <div style={{ ...s.card, marginTop: "16px" }}>
+              <h2 style={s.h2}>Двери из спецификации и планов</h2>
+              <div style={s.meta}>
+                Справочник марок из «Спецификации элементов заполнения проёмов». Категорию подставил по стандарту и размеру — проверьте и при необходимости исправьте.
+                Сверка: число меток на планах типовых этажей × число этажей должно равняться количеству на секцию в спецификации.
+              </div>
+              <div style={{ ...s.row, marginTop: "12px", gap: "16px", alignItems: "flex-start" }}>
+                <div>
+                  <div style={s.groupTitle}>Работы по дверям в ВДЦ{doorRate ? ` · расценка ${doorRate.no}: ${doorRate.priceVat.toLocaleString("ru-RU")} тг с НДС` : ""}</div>
+                  <label style={s.row}>Входных дверей на квартиру <input value={doorEntrance} onChange={(e) => setDoorEntrance(e.target.value)} style={{ ...s.input, width: "60px" }} aria-label="Входных дверей на квартиру" /></label>
+                  <div style={{ ...s.small, margin: "4px 0 8px" }}>Входная: одна строка «Установка входной двери» по полной расценке.</div>
+                  <label style={s.row}>Декоративный порожек, м.п на дверь <input value={doorThreshold} onChange={(e) => setDoorThreshold(e.target.value)} style={{ ...s.input, width: "60px" }} aria-label="Декоративный порожек, м.п на дверь" /></label>
+                  <div style={{ ...s.small, margin: "4px 0 8px" }}>{thresholdRate ? `«Устройство декоративных порожков» — расценка ${thresholdRate.no}: ${thresholdRate.priceVat.toLocaleString("ru-RU")} тг/м.п с НДС, на каждую дверь квартиры.` : ""}</div>
+                  <div style={s.groupTitle}>Межкомнатные двери — расценка делится на три работы (каждая отдельно для одно- и двупольных), %</div>
+                  <div style={s.row}>
+                    <label style={s.row}>устройство двери <input value={doorSplit.door} onChange={(e) => setDoorSplit((c) => ({ ...c, door: e.target.value }))} style={{ ...s.input, width: "56px" }} aria-label="Доля: устройство двери, %" /></label>
+                    <label style={s.row}>откосы <input value={doorSplit.slopes} onChange={(e) => setDoorSplit((c) => ({ ...c, slopes: e.target.value }))} style={{ ...s.input, width: "56px" }} aria-label="Доля: откосы, %" /></label>
+                    <label style={s.row}>замки, защёлки, ручки <input value={doorSplit.locks} onChange={(e) => setDoorSplit((c) => ({ ...c, locks: e.target.value }))} style={{ ...s.input, width: "56px" }} aria-label="Доля: замки, защёлки, ручки, %" /></label>
+                  </div>
+                  {!splitIsValid(doorSplit) && <div style={s.warnBox}>Доли должны давать 100 %, иначе межкомнатные двери в ВДЦ не добавляются.</div>}
+                </div>
+                <div>
+                  <div style={s.groupTitle}>Двери в квартире по типам</div>
+                  {flatTypes.map((c) => {
+                    const byContour = doorsByContour[c];
+                    const setManual = (key, value) => setDoorInterior((cur) => ({ ...cur, [c]: { ...(cur[c] || {}), [key]: value } }));
+                    return (
+                      <div key={c} style={{ ...s.row, marginBottom: "6px" }}>
+                        <b>Тип {c}</b>
+                        <label style={s.row}>однопольных
+                          <input value={byContour ? String(byContour.single) : doorInterior[c]?.single ?? ""} disabled={!!byContour} onChange={(e) => setManual("single", e.target.value)} style={{ ...s.input, width: "52px" }} aria-label={`Однопольных межкомнатных дверей, тип ${c}`} />
+                        </label>
+                        <label style={s.row}>двупольных
+                          <input value={byContour ? String(byContour.double) : doorInterior[c]?.double ?? ""} disabled={!!byContour} onChange={(e) => setManual("double", e.target.value)} style={{ ...s.input, width: "52px" }} aria-label={`Двупольных межкомнатных дверей, тип ${c}`} />
+                        </label>
+                        <button type="button" style={s.btnGhost} onClick={() => setDialogKey(`${c}|doors`)}>{byContour ? "Изменить контур" : "Обвести контур квартиры"}</button>
+                        {byContour && <span style={s.small}>по контуру: входных {byContour.entrance}</span>}
+                      </div>
+                    );
+                  })}
+                  <div style={s.small}>Обведите контур квартиры на плане — двери посчитаются по меткам «Д-N» внутри. Без контура числа вводятся вручную.</div>
+                </div>
+                <div>
+                  <div style={s.groupTitle}>Сверка по этажам</div>
+                  {doorCheck.map((c) => (
+                    <div key={c.page} style={{ fontSize: "13px", color: c.onPlan === c.byInput ? "#1a7f37" : "#c0392b" }}>
+                      Лист {c.page} ({floorsLabel(c.floors)}): на плане {c.onPlan}, по вашим числам {c.byInput} {c.onPlan === c.byInput ? "✓" : "≠"}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div style={s.scroll}>
+                <table style={s.table}>
+                  <thead>
+                    <tr>
+                      <th style={s.th}>Марка</th>
+                      <th style={{ ...s.th, textAlign: "left" }}>Стандарт / наименование</th>
+                      <th style={s.th}>Размер, мм</th>
+                      <th style={s.th}>На секцию (спец.)</th>
+                      <th style={s.th}>По планам</th>
+                      <th style={{ ...s.th, textAlign: "left" }}>Категория</th>
+                      <th style={s.th}>Створок</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {doors.map((d) => (
+                      <tr key={d.mark}>
+                        <td style={{ ...s.td, textAlign: "center", fontWeight: 700 }}>{d.mark}</td>
+                        <td style={s.td}>{d.standard}{d.name ? <div style={s.small}>{d.name}</div> : null}</td>
+                        <td style={{ ...s.td, textAlign: "center" }}>{d.height && d.width ? `${d.height}×${d.width}` : "—"}</td>
+                        <td style={{ ...s.td, textAlign: "center" }}>{d.qtyPerSection ?? "—"}</td>
+                        <td style={{ ...s.td, textAlign: "center", color: d.status === "ok" ? "#1a7f37" : d.status === "mismatch" ? "#c0392b" : "#777" }}>
+                          {d.planQty === null ? "нет на типовых этажах" : `${d.planQty}${d.status === "ok" ? " ✓" : " ≠"}`}
+                        </td>
+                        <td style={s.td}>
+                          <select value={doorCats[d.mark] || d.category} onChange={(e) => setDoorCats((cur) => ({ ...cur, [d.mark]: e.target.value }))} style={s.input} aria-label={`Категория двери ${d.mark}`}>
+                            {Object.entries(DOOR_CATEGORIES).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                          </select>
+                        </td>
+                        <td style={{ ...s.td, textAlign: "center" }}>
+                          {(doorCats[d.mark] || d.category) === "interior" ? (
+                            <select value={doorLeaves[d.mark] || d.leaves} onChange={(e) => setDoorLeaves((cur) => ({ ...cur, [d.mark]: Number(e.target.value) }))} style={s.input} aria-label={`Створок у двери ${d.mark}`}>
+                              <option value={1}>1 (однопольная)</option>
+                              <option value={2}>2 (двупольная)</option>
+                            </select>
+                          ) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div style={{ ...s.card, marginTop: "16px" }}>
+            <h2 style={s.h2}>Excel: ВДЦ и графики производства работ</h2>
+            <div style={s.meta}>
+              Для каждого блока (секции) в файле будут две вкладки: ВДЦ (работы по квартирам без разбивки на помещения, цены с вычетом 10 % на уборку мусора) и ГПР
+              с диаграммой Ганта по блоку целиком. Наименование объекта берётся с титульного листа или штампа чертежа. Срок меньше месяца — сетка по 3 дня, иначе по неделям. Даты работ в файле можно менять — диаграмма перекрасится.
+            </div>
+            <div style={{ ...s.row, marginTop: "10px", gap: "14px", alignItems: "center" }}>
+              <label style={s.row}>Начало графика <input type="date" value={gprStart} onChange={(e) => setGprStart(e.target.value)} style={{ ...s.input, width: "150px" }} aria-label="Начало графика" /></label>
+              <label style={s.row}>Окончание графика <input type="date" value={gprEnd} onChange={(e) => setGprEnd(e.target.value)} style={{ ...s.input, width: "150px" }} aria-label="Окончание графика" /></label>
+              <button onClick={exportExcel} style={s.btn}>Скачать Excel</button>
+            </div>
+            {exportMsg && <div style={exportMsg.ok ? s.okBox : s.warnBox}>{exportMsg.text}</div>}
+          </div>
+
           <div style={{ ...s.actions, marginTop: "16px" }}>
             <button onClick={() => setStep(tasks.length ? 8 : 7)} style={s.btnGhost}>{tasks.length ? "← К обмеру" : "← К ведомости отделки"}</button>
             <button onClick={reset} style={s.btnGhost}>Начать заново</button>
@@ -1272,6 +1471,7 @@ const VdcArDraftPage = () => {
           onCalibrate={(pageNo, k) => setCalibrations((cur) => ({ ...cur, [pageNo]: k }))}
           height={wallHeight}
           onHeightChange={setWallHeight}
+          doorDirectory={doorDir}
           onClose={() => setDialogKey(null)}
         />
       )}

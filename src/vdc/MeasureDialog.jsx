@@ -8,16 +8,17 @@ import { distance, metersPerUnitFromDistance, metersPerUnitFromScale, polylineLe
 import { POLAR_STEPS } from "../takeoff/polar";
 import { findAxisRows } from "./plan";
 import { OPENING_TYPES, parseManual, suggestScale, taskTotal } from "./measure";
+import { doorsInContour, DOOR_CATEGORIES, summarizeDoors } from "./doors";
 
 const SCALES = [20, 25, 50, 75, 100, 150, 200, 250, 500];
 const fmt = (v) => Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const newId = () => `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 
 export default function MeasureDialog({
-  doc, numPages, task, flatsHint, initialPage, itemsOf, lines, onLinesChange, calibrations, onCalibrate, height, onHeightChange, onClose,
+  doc, numPages, task, flatsHint, initialPage, itemsOf, lines, onLinesChange, calibrations, onCalibrate, height, onHeightChange, onClose, doorDirectory,
 }) {
   const [pageNo, setPageNo] = useState(String(initialPage || 1));
-  const [mode, setMode] = useState("select"); // select | line | opening | calibrate
+  const [mode, setMode] = useState(task.kind === "doors" ? "contour" : "select"); // select | line | rect | opening | calibrate | contour
   const [selectedId, setSelectedId] = useState(null);
   const [calibPoints, setCalibPoints] = useState(null);
   const [calibMeters, setCalibMeters] = useState("");
@@ -31,6 +32,7 @@ export default function MeasureDialog({
   const pageValid = Number.isInteger(page) && page >= 1 && page <= numPages;
   const mpu = pageValid ? calibrations[page] || null : null;
   const isWalls = task.kind === "walls";
+  const isDoors = task.kind === "doors"; // подсчёт дверей по контуру квартиры: калибровка и масштаб не нужны
 
   // предложение масштаба по размеру между крайними осями — пользователь подтверждает
   const suggestion = useMemo(() => {
@@ -42,25 +44,55 @@ export default function MeasureDialog({
 
   const total = useMemo(() => taskTotal(lines, calibrations, { kind: task.kind, height }), [lines, calibrations, task.kind, height]);
   const pageLines = useMemo(
-    () => lines.filter((l) => l.page === page).map((l) => ({ ...l, calc: isWalls ? "wall" : "length", height: isWalls ? (l.deduct ? l.height : height) : undefined })),
-    [lines, page, isWalls, height],
+    () => lines.filter((l) => l.page === page).map((l) => (isDoors ? l : { ...l, calc: isWalls ? "wall" : "length", height: isWalls ? (l.deduct ? l.height : height) : undefined })),
+    [lines, page, isWalls, isDoors, height],
   );
   const openings = useMemo(() => lines.filter((l) => l.deduct), [lines]);
 
+  // подсчёт дверей по контурам: метки «Д-N» внутри обведённой квартиры
+  const foundByLine = useMemo(() => {
+    const map = new Map();
+    if (!isDoors) return map;
+    for (const l of lines) map.set(l.id, doorsInContour(itemsOf(l.page), l.points, doorDirectory));
+    return map;
+  }, [isDoors, lines, itemsOf, doorDirectory]);
+  const foundAll = useMemo(() => [...foundByLine.values()].flat(), [foundByLine]);
+  const doorSummary = useMemo(() => summarizeDoors(foundAll), [foundAll]);
+  const DOOR_COLORS = { entrance: "#c62828", interior: "#1565c0", group: "#6a1b9a", fire: "#e65100", other: "#777" };
+  const doorMarks = useMemo(
+    () => (isDoors ? lines.filter((l) => l.page === page).flatMap((l) => foundByLine.get(l.id) || []).map((d) => ({
+      x: d.x, y: d.y, color: DOOR_COLORS[d.category] || "#777", label: `${d.mark}${d.leaves === 2 ? " (2 ств.)" : ""}`,
+    })) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isDoors, lines, page, foundByLine],
+  );
+
   // подпись линии на холсте: у проёма со знаком «−»
   const labelFor = useCallback((m) => {
+    if (isDoors) return `${(foundByLine.get(m.id) || []).length} дв.`;
     const t = taskTotal([m], calibrations, { kind: task.kind, height });
     if (t.uncounted) return "";
     return m.deduct ? `−${fmt(t.deducted)} ${task.unit}` : `${fmt(t.gross)} ${task.unit}`;
-  }, [calibrations, task.kind, task.unit, height]);
+  }, [calibrations, task.kind, task.unit, height, isDoors, foundByLine]);
 
   const onFinish = useCallback(({ kind, points }) => {
+    if (isDoors) {
+      if (kind === "area" && mode === "contour") onLinesChange([...lines, { id: newId(), page, kind: "area", points, count: 1 }]);
+      return;
+    }
+    if (kind === "rect" && mode === "rect") {
+      // прямоугольник по двум точкам диагонали → замкнутая линия по периметру (4 стороны)
+      const [a, b] = points;
+      const contour = [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }, a];
+      onLinesChange([...lines, { id: newId(), page, kind: "line", points: contour, count: 1 }]);
+      return;
+    }
     if (kind !== "line") return;
     if (mode === "line") onLinesChange([...lines, { id: newId(), page, kind: "line", points, count: 1 }]);
     else if (mode === "opening") {
       onLinesChange([...lines, { id: newId(), page, kind: "line", points, count: 1, deduct: true, openingType, height: isWalls ? openingHeight : undefined }]);
     }
-  }, [mode, lines, page, onLinesChange, openingType, openingHeight, isWalls]);
+  }, [mode, lines, page, onLinesChange, openingType, openingHeight, isWalls, isDoors]);
 
   const onEdit = useCallback((id, patch) => onLinesChange(lines.map((l) => (l.id === id ? { ...l, ...patch } : l))), [lines, onLinesChange]);
   const removeLine = (id) => {
@@ -119,10 +151,12 @@ export default function MeasureDialog({
 
         <div style={s.hint}>
           {flatsHint}
-          {isWalls
-            ? " Обведите линией стены помещения по периметру (щёлкайте по углам, двойной щелчок или Enter — конец линии); площадь = длина × высота от пола до потолка. Двери, окна и другие проёмы отметьте отдельно кнопкой «Проём» — их площадь вычтется."
+          {isDoors
+            ? " Обведите контур квартиры на плане (щёлкайте по углам, двойной щелчок или Enter — конец контура). Двери — это метки «Д-N» внутри контура: они подсвечиваются на листе и считаются по категориям и числу створок. Одного контура на тип квартиры достаточно: результат подставится во все квартиры этого типа."
+            : isWalls
+            ? " Обведите линией стены помещения по периметру (щёлкайте по углам, двойной щелчок или Enter — конец линии) или прямоугольником — двумя щелчками по противоположным углам; площадь = длина × высота от пола до потолка. Двери, окна и другие проёмы отметьте отдельно кнопкой «Проём» — их площадь вычтется."
             : " Обведите линией плинтус вдоль стен (щёлкайте по углам, двойной щелчок или Enter — конец линии). Дверные проёмы можно не обходить, а отметить кнопкой «Проём» — их ширина вычтется. Линий может быть несколько — они сложатся."}
-          {` Удерживайте Shift — линия зафиксируется по углам, кратным ${polarStep}°.`}
+          {!isDoors && ` Удерживайте Shift — линия зафиксируется по углам, кратным ${polarStep}°.`}
         </div>
 
         <div style={s.bar}>
@@ -131,6 +165,7 @@ export default function MeasureDialog({
             <input type="number" min={1} max={numPages} value={pageNo} onChange={(e) => { setPageNo(e.target.value); setSelectedId(null); }} style={s.num} />
             <span style={s.muted}>из {numPages}</span>
           </label>
+          {!isDoors && (<>
           <span style={mpu ? s.ok : s.warn}>{mpu ? "✓ лист откалиброван" : "лист не откалиброван — без этого длины не считаются"}</span>
           {toolBtn("calibrate", "📏 Калибровка по размеру", "Щёлкните по двум концам размера с известной длиной (например, 3200 мм между осями)")}
           <label style={s.row}>
@@ -140,10 +175,21 @@ export default function MeasureDialog({
               {SCALES.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </label>
+          </>)}
         </div>
 
         <div style={s.bar}>
+          {isDoors ? (
+            <>
+              {toolBtn("contour", "⬠ Обвести контур квартиры", "Щёлкайте по углам квартиры; двойной щелчок или Enter — конец контура")}
+              {toolBtn("select", "✋ Прокрутка / выбор", "Перетаскивание листа; выбор контура — Delete удалит")}
+              <button type="button" style={s.tool} disabled={!selectedId} onClick={() => removeLine(selectedId)}>Удалить выбранный</button>
+              <button type="button" style={s.tool} disabled={!lines.length} onClick={() => { onLinesChange([]); setSelectedId(null); }}>Очистить всё</button>
+            </>
+          ) : (
+          <>
           {toolBtn("line", isWalls ? "✏️ Обвести стены" : "✏️ Обвести", "Линия по точкам")}
+          {toolBtn("rect", isWalls ? "▭ Стены прямоугольником" : "▭ Прямоугольник", "Два щелчка по противоположным углам — контур по периметру прямоугольника")}
           {toolBtn("opening", "🚪 Проём (вычет)", "Два щелчка по краям проёма (ширина), двойной щелчок по второму краю — готово")}
           {isWalls && (
             <>
@@ -168,9 +214,11 @@ export default function MeasureDialog({
           </label>
           <button type="button" style={s.tool} disabled={!selectedId} onClick={() => removeLine(selectedId)}>Удалить выбранную</button>
           <button type="button" style={s.tool} disabled={!lines.length} onClick={() => { onLinesChange([]); setSelectedId(null); }}>Очистить всё</button>
+          </>
+          )}
         </div>
 
-        {suggestion && !mpu && (
+        {!isDoors && suggestion && !mpu && (
           <div style={s.suggest}>
             Предложено: масштаб 1:{suggestion.scale} (по размеру {suggestion.dimensionMm.toLocaleString("ru-RU")} мм между крайними осями). Верно, если PDF сохранён в натуральную величину листа.
             <button type="button" style={s.accept} onClick={() => onCalibrate(page, metersPerUnitFromScale(suggestion.scale))}>Принять масштаб 1:{suggestion.scale}</button>
@@ -193,7 +241,9 @@ export default function MeasureDialog({
               pageNumber={page}
               measurements={pageLines}
               selectedId={selectedId}
-              mode={mode}
+              mode={isDoors && mode === "contour" ? "area" : mode}
+              noScale={isDoors}
+              marks={isDoors ? doorMarks : undefined}
               deduct={mode === "opening"}
               polarStep={polarStep}
               metersPerUnit={mpu}
@@ -234,16 +284,31 @@ export default function MeasureDialog({
           </div>
         )}
 
+        {isDoors && (
+          <div style={s.openings}>
+            <div style={{ ...s.openingsTitle, color: "#1a5fb4" }}>Найдено в контуре ({foundAll.length})</div>
+            {foundAll.length === 0 && <div style={s.muted}>Обведите контур квартиры — двери появятся здесь.</div>}
+            {Object.entries(foundAll.reduce((acc, d) => ({ ...acc, [d.mark]: [...(acc[d.mark] || []), d] }), {})).map(([mark, list]) => (
+              <div key={mark} style={s.openingRow}>
+                <b>{mark}</b>
+                <span>{DOOR_CATEGORIES[list[0].category] || "—"}{list[0].category === "interior" ? `, ${list[0].leaves === 2 ? "двупольная" : "однопольная"}` : ""}</span>
+                <span>{list.length} шт.</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div style={s.bottom}>
+          {isDoors && <span style={s.total}>Входных: {doorSummary.entrance} · межкомнатных однопольных: {doorSummary.single} · двупольных: {doorSummary.double}</span>}
           {isWalls && (
             <label style={s.row}>
               Высота от пола до потолка, м
               <input value={height} onChange={(e) => onHeightChange(e.target.value)} style={{ ...s.num, width: 80 }} aria-label="Высота от пола до потолка, м" />
             </label>
           )}
-          {total.deducted > 0 && <span style={s.muted}>{isWalls ? "Стены" : "Длина"} {fmt(total.gross)} − проёмы {fmt(total.deducted)} {task.unit}</span>}
-          <span style={s.total}>Итого по задаче: {total.total ? `${fmt(total.total)} ${task.unit}` : "—"}</span>
-          {total.uncounted > 0 && <span style={s.warn}>{total.uncounted} лин. не посчитано (нет калибровки{isWalls ? " или высоты" : ""})</span>}
+          {!isDoors && total.deducted > 0 && <span style={s.muted}>{isWalls ? "Стены" : "Длина"} {fmt(total.gross)} − проёмы {fmt(total.deducted)} {task.unit}</span>}
+          {!isDoors && <span style={s.total}>Итого по задаче: {total.total ? `${fmt(total.total)} ${task.unit}` : "—"}</span>}
+          {!isDoors && total.uncounted > 0 && <span style={s.warn}>{total.uncounted} лин. не посчитано (нет калибровки{isWalls ? " или высоты" : ""})</span>}
           <span style={s.muted}>{status}</span>
         </div>
       </div>

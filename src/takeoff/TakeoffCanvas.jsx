@@ -50,7 +50,7 @@ function lineLabelPoint(points) {
 const TakeoffCanvas = forwardRef(function TakeoffCanvas(
   {
     pdf, pageNumber, measurements, selectedId, mode, deduct, metersPerUnit, labelFor, colorFor, onSelect, onFinish, onCalibrated, onStatus,
-    onEdit, revisionView, compareLayers, alignSnap, onAlignClick, marks, extent, polarStep = 90,
+    onEdit, revisionView, compareLayers, alignSnap, onAlignClick, marks, extent, polarStep = 90, noScale,
   },
   ref
 ) {
@@ -492,7 +492,7 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
                 ))}
               </g>
             )}
-            {drawing && hover && liveText && (
+            {drawing && hover && liveText && !noScale && (
               <g transform={`translate(${hover.x} ${hover.y}) scale(${px(1)})`} pointerEvents="none">
                 <rect x={14} y={8} width={liveText.length * 7.4 + 12} height={22} rx={4} fill={draftColor} />
                 <text x={20} y={23} fontSize={12} fontWeight={600} fill="#fff">{liveText}</text>

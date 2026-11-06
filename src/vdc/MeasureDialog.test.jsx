@@ -14,6 +14,7 @@ jest.mock("../takeoff/TakeoffCanvas", () => {
         <div data-testid="canvas-props">{JSON.stringify({ mode, polarStep, deduct })}</div>
         <button onClick={() => onFinish({ kind: "line", points: [{ x: 0, y: 0 }, { x: 25, y: 0 }] })}>нарисовать-короткую</button>
         <button onClick={() => onFinish({ kind: "line", points: [{ x: 0, y: 0 }, { x: 100, y: 0 }] })}>нарисовать-линию</button>
+        <button onClick={() => onFinish({ kind: "rect", points: [{ x: 0, y: 0 }, { x: 100, y: 50 }] })}>нарисовать-прямоугольник</button>
         <button onClick={() => onCalibrated([{ x: 0, y: 0 }, { x: 91, y: 0 }])}>отметить-размер</button>
         <div data-testid="labels">{measurements.map((m) => labelFor(m)).join("|")}</div>
       </div>
@@ -119,13 +120,22 @@ describe("окно обмера", () => {
     expect(screen.getByText(/Итого по задаче: 8,27 м²/)).toBeTruthy();
   });
 
-  it("тип проёма подставляет типовую высоту: дверь 2,1, окно 1,5, витраж — вводится вручную", () => {
+  it("тип проёма подставляет типовую высоту: дверь 2,1, окно 1,5, витраж 1,82 (правится)", () => {
     render(<Harness task={wallsTask} />);
     expect(screen.getByLabelText("Высота проёма, м").value).toBe("2,1");
     fireEvent.change(screen.getByLabelText("Тип проёма"), { target: { value: "window" } });
     expect(screen.getByLabelText("Высота проёма, м").value).toBe("1,5");
     fireEvent.change(screen.getByLabelText("Тип проёма"), { target: { value: "glazing" } });
-    expect(screen.getByLabelText("Высота проёма, м").value).toBe("");
+    expect(screen.getByLabelText("Высота проёма, м").value).toBe("1,82");
+  });
+
+  it("прямоугольник по двум точкам: контур по периметру, стены = периметр × высота", () => {
+    render(<Harness task={wallsTask} />);
+    fireEvent.click(screen.getByText("Принять масштаб 1:100"));
+    fireEvent.click(screen.getByText(/▭ Стены прямоугольником/));
+    expect(JSON.parse(screen.getByTestId("canvas-props").textContent)).toMatchObject({ mode: "rect" });
+    fireEvent.click(screen.getByText("нарисовать-прямоугольник")); // 100×50 пунктов: периметр 300 п. = 10,58 м
+    expect(screen.getByText(/Итого по задаче: 28,79 м²/)).toBeTruthy(); // 10,5833 × 2,72
   });
 
   it("плинтус: проём вычитает только ширину, высота не спрашивается", () => {

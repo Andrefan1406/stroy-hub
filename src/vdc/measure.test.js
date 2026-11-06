@@ -96,8 +96,8 @@ describe("проёмы: вычет из площади стен и длины п
     expect(taskTotal([wall, big], { 11: mpu }, { kind: "walls", height: "2,72" }).total).toBe(0);
   });
 
-  it("одно лишь число типов проёмов: у витража высоту нужно указать", () => {
+  it("типовые высоты проёмов: дверь 2,1, витраж 1,82 (правится)", () => {
     expect(OPENING_TYPES.door.height).toBe("2,1");
-    expect(OPENING_TYPES.glazing.height).toBe("");
+    expect(OPENING_TYPES.glazing.height).toBe("1,82");
   });
 });
