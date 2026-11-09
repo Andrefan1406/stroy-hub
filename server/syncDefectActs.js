@@ -20,7 +20,8 @@ const { EMBEDDING_DIM } = require('./embeddings');
 const CSV_URL =
   'https://docs.google.com/spreadsheets/d/e/2PACX-1vSXksChImiQS67MYyuC7VKhOUKukv6KhKihkSk5FOVadZgHzsgb0tmq65U0JnaRbQDXhSMcZ914KQDq/pub?gid=0&single=true&output=csv';
 
-const CRON_SCHEDULE = process.env.DEFECT_ACTS_SYNC_CRON || '0 */6 * * *';
+const { SYNC_TZ, DEFAULT_CRON } = require('./syncSchedule');
+const CRON_SCHEDULE = process.env.DEFECT_ACTS_SYNC_CRON || DEFAULT_CRON.defectActs;
 
 // Коллекция Qdrant для семантического поиска по свободному тексту актов
 // (см. server/qdrantClient.js, server/embeddings.js). Название совпадает с
@@ -306,7 +307,7 @@ function startDefectActsSync() {
   runSyncOnce().catch((err) => console.error('[defect-acts-sync] ошибка стартового синка:', err.message));
   cron.schedule(CRON_SCHEDULE, () => {
     runSyncOnce().catch((err) => console.error('[defect-acts-sync] ошибка планового синка:', err.message));
-  });
+  }, { timezone: SYNC_TZ });
 }
 
 module.exports = { startDefectActsSync, runSyncOnce, CSV_URL };

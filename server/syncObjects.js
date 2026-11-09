@@ -9,7 +9,8 @@ const { getWriteDb } = require('./db');
 const CSV_URL =
   'https://docs.google.com/spreadsheets/d/1rwFYAqu7ORfB3oSslgziytD-5A7x5O6eQs5W9kjKBtQ/export?format=csv&gid=0';
 
-const CRON_SCHEDULE = process.env.OBJECTS_SYNC_CRON || '0 */6 * * *';
+const { SYNC_TZ, DEFAULT_CRON } = require('./syncSchedule');
+const CRON_SCHEDULE = process.env.OBJECTS_SYNC_CRON || DEFAULT_CRON.objects;
 
 // Реестр начинается с двух пустых строк оформления, реальный заголовок — третья строка.
 const HEADER_ROW_INDEX = 2;
@@ -128,7 +129,7 @@ function startObjectsSync() {
   runSyncOnce().catch((err) => console.error('[objects-sync] ошибка стартового синка:', err.message));
   cron.schedule(CRON_SCHEDULE, () => {
     runSyncOnce().catch((err) => console.error('[objects-sync] ошибка планового синка:', err.message));
-  });
+  }, { timezone: SYNC_TZ });
 }
 
 module.exports = { startObjectsSync, runSyncOnce, CSV_URL };

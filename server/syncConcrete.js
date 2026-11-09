@@ -13,7 +13,8 @@ const { getWriteDb } = require('./db');
 const CSV_URL =
   'https://docs.google.com/spreadsheets/d/e/2PACX-1vTSu48SFcG0-dZpjkW3Z3uN3jJF0QPkpFUroD1YHWRj_8jy7ZwND096Rgd60fDiQGPHMOY8TDVy-_fl/pub?gid=0&single=true&output=csv';
 
-const CRON_SCHEDULE = process.env.CONCRETE_SYNC_CRON || '0 */2 * * *';
+const { SYNC_TZ, DEFAULT_CRON } = require('./syncSchedule');
+const CRON_SCHEDULE = process.env.CONCRETE_SYNC_CRON || DEFAULT_CRON.concrete;
 
 // "12,5" -> 12.5; пусто/мусор -> null
 function parseVolume(value) {
@@ -185,7 +186,7 @@ function startConcreteSync() {
   runSyncOnce().catch((err) => console.error('[concrete-sync] ошибка стартового синка:', err.message));
   cron.schedule(CRON_SCHEDULE, () => {
     runSyncOnce().catch((err) => console.error('[concrete-sync] ошибка планового синка:', err.message));
-  });
+  }, { timezone: SYNC_TZ });
 }
 
 module.exports = { startConcreteSync, runSyncOnce, CSV_URL };
