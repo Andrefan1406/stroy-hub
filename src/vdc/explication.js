@@ -8,6 +8,7 @@ const rowText = (row) => row.tokens.map((t) => t.str).join(" ").replace(/\s+/g, 
 const TITLE_RE = /экспликаци\S*\s+помещени\S*\s+(.+?)\s+этаж\S*\s+на\s+(.+)$/i;
 const TYPE_CODE = /^\d+[а-яa-z]?$/i;
 const INT = /^\d+$/;
+const COMMON_NO = /^\d+\s?[а-яa-z]?$/i;
 const MAX_FLOOR = 200;
 
 // «2...6-го», «1-го», «7…9-го», «2-6-го» → [2..6]
@@ -103,5 +104,17 @@ export function parseExplication(items) {
       rooms.push({ no, name, areas });
     }
   }
-  return { title: title.text, floors: title.floors, scope: title.scope, types, rooms, planLimitX: leftX - 20 };
+  // общие помещения этажа (ниже сводных строк): «13 | Внеквартирный коридор | 24,48»; «-» вместо площади — помещение без площади (шахта лифта)
+  const commonRooms = [];
+  for (const r of rows) {
+    if (r.y <= qtyRow.y + 2) continue;
+    if (squash(r.tokens.map((t) => t.str).join("")).includes("итогоплощадьпомещенийобщегоназначения")) break;
+    const left = r.tokens.filter((t) => t.x < firstCol - 30);
+    const no = left[0] && COMMON_NO.test(left[0].str.trim()) ? left[0].str.trim().replace(/\s+/g, "") : null;
+    const name = left.slice(1).map((t) => t.str.trim()).join(" ").replace(/\s+/g, " ").trim();
+    if (!no || !/[A-Za-zА-Яа-яЁё]/.test(name)) continue;
+    const v = r.tokens.find((t) => t.x >= firstCol - 30 && /^\d+(?:,\d+)?$/.test(t.str.trim()));
+    commonRooms.push({ no, name, area: v ? Number(v.str.trim().replace(",", ".")) : null });
+  }
+  return { title: title.text, floors: title.floors, scope: title.scope, types, rooms, commonRooms, planLimitX: leftX - 20 };
 }

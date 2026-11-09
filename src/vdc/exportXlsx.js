@@ -155,7 +155,7 @@ function addVdcSheet(wb, block, objectName, position) {
       const price = priceAfterGarbage(it.priceVat);
       ws.getCell(r, 1).value = n;
       ws.getCell(r, 2).value = block.id;
-      ws.getCell(r, 3).value = row.floor;
+      ws.getCell(r, 3).value = row.levelLabel || row.floor;
       ws.getCell(r, 4).value = row.label;
       ws.getCell(r, 5).value = it.work;
       ws.getCell(r, 6).value = it.unit;

@@ -149,3 +149,107 @@ export function splitFirstBlock(rows, firstId) {
     others: rows.filter((r) => r.section !== firstId),
   };
 }
+
+// ---------- Общие помещения: на каждом этаже секции две группы — «Лестница» и «МОП» ----------
+// Группы обмера: у МОП плинтус обмеряется по помещениям (одинаковые на разных этажах — один раз), у лестницы кровля отличается от этажей и чердака
+export const COMMON_MEASURE_LABELS = {
+  mop: "МОП — общие помещения этажей",
+  stairs: "Лестница — элементы (марши и площадки)",
+  "stairs-roof": "Лестница — план кровли",
+};
+export const COMMON_GROUPS = [
+  { code: "stairs", label: "Лестница" },
+  { code: "mop", label: "МОП" },
+];
+const noKey = (no) => String(no ?? "").replace(/\s+/g, "").toLowerCase();
+const isStairs = (name) => /лестнич/i.test(name);
+const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+
+// Общие помещения этажа берём из экспликации (номер, название, площадь), виды отделки — из группы
+// «Помещения являющиеся общим имуществом N-M этаж» ведомости отделки: там площади даны на секцию за ВСЕ этажи группы,
+// поэтому на один этаж делим на число этажей, где помещение есть по экспликациям.
+// common: результат parseFinishing(...).common (объединённый по листам); legend — виды отделки.
+// → { rows, warnings }; строки с признаком common: true, как квартиры (rooms, finish), но без количества квартир.
+export function buildCommonRows({ sections, explications, common, legend }) {
+  const warnings = [];
+  const groups = common || [];
+  const usable = (explications || []).filter((e) => e.scope.kind !== "several" && e.scope.kind !== "house");
+  if (!usable.some((e) => Array.isArray(e.commonRooms) && e.commonRooms.length)) {
+    return { rows: [], warnings: usable.length && !usable.some((e) => Array.isArray(e.commonRooms)) ? ["Общие помещения не прочитаны: заново прочитайте экспликации (шаг 4)."] : [] };
+  }
+  if (!groups.length) return { rows: [], warnings: ["В ведомости отделки не найдена группа «Помещения, являющиеся общим имуществом» — общие помещения не добавлены."] };
+
+  const titleOf = (id) => legend?.[id]?.title || "";
+  const textOf = (id) => legend?.[id]?.text || "";
+  const floors = [...new Set(usable.flatMap((e) => e.floors))].sort((a, b) => a - b);
+  const pick = (section, floor) => {
+    const covering = usable.filter((e) => e.floors.includes(floor));
+    return covering.find((e) => e.scope.id === section) || covering.find((e) => e.scope.id === null) || null;
+  };
+
+  const rows = [];
+  const missing = new Set();
+  sections.forEach((section, sectionIndex) => {
+    for (const floor of floors) {
+      const expl = pick(section, floor);
+      if (!expl || !expl.commonRooms?.length) continue;
+      const group = groups.find((g) => g.floors.includes(floor));
+      if (!group) {
+        warnings.push(`Секция ${section}, этаж ${floor}: нет группы общих помещений в ведомости отделки.`);
+        continue;
+      }
+      const finishingOf = new Map(group.rooms.map((r) => [noKey(r.room), r]));
+      // сколько этажей группы содержат помещение с этим номером (по экспликациям этой секции)
+      const floorsWith = (no) => group.floors.filter((f) => pick(section, f)?.commonRooms?.some((r) => noKey(r.no) === noKey(no))).length;
+      const roomsOf = (isGroup) => expl.commonRooms
+        .filter((r) => isGroup(r.name))
+        .map((r) => {
+          const fin = finishingOf.get(noKey(r.no));
+          const n = Math.max(1, floorsWith(r.no));
+          if (!fin) missing.add(`${r.no} ${r.name}`);
+          const perFloor = (v) => round2(v / n);
+          const ceilingArea = r.area ?? (fin?.ceiling ? perFloor(fin.ceiling.flat) : null);
+          return {
+            no: String(r.no),
+            name: r.name,
+            ceiling: fin?.ceiling ? { id: fin.ceiling.id, area: ceilingArea ?? perFloor(fin.ceiling.flat), title: titleOf(fin.ceiling.id), text: textOf(fin.ceiling.id) } : null,
+            walls: (fin?.walls || []).map((w) => ({ id: w.id, area: perFloor(w.flat), title: titleOf(w.id), text: textOf(w.id) })),
+          };
+        });
+      COMMON_GROUPS.forEach(({ code, label }, gi) => {
+        const rooms = roomsOf(code === "stairs" ? isStairs : (name) => !isStairs(name));
+        if (!rooms.length) return;
+        const acc = new Map();
+        const add = (element, id, area) => {
+          const key = `${element}|${id}`;
+          acc.set(key, { element, id, area: (acc.get(key)?.area || 0) + area });
+        };
+        for (const r of rooms) {
+          if (r.ceiling) add("ceiling", r.ceiling.id, r.ceiling.area);
+          for (const w of r.walls) add("walls", w.id, w.area);
+        }
+        const finish = [...acc.values()]
+          .map((x) => ({ ...x, area: round2(x.area), title: titleOf(x.id) }))
+          .sort((a, b) => (a.element === b.element ? naturalCompare(a.id, b.id) : a.element === "ceiling" ? -1 : 1));
+        rows.push({
+          common: true, section, sectionIndex, floor, flatIndex: 1000 + gi, code, mcode: code, type: label, axes: "", label, qty: 1, page: expl.page, rooms, finish,
+        });
+      });
+    }
+  });
+  // чердак и кровля: лестница на чердаке такая же, как на этажах (копия верхнего этажа), на кровле другая — отделка не известна,
+  // считаем только то, что обмеряется (подступенки и плинтус)
+  sections.forEach((section, sectionIndex) => {
+    const top = rows.filter((r) => r.section === section && r.code === "stairs").sort((a, b) => b.floor - a.floor)[0];
+    if (!top) return;
+    const copy = (extra) => ({ ...top, rooms: top.rooms.map((r) => ({ ...r, walls: [...r.walls] })), finish: [...top.finish], ...extra });
+    // уровень строки в лестнице: 1 этаж, верхний этаж (последний марш малый), типовой; чердак — верхняя этажная площадка
+    const stairRows = rows.filter((r) => r.section === section && r.code === "stairs");
+    const lo = Math.min(...stairRows.map((r) => r.floor));
+    for (const r of stairRows) r.stairLevel = r.floor === lo && r.floor === top.floor ? "firstLast" : r.floor === lo ? "first" : r.floor === top.floor ? "last" : "mid";
+    rows.push(copy({ floor: top.floor + 1, flatIndex: 1002, levelLabel: "Чердак", label: "Лестница (чердак)", mcode: "stairs", stairLevel: "attic" }));
+    rows.push(copy({ floor: top.floor + 2, flatIndex: 1003, levelLabel: "Кровля", label: "Лестница (кровля)", mcode: "stairs-roof", stairLevel: "roof", rooms: [], finish: [] }));
+  });
+  if (missing.size) warnings.push(`Общие помещения без отделки в ведомости: ${[...missing].join("; ")}.`);
+  return { rows, warnings };
+}

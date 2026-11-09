@@ -166,5 +166,12 @@
     "unit": "м2",
     "priceNoVat": 500,
     "priceVat": 580
+  },
+  {
+    "no": "2.25",
+    "name": "Декоративная окраска стен",
+    "unit": "м2",
+    "priceNoVat": 1810.34,
+    "priceVat": 2100
   }
 ]

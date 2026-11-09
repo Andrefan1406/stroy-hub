@@ -150,6 +150,40 @@ describe("окно обмера", () => {
     expect(screen.getByText(/Итого по задаче: 2,65 м/)).toBeTruthy();
   });
 
+  it("площадь марша или площадки: есть «Прямоугольник» по двум точкам, площадь = ширина × длина", () => {
+    let state;
+    const stairTask = { key: "stairs|flight|stairarea", code: "stairs", roomNo: "flight", roomName: "Марш (типовой)", kind: "stairarea", unit: "м²", label: "Площадь пола (контуры на плане)", common: true, element: true, works: [] };
+    render(<Harness task={stairTask} onState={(st) => { state = st; }} />);
+    expect(screen.getByText(/⬠ Обвести марш \/ площадку/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Принять масштаб 1:100"));
+    fireEvent.click(screen.getByText(/▭ Прямоугольник/));
+    expect(JSON.parse(screen.getByTestId("canvas-props").textContent).mode).toBe("rect");
+    fireEvent.click(screen.getByText("нарисовать-прямоугольник")); // 100×50 пунктов на листе 1:100
+    expect(state.lines).toHaveLength(1);
+    expect(state.lines[0]).toMatchObject({ kind: "area" });
+    expect(state.lines[0].points).toHaveLength(4);
+    // 100 п. = 3,53 м, 50 п. = 1,76 м → 6,23 м²
+    expect(screen.getByText(/Итого по задаче: 6,2\d м²/)).toBeTruthy();
+    // второй прямоугольник складывается с первым
+    fireEvent.click(screen.getByText("нарисовать-прямоугольник"));
+    expect(screen.getByText(/Итого по задаче: 12,4\d м²/)).toBeTruthy();
+  });
+
+  it("марш: обводится одна ступень, указывается число ступеней — площадь и подступенки считаются вместе", () => {
+    let state;
+    const stepsTask = { key: "stairs|flight|steps", code: "stairs", roomNo: "flight", roomName: "Марш (типовой)", kind: "steps", unit: "м²", label: "Ступень и число ступеней", common: true, element: true, works: [] };
+    render(<Harness task={stepsTask} onState={(st) => { state = st; }} />);
+    fireEvent.click(screen.getByText("Принять масштаб 1:100"));
+    fireEvent.click(screen.getByText(/▭ Прямоугольник/));
+    fireEvent.click(screen.getByText("нарисовать-прямоугольник")); // ступень 100×50 пунктов = 3,53 × 1,76 м
+    expect(state.lines).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText("Число ступеней для контура 1"), { target: { value: "9" } });
+    expect(state.lines[0].count).toBe(9);
+    // проступи 3,53 × 1,76 × 9 ≈ 56,0; подступенки 3,53 × 0,15 × 9 ≈ 4,8
+    expect(screen.getByText(/проступи 5\d,\d\d м² \+ подступенки 4,\d\d м²/)).toBeTruthy();
+    expect(screen.getByText(/Итого по задаче: 6\d,\d\d м²/)).toBeTruthy();
+  });
+
   it("полярное отслеживание: по умолчанию шаг 45°, шаг передаётся холсту и попадает в подсказку", () => {
     render(<Harness task={plinthTask} />);
     expect(JSON.parse(screen.getByTestId("canvas-props").textContent).polarStep).toBe(45);

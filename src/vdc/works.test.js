@@ -14,7 +14,7 @@ import rates from "./data/rates.json";
 
 describe("расценки и правила из файла", () => {
   it("24 расценки на внутреннюю отделку, цена с НДС = цена без НДС × 1,16", () => {
-    expect(rates).toHaveLength(24);
+    expect(rates).toHaveLength(25);
     expect(rates.every((r) => Math.abs(r.priceNoVat * 1.16 - r.priceVat) < 0.5)).toBe(true);
   });
 
@@ -180,8 +180,14 @@ describe("обмер: подстановка в ВДЦ", () => {
 
   it("стены лоджии по обмеру дают шпатлёвку (стены + потолок лоджии) и окраску стен", () => {
     const r = withWorks({ "1|11|walls": 6 }).find((x) => x.code === "1");
-    const rough = r.works.lines.find((l) => l.roomNo === "11" && l.work.includes("черновой слой"));
-    expect(rough).toMatchObject({ qty: 9.26, sum: 16112.4 }); // 6 + потолок 3,26, × 1740
+    const rough = r.works.lines.filter((l) => l.roomNo === "11" && l.work.includes("черновой слой"));
+    // шпатлёвка разделена на стены и потолки, расценка одна (1740)
+    expect(rough.map((l) => l.work)).toEqual([
+      "Улучшенное шпатлевание стен, сплошное выравнивание: черновой слой",
+      "Улучшенное шпатлевание потолков, сплошное выравнивание: черновой слой",
+    ]);
+    expect(rough[0]).toMatchObject({ qty: 6, sum: 10440, rateNo: "2.1" });
+    expect(rough[1]).toMatchObject({ qty: 3.26, sum: 5672.4, rateNo: "2.1" });
     expect(r.works.lines.find((l) => l.roomNo === "11" && l.work.includes("краской стен"))).toMatchObject({ qty: 6, sum: 8352 });
     expect(collectMeasureTasks([r]).some((t) => t.kind === "walls")).toBe(false);
   });

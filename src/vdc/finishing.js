@@ -72,11 +72,25 @@ function findTables(items) {
   }).filter(Boolean);
 }
 
-// → { apartments: { [code]: { rooms: [{ room, ceiling, walls }] } }, groupAtEnd }
+// «Помещения являющиеся общим имуществом 1-9 этаж» → этажи группы; без номеров этажей — null
+export function parseCommonFloors(title) {
+  const range = String(title).match(/(\d+)\s*[-–—]\s*(\d+)\s*этаж/i);
+  if (range) {
+    const from = Number(range[1]);
+    const to = Number(range[2]);
+    return to >= from && to <= 200 ? Array.from({ length: to - from + 1 }, (_, i) => from + i) : null;
+  }
+  const single = String(title).match(/(\d+)\s*этаж/i);
+  return single ? [Number(single[1])] : null;
+}
+
+// → { apartments: { [code]: { rooms: [{ room, ceiling, walls }] } }, common: [{ floors, rooms }], groupAtEnd }
+// common — группы «Помещения являющиеся общим имуществом N-M этаж»: площади в них даны на секцию сразу за все этажи группы.
 export function parseFinishing(items, startGroup = null) {
   const clean = (items || []).filter((i) => String(i.str ?? "").trim());
   const tables = findTables(clean);
   const apartments = {};
+  const common = [];
   let group = startGroup;
 
   for (const table of tables) {
@@ -86,14 +100,25 @@ export function parseFinishing(items, startGroup = null) {
     const flush = () => {
       if (!segment) return;
       assignWalls(segment.rooms, segment.walls);
-      const dst = (apartments[segment.code] ||= { rooms: [] });
-      dst.rooms.push(...segment.rooms);
+      if (segment.common) {
+        const key = segment.common.title;
+        const dst = common.find((c) => c.title === key) || (common.push({ title: key, floors: segment.common.floors, rooms: [] }), common[common.length - 1]);
+        dst.rooms.push(...segment.rooms);
+      } else {
+        const dst = (apartments[segment.code] ||= { rooms: [] });
+        dst.rooms.push(...segment.rooms);
+      }
       segment = null;
     };
 
     for (const row of groupRows(body, 3)) {
       const tokens = row.tokens.map((t) => ({ ...t, str: t.str.trim() }));
-      const decimals = tokens.filter((t) => DEC.test(t.str) && Math.abs(t.x - table.anchors[nearest(t.x, table.anchors)]) <= 28);
+      // в группе общих помещений столбцы «1 кв-ру» пусты — стоящий рядом с ними номер вида отделки не площадь
+      const commonRow = group?.kind === "common";
+      const decimals = tokens.filter((t) => {
+        const idx = nearest(t.x, table.anchors);
+        return DEC.test(t.str) && Math.abs(t.x - table.anchors[idx]) <= 28 && !(commonRow && (idx === 0 || idx === 3));
+      });
       const rest = tokens.filter((t) => !decimals.includes(t));
 
       // заголовок группы: текст без площадей («Квартира - тип 1», «Подвал в осях 1…11», «Помещения являющиеся …»)
@@ -104,15 +129,20 @@ export function parseFinishing(items, startGroup = null) {
         // и последний тип квартиры продолжается в следующей колонке листа («окончание»)
         if (/сводн/i.test(text)) break;
         const m = text.match(/квартира\s*-?\s*тип\s*(\S+)/i);
-        group = m ? { kind: "apartment", code: m[1] } : { kind: "other", title: text };
+        if (m) group = { kind: "apartment", code: m[1] };
+        else if (/общим\s+имуществ/i.test(text) && parseCommonFloors(text)) group = { kind: "common", title: text, floors: parseCommonFloors(text) };
+        else group = { kind: "other", title: text };
         continue;
       }
-      if (group?.kind !== "apartment") continue;
-      if (!segment) segment = { code: group.code, rooms: [], walls: [] };
+      if (group?.kind !== "apartment" && group?.kind !== "common") continue;
+      if (!segment) segment = { code: group.code, common: group.kind === "common" ? group : null, rooms: [], walls: [] };
 
       const byAnchor = (idx) => decimals.find((d) => nearest(d.x, table.anchors) === idx);
-      const ceil = [byAnchor(0), byAnchor(1), byAnchor(2)];
-      const wall = [byAnchor(3), byAnchor(4), byAnchor(5)];
+      // в группе общих помещений столбец «1 кв-ру» пуст: значения стоят в «на секцию» (за все этажи группы) и «на дом» —
+      // «на секцию» кладём в flat, чтобы дальше работать с ней как с квартирой
+      const common = group.kind === "common";
+      const ceil = common ? [byAnchor(1), null, byAnchor(2)] : [byAnchor(0), byAnchor(1), byAnchor(2)];
+      const wall = common ? [byAnchor(4), null, byAnchor(5)] : [byAnchor(3), byAnchor(4), byAnchor(5)];
 
       // слева от площади потолка: помещение и вид отделки потолка; между потолком и стенами — вид отделки стен
       const left = rest.filter((t) => t.x < cFlat - 15);
@@ -136,7 +166,7 @@ export function parseFinishing(items, startGroup = null) {
     }
     flush();
   }
-  return { apartments, groupAtEnd: group };
+  return { apartments, common, groupAtEnd: group };
 }
 
 // Объём отделки одной квартиры типа: потолки и стены по видам, площади «на 1 кв-ру» суммируются по помещениям.

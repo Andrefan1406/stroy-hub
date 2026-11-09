@@ -10,7 +10,7 @@ import { detectSections, firstSectionId, parseSectionIds } from "../vdc/sections
 import { findExplicationTitle, parseExplication } from "../vdc/explication";
 import { planFlats } from "../vdc/plan";
 import { buildVdcWorkbook, objectLine, parseIsoDate } from "../vdc/exportXlsx";
-import { assembleBlocks, attachFinishing, splitFirstBlock, typeCodeFromName } from "../vdc/blocks";
+import { assembleBlocks, attachFinishing, buildCommonRows, COMMON_MEASURE_LABELS, splitFirstBlock, typeCodeFromName } from "../vdc/blocks";
 import { checkFinishing, checkRoomNames, parseFinishing, parseLegend } from "../vdc/finishing";
 import { attachLoggias, checkLoggiaAreas, findLoggiaFloorAreas, proposeLoggias } from "../vdc/loggias";
 import { CEILINGS_EXCLUDED_UP_TO, collectMeasureTasks, findRate, summarizeWorks, totalsOf, worksForFlat } from "../vdc/works";
@@ -20,6 +20,8 @@ import { elementsInContour, extraWorkLines } from "../vdc/extraWorks";
 import { buildDoorDirectory, DEFAULT_DOOR_SPLIT, doorsInContour, doorWorkLines, DOOR_CATEGORIES, interiorCheck, parseDoorSpec, pointInPolygon, splitIsValid, summarizeDoors } from "../vdc/doors";
 import { loadProject, saveProject } from "../vdc/projectApi";
 import { applyAxisLabels, axisLabelsOf, collectState, describeState, findObjectName, findPosition, normalizeState, projectKeyFor } from "../vdc/projectState";
+
+const COMMON_LABELS = COMMON_MEASURE_LABELS; // группы обмера общих помещений: МОП (1 этаж / типовые), лестница (типовой план / кровля)
 
 const TEP_TITLE = "тэп по типам квартир";
 const FINISHING_TITLE = "ведомость отделки помещений";
@@ -129,8 +131,8 @@ function VdcTable({ rows, showSection }) {
               <React.Fragment key={key}>
                 <tr>
                   <td colSpan={5} style={s.flatRow}>
-                    {showSection ? `Секция ${row.section} · ` : ""}Этаж {row.floor} · {row.label}
-                    <span style={s.dim}> — {row.type}</span>
+                    {showSection ? `Секция ${row.section} · ` : ""}{row.levelLabel || `Этаж ${row.floor}`} · {row.label}
+                    {!row.common && <span style={s.dim}> — {row.type}</span>}
                   </td>
                 </tr>
                 {row.finish === null && (
@@ -220,8 +222,8 @@ function WorksTable({ rows, showSection }) {
                 <React.Fragment key={key}>
                   <tr>
                     <td colSpan={5} style={s.flatRow}>
-                      {showSection ? `Секция ${row.section} · ` : ""}Этаж {row.floor} · {row.label}
-                      <span style={s.dim}> — {row.type}</span>
+                      {showSection ? `Секция ${row.section} · ` : ""}{row.levelLabel || `Этаж ${row.floor}`} · {row.label}
+                      {!row.common && <span style={s.dim}> — {row.type}</span>}
                     </td>
                     <td style={{ ...s.flatRow, textAlign: "right" }}>{fmtMoney(flatTotal.sumVat)}</td>
                   </tr>
@@ -611,6 +613,7 @@ const VdcArDraftPage = () => {
       return;
     }
     const apartments = {};
+    const common = [];
     let legend = {};
     let group = null;
     for (const page of pages) {
@@ -619,6 +622,11 @@ const VdcArDraftPage = () => {
       for (const [code, apt] of Object.entries(parsed.apartments)) {
         (apartments[code] ||= { rooms: [] }).rooms.push(...apt.rooms);
       }
+      for (const c of parsed.common) {
+        const known = common.find((x) => x.title === c.title);
+        if (known) known.rooms.push(...c.rooms);
+        else common.push({ ...c, rooms: [...c.rooms] });
+      }
       legend = { ...legend, ...parseLegend(scan[page - 1].items) };
     }
     if (!Object.keys(apartments).length) {
@@ -626,7 +634,7 @@ const VdcArDraftPage = () => {
       return;
     }
     const checks = [...checkFinishing(apartments, tep?.types, typeCodeFromName), ...checkRoomNames(apartments, layout?.[0]?.rooms)];
-    setFinishing({ apartments, legend, checks });
+    setFinishing({ apartments, common, legend, checks });
     setResult(null);
   };
 
@@ -637,8 +645,11 @@ const VdcArDraftPage = () => {
   const buildBase = () => {
     const built = assembleBlocks({ sections: sectionIds, explications: layout, tep });
     const coefficients = Object.fromEntries(loggias.map((l) => [l.key, parseK(l.k)]));
-    const rows = attachLoggias(attachFinishing(built.rows, finishing.apartments, finishing.legend, roomsByPage), roomsByPage, coefficients);
-    return { built, rows };
+    const flats = attachLoggias(attachFinishing(built.rows, finishing.apartments, finishing.legend, roomsByPage), roomsByPage, coefficients);
+    // общие помещения: на каждом этаже секции строки «Лестница» и «МОП» (не квартиры — в проверки по ТЭП не входят)
+    const commons = buildCommonRows({ sections: sectionIds, explications: layout, common: finishing.common, legend: finishing.legend });
+    const rows = [...flats, ...commons.rows].sort((a, b) => a.sectionIndex - b.sectionIndex || a.floor - b.floor || a.flatIndex - b.flatIndex);
+    return { built: { ...built, warnings: [...built.warnings, ...commons.warnings] }, rows };
   };
 
   // Значение задачи обмера: введённое вручную важнее обмера на чертеже
@@ -654,7 +665,7 @@ const VdcArDraftPage = () => {
     const { rows } = buildBase();
     const found = collectMeasureTasks(rows.map((r) => ({ ...r, works: worksForFlat(r) })));
     setTasks(found);
-    setTypeCounts(rows.reduce((acc, r) => ({ ...acc, [r.code]: (acc[r.code] || 0) + 1 }), {}));
+    setTypeCounts(rows.filter((r) => !r.common).reduce((acc, r) => ({ ...acc, [r.code]: (acc[r.code] || 0) + 1 }), {}));
     setStep(8);
   };
 
@@ -668,7 +679,7 @@ const VdcArDraftPage = () => {
     const missing = [...new Set(rows.filter((r) => r.finish === null).map((r) => r.code))];
     if (missing.length) warnings.push(`В ведомости отделки нет типов квартир: ${missing.join(", ")} — для них виды отделки не добавлены.`);
     const unfilled = taskList.filter((t) => !measured[t.key]);
-    if (unfilled.length) warnings.push(`Не задан обмер (${unfilled.length}): ${unfilled.map((t) => `тип ${t.code}, ${t.roomName} — ${t.kind === "plinth" ? "плинтус" : t.kind === "box" ? "короб" : "стены"}`).join("; ")}. Эти позиции без объёма и в сумму не вошли.`);
+    if (unfilled.length) warnings.push(`Не задан обмер (${unfilled.length}): ${unfilled.map((t) => `${COMMON_LABELS[t.code] ? "общие помещения" : `тип ${t.code}`}, ${t.roomName} — ${t.kind === "plinth" ? "плинтус" : t.kind === "box" ? "короб" : t.kind === "risers" ? "подступенки" : t.kind === "steps" ? "ступени марша" : t.kind === "platform" ? "площадка" : t.kind === "stairarea" ? "площадь пола лестницы" : t.kind === "stairunder" ? "керамогранит под лестницей" : "стены"}`).join("; ")}. Эти позиции без объёма и в сумму не вошли.`);
     setResult({ ...built, rows: withWorks, warnings, checks: [...built.checks, ...finishing.checks, ...loggiaChecks], sections: sectionIds, firstId });
     setStep(9);
   };
@@ -678,6 +689,11 @@ const VdcArDraftPage = () => {
     for (const t of tasks) {
       const v = taskValue(t);
       if (v) measured[t.key] = v;
+      // марш: из обмера ступени получаем ещё и плинтус (ширина ступени + 100 мм + 150 мм на каждую ступень)
+      if ((t.kind === "steps" || t.kind === "platform") && !parseManual(manualValues[t.key])) {
+        const d = taskTotal(measureLines[t.key] || [], calibrations, { kind: t.kind });
+        if (d.plinth > 0) measured[`${t.code}|${t.roomNo}|plinth`] = d.plinth;
+      }
     }
     finalize(measured, tasks);
   };
@@ -773,7 +789,7 @@ const VdcArDraftPage = () => {
     if (!result) return null;
     if (!doors || !doorRate) return result.rows;
     const settings = { entrance: doorEntrance, entranceByType: doorEntranceByType, interior: doorInteriorFinal, split: doorSplit, threshold: doorThreshold };
-    return result.rows.map((r) => ({ ...r, works: { ...r.works, lines: [...r.works.lines.filter((l) => !l.door), ...doorWorkLines(r, settings, doorRate, thresholdRate), ...extraWorkLines(extrasFinal[r.code])] } }));
+    return result.rows.map((r) => (r.common ? r : { ...r, works: { ...r.works, lines: [...r.works.lines.filter((l) => !l.door), ...doorWorkLines(r, settings, doorRate, thresholdRate), ...extraWorkLines(extrasFinal[r.code])] } }));
   }, [result, doors, doorRate, thresholdRate, doorEntrance, doorEntranceByType, doorInteriorFinal, doorSplit, doorThreshold, extrasFinal]);
   const split = useMemo(() => (finalRows ? splitFirstBlock(finalRows, result.firstId) : null), [finalRows, result]);
   // Двери, окна, решётки, люки и отверстия по типам квартир: ввод вручную или подсчёт по контуру на плане. Показывается на шаге обмера и в результате.
@@ -920,7 +936,7 @@ const VdcArDraftPage = () => {
   return (
     <div style={s.page}>
       <div style={s.header}>
-        <button onClick={() => navigate("/")} style={s.back}>← Назад</button>
+        <button onClick={() => navigate("/vdc")} style={s.back}>← Назад</button>
         <h1 style={s.title}>Черновик ВДЦ на внутреннюю отделку по чертежам АР</h1>
         {saveLabel && <span style={saveStatus.state === "error" ? s.saveWarn : s.saveOk}>{saveLabel}</span>}
       </div>
@@ -1314,7 +1330,8 @@ const VdcArDraftPage = () => {
           {[...new Set(tasks.map((t) => t.code))].map((code) => (
             <div key={code} style={s.group}>
               <div style={s.groupTitle}>
-                Квартира типа {code} <span style={s.dim}>· таких квартир в доме: {typeCounts[code] || 0}{flatsHintFor(code) ? ` · ${flatsHintFor(code)}` : ""}</span>
+                {COMMON_LABELS[code] ? COMMON_LABELS[code] : `Квартира типа ${code}`}{" "}
+                <span style={s.dim}>{COMMON_LABELS[code] ? "· значение на один этаж — подставится на все этажи" : `· таких квартир в доме: ${typeCounts[code] || 0}`}{flatsHintFor(code) ? ` · ${flatsHintFor(code)}` : ""}</span>
               </div>
               <div style={s.scroll}>
                 <table style={s.table}>
@@ -1334,7 +1351,7 @@ const VdcArDraftPage = () => {
                       const value = taskValue(t);
                       return (
                         <tr key={t.key}>
-                          <td style={s.td}>{t.roomNo}. {t.roomName}</td>
+                          <td style={s.td}>{t.element || (t.common && !t.roomNo) ? t.roomName : `${t.roomNo}. ${t.roomName}`}</td>
                           <td style={s.td}>
                             {t.label}
                             <div style={s.small}>{[...new Set(t.works)].length > 1 ? `для работ: ${[...new Set(t.works)].length}` : ""}</div>
@@ -1389,7 +1406,7 @@ const VdcArDraftPage = () => {
         <>
           <div style={s.card}>
             <h2 style={s.h2}>Проверка</h2>
-            <div style={s.meta}>{fileName} · секции: {result.sections.join(", ")} · этажи: {result.floors.length ? `${result.floors[0]}–${result.floors[result.floors.length - 1]}` : "—"} · квартир: {result.rows.length}</div>
+            <div style={s.meta}>{fileName} · секции: {result.sections.join(", ")} · этажи: {result.floors.length ? `${result.floors[0]}–${result.floors[result.floors.length - 1]}` : "—"} · квартир: {result.rows.filter((r) => !r.common).length}</div>
             <Checks checks={result.checks} />
             {result.warnings.map((w, i) => <div key={i} style={s.warnBox}>{w}</div>)}
             {result.checks.some((c) => !c.ok) && (

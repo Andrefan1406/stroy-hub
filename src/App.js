@@ -40,6 +40,7 @@ import AdminDashboardPage from "./pages/AdminDashboardPage";
 import RascenkiReindexAdminPage from "./pages/RascenkiReindexAdminPage";
 import LzkDraftPage from "./pages/LzkDraftPage";
 import VdcArDraftPage from "./pages/VdcArDraftPage";
+import VdcHubPage from "./pages/VdcHubPage";
 import LzkUsageAdminPage from "./pages/LzkUsageAdminPage";
 import ConcreteDashboardPage from "./pages/ConcreteDashboardPage";
 import RideAccessGate from "./components/RideAccessGate";
@@ -391,6 +392,14 @@ const App = () => {
           element={
             <Protected>
               <LzkDraftPage />
+            </Protected>
+          }
+        />
+        <Route
+          path="/vdc"
+          element={
+            <Protected>
+              <VdcHubPage />
             </Protected>
           }
         />
