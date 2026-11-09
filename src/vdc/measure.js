@@ -47,7 +47,7 @@ export function taskTotal(lines, calibrations, { kind, height } = {}) {
   let deducted = 0;
   let uncounted = 0;
   for (const m of lines || []) {
-    const isWalls = kind === "walls";
+    const isWalls = kind === "walls" || kind === "box"; // короб — тоже «длина × высота»
     const q = measurementQuantity(
       { ...m, kind: "line", calc: isWalls ? "wall" : "length", height: isWalls ? (m.deduct ? m.height : height) : undefined, count: 1, deduct: false },
       calibrations?.[m.page],

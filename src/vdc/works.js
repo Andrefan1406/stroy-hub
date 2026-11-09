@@ -8,6 +8,7 @@
 //   облицовка стен плиткой       — стены, у которых в «Видах отделки» указана облицовка плиткой (не фартук);
 //   фартук                       — стены, у которых в «Видах отделки» указан «фартук»;
 //   пол (плитка, линолеум)       — «взять по потолку»: площадь пола = площадь потолка помещения;
+//   короб из гипсокартона         — обмер длины короба × высота стены (одна работа на квартиру, в туалете);
 //   «требуется обмер»            — количество не определяем (ячейка пустая), показываем только расценку.
 import ratesData from "./data/rates.json";
 import roomRulesData from "./data/roomRules.json";
@@ -40,6 +41,7 @@ export function classifyWork(work, note) {
   const t = String(note ?? "").toLowerCase();
   if (/требуется\s+обмер/.test(t)) return "measure";
   if (/шпатлеван/.test(n)) return "walls_ceilings";
+  if (/короб/.test(n)) return "box";
   if (/фартук/.test(n)) return "apron";
   if (/оклейк\S*\s+стен|окраск\S*.*стен/.test(n)) return "walls";
   if (/окраск\S*.*потолк/.test(n)) return "ceiling";
@@ -133,6 +135,18 @@ export function worksForFlat(row, { rates = ratesData, rules = roomRulesData, me
           qty = m.ceiling;
           note = /по\s+потолку/i.test(spec.note) ? "по площади потолка" : "принято по площади потолка (пола)";
           break;
+        case "box": {
+          // короб в туалете: длина обмера × высота стены, одна работа на квартиру
+          const v = measured[measuredKey("box")];
+          if (v > 0) {
+            qty = v;
+            note = "по обмеру (на всю высоту стены)";
+          } else {
+            note = "требуется обмер короба";
+            need = "box";
+          }
+          break;
+        }
         case "measure": {
           const v = measured[measuredKey("plinth")];
           if (v > 0) {
@@ -221,7 +235,7 @@ export function collectMeasureTasks(rows) {
         roomName: l.need.roomName,
         kind: l.need.kind,
         unit: l.need.kind === "plinth" ? "м" : "м²",
-        label: l.need.kind === "plinth" ? l.work : "Площадь стен (длина × высота)",
+        label: l.need.kind === "plinth" ? l.work : l.need.kind === "box" ? "Площадь короба (длина × высота стены)" : "Площадь стен (длина × высота)",
         works: [],
       };
       task.works.push(l.work);

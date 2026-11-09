@@ -155,6 +155,16 @@ describe("обмер: подстановка в ВДЦ", () => {
     expect(t3.every((t) => t.works.length > 0)).toBe(true);
   });
 
+  it("короб из гипсокартона в туалете: одна работа на квартиру, объём по обмеру (длина × высота), расценка из базы", () => {
+    expect(classifyWork("Устройство короба из гипсокартона на каркасе", "")).toBe("box");
+    const tasks = collectMeasureTasks(withWorks({}));
+    const box = tasks.filter((t) => t.kind === "box" && t.code === "1");
+    expect(box).toHaveLength(1);
+    expect(box[0]).toMatchObject({ roomName: "Туалет", unit: "м²", label: "Площадь короба (длина × высота стены)" });
+    const line = withWorks({ "1|5|box": 3.5 })[0].works.lines.find((l) => /короба/.test(l.work));
+    expect(line).toMatchObject({ qty: 3.5, rateNo: "2.23", unit: "м2", priceVat: 6960, sum: 24360 });
+  });
+
   it("обмер одной квартиры типа заполняет все квартиры этого типа", () => {
     const measured = { "1|1|plinth": 8.5, "1|11|walls": 6 };
     const rows = withWorks(measured);

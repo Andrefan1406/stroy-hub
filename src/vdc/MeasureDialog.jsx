@@ -8,7 +8,8 @@ import { distance, metersPerUnitFromDistance, metersPerUnitFromScale, polylineLe
 import { POLAR_STEPS } from "../takeoff/polar";
 import { findAxisRows } from "./plan";
 import { OPENING_TYPES, parseManual, suggestScale, taskTotal } from "./measure";
-import { doorsInContour, DOOR_CATEGORIES, summarizeDoors } from "./doors";
+import { doorsInContour, DOOR_CATEGORIES, pointInPolygon, summarizeDoors } from "./doors";
+import { elementsInContour } from "./extraWorks";
 
 const SCALES = [20, 25, 50, 75, 100, 150, 200, 250, 500];
 const fmt = (v) => Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -18,7 +19,7 @@ export default function MeasureDialog({
   doc, numPages, task, flatsHint, initialPage, itemsOf, lines, onLinesChange, calibrations, onCalibrate, height, onHeightChange, onClose, doorDirectory,
 }) {
   const [pageNo, setPageNo] = useState(String(initialPage || 1));
-  const [mode, setMode] = useState(task.kind === "doors" ? "contour" : "select"); // select | line | rect | opening | calibrate | contour
+  const [mode, setMode] = useState(task.kind === "doors" ? "contour" : "select"); // select | line | rect | opening | calibrate | contour | vent | hole
   const [selectedId, setSelectedId] = useState(null);
   const [calibPoints, setCalibPoints] = useState(null);
   const [calibMeters, setCalibMeters] = useState("");
@@ -31,7 +32,7 @@ export default function MeasureDialog({
   const page = Number(pageNo);
   const pageValid = Number.isInteger(page) && page >= 1 && page <= numPages;
   const mpu = pageValid ? calibrations[page] || null : null;
-  const isWalls = task.kind === "walls";
+  const isWalls = task.kind === "walls" || task.kind === "box"; // короб из гипсокартона измеряется как стены: длина × высота
   const isDoors = task.kind === "doors"; // подсчёт дверей по контуру квартиры: калибровка и масштаб не нужны
 
   // предложение масштаба по размеру между крайними осями — пользователь подтверждает
@@ -44,7 +45,7 @@ export default function MeasureDialog({
 
   const total = useMemo(() => taskTotal(lines, calibrations, { kind: task.kind, height }), [lines, calibrations, task.kind, height]);
   const pageLines = useMemo(
-    () => lines.filter((l) => l.page === page).map((l) => (isDoors ? l : { ...l, calc: isWalls ? "wall" : "length", height: isWalls ? (l.deduct ? l.height : height) : undefined })),
+    () => lines.filter((l) => l.page === page && l.kind !== "point").map((l) => (isDoors ? l : { ...l, calc: isWalls ? "wall" : "length", height: isWalls ? (l.deduct ? l.height : height) : undefined })),
     [lines, page, isWalls, isDoors, height],
   );
   const openings = useMemo(() => lines.filter((l) => l.deduct), [lines]);
@@ -53,18 +54,39 @@ export default function MeasureDialog({
   const foundByLine = useMemo(() => {
     const map = new Map();
     if (!isDoors) return map;
-    for (const l of lines) map.set(l.id, doorsInContour(itemsOf(l.page), l.points, doorDirectory));
+    for (const l of lines) if (l.kind === "area") map.set(l.id, doorsInContour(itemsOf(l.page), l.points, doorDirectory));
     return map;
   }, [isDoors, lines, itemsOf, doorDirectory]);
   const foundAll = useMemo(() => [...foundByLine.values()].flat(), [foundByLine]);
+  // окна и балконные блоки внутри контуров; решётки и отверстия — точки, поставленные на плане
+  const elementsAll = useMemo(() => {
+    const acc = { windows: 0, blocks: 0, found: [] };
+    if (!isDoors) return acc;
+    for (const l of lines) {
+      if (l.kind !== "area") continue;
+      const r = elementsInContour(itemsOf(l.page), l.points, pointInPolygon);
+      acc.windows += r.windows;
+      acc.blocks += r.blocks;
+      acc.found.push(...r.found.map((f) => ({ ...f, page: l.page })));
+    }
+    return acc;
+  }, [isDoors, lines, itemsOf]);
+  const pointCounts = useMemo(() => ({
+    vent: lines.filter((l) => l.kind === "point" && l.what === "vent").length,
+    hole: lines.filter((l) => l.kind === "point" && l.what === "hole").length,
+  }), [lines]);
   const doorSummary = useMemo(() => summarizeDoors(foundAll), [foundAll]);
   const DOOR_COLORS = { entrance: "#c62828", interior: "#1565c0", group: "#6a1b9a", fire: "#e65100", other: "#777" };
   const doorMarks = useMemo(
-    () => (isDoors ? lines.filter((l) => l.page === page).flatMap((l) => foundByLine.get(l.id) || []).map((d) => ({
-      x: d.x, y: d.y, color: DOOR_COLORS[d.category] || "#777", label: `${d.mark}${d.leaves === 2 ? " (2 ств.)" : ""}`,
-    })) : []),
+    () => (isDoors ? [
+      ...lines.filter((l) => l.page === page).flatMap((l) => foundByLine.get(l.id) || []).map((d) => ({
+        x: d.x, y: d.y, color: DOOR_COLORS[d.category] || "#777", label: `${d.mark}${d.leaves === 2 ? " (2 ств.)" : ""}`,
+      })),
+      ...elementsAll.found.filter((f) => f.page === page).map((f) => ({ x: f.x, y: f.y, color: f.kind === "blocks" ? "#ef6c00" : "#00897b", label: f.label })),
+      ...lines.filter((l) => l.page === page && l.kind === "point").map((l) => ({ x: l.points[0].x, y: l.points[0].y, color: l.what === "vent" ? "#7b1fa2" : "#455a64", label: l.what === "vent" ? "решётка" : "отверстие" })),
+    ] : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isDoors, lines, page, foundByLine],
+    [isDoors, lines, page, foundByLine, elementsAll],
   );
 
   // подпись линии на холсте: у проёма со знаком «−»
@@ -78,6 +100,7 @@ export default function MeasureDialog({
   const onFinish = useCallback(({ kind, points }) => {
     if (isDoors) {
       if (kind === "area" && mode === "contour") onLinesChange([...lines, { id: newId(), page, kind: "area", points, count: 1 }]);
+      else if (kind === "point" && (mode === "vent" || mode === "hole")) onLinesChange([...lines, { id: newId(), page, kind: "point", what: mode, points, count: 1 }]);
       return;
     }
     if (kind === "rect" && mode === "rect") {
@@ -152,7 +175,7 @@ export default function MeasureDialog({
         <div style={s.hint}>
           {flatsHint}
           {isDoors
-            ? " Обведите контур квартиры на плане (щёлкайте по углам, двойной щелчок или Enter — конец контура). Двери — это метки «Д-N» внутри контура: они подсвечиваются на листе и считаются по категориям и числу створок. Одного контура на тип квартиры достаточно: результат подставится во все квартиры этого типа."
+            ? " Обведите контур квартиры на плане (щёлкайте по углам, двойной щелчок или Enter — конец контура). Двери — это метки «Д-N» внутри контура: они подсвечиваются на листе и считаются по категориям и числу створок. Окна «ОК-N» внутри контура считаются так же (балконные блоки «ББ-N» подсвечиваются, но считаются вручную: они бывают с окном и без). Вентиляционные решётки и технологические отверстия отметьте щелчками (кнопки «Вент. решётка» и «Техн. отверстие»). Одного контура на тип квартиры достаточно: результат подставится во все квартиры этого типа."
             : isWalls
             ? " Обведите линией стены помещения по периметру (щёлкайте по углам, двойной щелчок или Enter — конец линии) или прямоугольником — двумя щелчками по противоположным углам; площадь = длина × высота от пола до потолка. Двери, окна и другие проёмы отметьте отдельно кнопкой «Проём» — их площадь вычтется."
             : " Обведите линией плинтус вдоль стен (щёлкайте по углам, двойной щелчок или Enter — конец линии). Дверные проёмы можно не обходить, а отметить кнопкой «Проём» — их ширина вычтется. Линий может быть несколько — они сложатся."}
@@ -182,8 +205,11 @@ export default function MeasureDialog({
           {isDoors ? (
             <>
               {toolBtn("contour", "⬠ Обвести контур квартиры", "Щёлкайте по углам квартиры; двойной щелчок или Enter — конец контура")}
+              {toolBtn("vent", "▦ Вент. решётка", "Щелчок по каждой вентиляционной решётке квартиры")}
+              {toolBtn("hole", "◉ Техн. отверстие", "Щелчок по каждому технологическому отверстию квартиры")}
               {toolBtn("select", "✋ Прокрутка / выбор", "Перетаскивание листа; выбор контура — Delete удалит")}
               <button type="button" style={s.tool} disabled={!selectedId} onClick={() => removeLine(selectedId)}>Удалить выбранный</button>
+              <button type="button" style={s.tool} disabled={!pointCounts.vent && !pointCounts.hole} onClick={() => { const i = [...lines].reverse().findIndex((l) => l.kind === "point"); if (i >= 0) onLinesChange(lines.filter((_, k) => k !== lines.length - 1 - i)); }}>Убрать последнюю точку</button>
               <button type="button" style={s.tool} disabled={!lines.length} onClick={() => { onLinesChange([]); setSelectedId(null); }}>Очистить всё</button>
             </>
           ) : (
@@ -241,7 +267,7 @@ export default function MeasureDialog({
               pageNumber={page}
               measurements={pageLines}
               selectedId={selectedId}
-              mode={isDoors && mode === "contour" ? "area" : mode}
+              mode={isDoors ? (mode === "contour" ? "area" : mode === "vent" || mode === "hole" ? "point" : mode) : mode}
               noScale={isDoors}
               marks={isDoors ? doorMarks : undefined}
               deduct={mode === "opening"}
@@ -299,7 +325,7 @@ export default function MeasureDialog({
         )}
 
         <div style={s.bottom}>
-          {isDoors && <span style={s.total}>Входных: {doorSummary.entrance} · межкомнатных однопольных: {doorSummary.single} · двупольных: {doorSummary.double}</span>}
+          {isDoors && <span style={s.total}>Входных: {doorSummary.entrance} · межкомнатных однопольных: {doorSummary.single} · двупольных: {doorSummary.double} · окон: {elementsAll.windows}{elementsAll.blocks ? ` (балконных блоков на плане: ${elementsAll.blocks} — считаются вручную)` : ""} · вент. решёток: {pointCounts.vent} · техн. отверстий: {pointCounts.hole}</span>}
           {isWalls && (
             <label style={s.row}>
               Высота от пола до потолка, м

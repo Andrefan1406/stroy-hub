@@ -16,7 +16,8 @@ import { attachLoggias, checkLoggiaAreas, findLoggiaFloorAreas, proposeLoggias }
 import { CEILINGS_EXCLUDED_UP_TO, collectMeasureTasks, findRate, summarizeWorks, totalsOf, worksForFlat } from "../vdc/works";
 import { findCeilingHeight, parseManual, taskTotal } from "../vdc/measure";
 import MeasureDialog from "../vdc/MeasureDialog";
-import { buildDoorDirectory, DEFAULT_DOOR_SPLIT, doorsInContour, doorWorkLines, DOOR_CATEGORIES, interiorCheck, parseDoorSpec, splitIsValid, summarizeDoors } from "../vdc/doors";
+import { elementsInContour, extraWorkLines } from "../vdc/extraWorks";
+import { buildDoorDirectory, DEFAULT_DOOR_SPLIT, doorsInContour, doorWorkLines, DOOR_CATEGORIES, interiorCheck, parseDoorSpec, pointInPolygon, splitIsValid, summarizeDoors } from "../vdc/doors";
 import { loadProject, saveProject } from "../vdc/projectApi";
 import { applyAxisLabels, axisLabelsOf, collectState, describeState, findObjectName, findPosition, normalizeState, projectKeyFor } from "../vdc/projectState";
 
@@ -346,6 +347,7 @@ const VdcArDraftPage = () => {
   const [doorEntrance, setDoorEntrance] = useState("1"); // входных дверей на квартиру
   const [doorInterior, setDoorInterior] = useState({}); // межкомнатных дверей в квартире по типам, вручную: { '1': { single: '4', double: '1' } }
   const [doorLeaves, setDoorLeaves] = useState({}); // число створок, исправленное вручную: { 'Д-7': 2 }
+  const [extraManual, setExtraManual] = useState({}); // вручную по типам: { '1': { hatch, vent, holes, windows, blocks } }
   const [doorThreshold, setDoorThreshold] = useState("0,9"); // декоративный порожек, м.п на каждую дверь
   const [doorSplit, setDoorSplit] = useState(DEFAULT_DOOR_SPLIT); // деление расценки межкомнатной двери, %
 
@@ -653,8 +655,7 @@ const VdcArDraftPage = () => {
     const found = collectMeasureTasks(rows.map((r) => ({ ...r, works: worksForFlat(r) })));
     setTasks(found);
     setTypeCounts(rows.reduce((acc, r) => ({ ...acc, [r.code]: (acc[r.code] || 0) + 1 }), {}));
-    if (!found.length) finalize({}, []);
-    else setStep(8);
+    setStep(8);
   };
 
   const finalize = (measured, taskList) => {
@@ -667,7 +668,7 @@ const VdcArDraftPage = () => {
     const missing = [...new Set(rows.filter((r) => r.finish === null).map((r) => r.code))];
     if (missing.length) warnings.push(`В ведомости отделки нет типов квартир: ${missing.join(", ")} — для них виды отделки не добавлены.`);
     const unfilled = taskList.filter((t) => !measured[t.key]);
-    if (unfilled.length) warnings.push(`Не задан обмер (${unfilled.length}): ${unfilled.map((t) => `тип ${t.code}, ${t.roomName} — ${t.kind === "plinth" ? "плинтус" : "стены"}`).join("; ")}. Эти позиции без объёма и в сумму не вошли.`);
+    if (unfilled.length) warnings.push(`Не задан обмер (${unfilled.length}): ${unfilled.map((t) => `тип ${t.code}, ${t.roomName} — ${t.kind === "plinth" ? "плинтус" : t.kind === "box" ? "короб" : "стены"}`).join("; ")}. Эти позиции без объёма и в сумму не вошли.`);
     setResult({ ...built, rows: withWorks, warnings, checks: [...built.checks, ...finishing.checks, ...loggiaChecks], sections: sectionIds, firstId });
     setStep(9);
   };
@@ -726,7 +727,7 @@ const VdcArDraftPage = () => {
   const doorsByContour = useMemo(() => {
     const out = {};
     for (const code of flatTypes) {
-      const contours = measureLines[`${code}|doors`] || [];
+      const contours = (measureLines[`${code}|doors`] || []).filter((l) => l.kind === "area");
       if (!contours.length) continue;
       const found = contours.flatMap((c) => doorsInContour(scan?.[c.page - 1]?.items || [], c.points, doorDir));
       out[code] = summarizeDoors(found);
@@ -738,6 +739,31 @@ const VdcArDraftPage = () => {
     () => Object.fromEntries(flatTypes.map((c) => [c, doorsByContour[c] ? { single: doorsByContour[c].single, double: doorsByContour[c].double } : doorInterior[c] || {}])),
     [flatTypes, doorsByContour, doorInterior],
   );
+  // окна и балконные блоки — по меткам внутри контура; решётки и отверстия — по точкам на плане; иначе вручную. Люк — на каждую квартиру (по умолчанию 1)
+  const extrasFinal = useMemo(() => {
+    const out = {};
+    for (const code of flatTypes) {
+      const lines = measureLines[`${code}|doors`] || [];
+      const contours = lines.filter((l) => l.kind === "area");
+      const manual = extraManual[code] || {};
+      const fromContour = contours.reduce((acc, c) => acc + elementsInContour(scan?.[c.page - 1]?.items || [], c.points, pointInPolygon).windows, 0);
+      const vent = lines.filter((l) => l.kind === "point" && l.what === "vent").length;
+      const holes = lines.filter((l) => l.kind === "point" && l.what === "hole").length;
+      // то, что посчитано на плане, подставляется само; введённое вручную его заменяет
+      const auto = { windows: contours.length ? fromContour : "", vent: vent > 0 ? vent : "", holes: holes > 0 ? holes : "" };
+      const pick = (key) => (manual[key] !== undefined && manual[key] !== "" ? manual[key] : auto[key] ?? "");
+      out[code] = {
+        hatch: manual.hatch ?? "1",
+        windows: pick("windows"),
+        blocks: manual.blocks ?? "",
+        blocksNo: manual.blocksNo ?? "",
+        vent: pick("vent"),
+        holes: pick("holes"),
+        auto,
+      };
+    }
+    return out;
+  }, [flatTypes, measureLines, scan, extraManual]);
   const doorEntranceByType = useMemo(() => Object.fromEntries(Object.entries(doorsByContour).map(([c, v]) => [c, v.entrance])), [doorsByContour]);
   const doorRate = useMemo(() => findRate("Установка двери", ""), []);
   const thresholdRate = useMemo(() => findRate("Устройство декоративных порожков", ""), []);
@@ -747,9 +773,55 @@ const VdcArDraftPage = () => {
     if (!result) return null;
     if (!doors || !doorRate) return result.rows;
     const settings = { entrance: doorEntrance, entranceByType: doorEntranceByType, interior: doorInteriorFinal, split: doorSplit, threshold: doorThreshold };
-    return result.rows.map((r) => ({ ...r, works: { ...r.works, lines: [...r.works.lines.filter((l) => !l.door), ...doorWorkLines(r, settings, doorRate, thresholdRate)] } }));
-  }, [result, doors, doorRate, thresholdRate, doorEntrance, doorEntranceByType, doorInteriorFinal, doorSplit, doorThreshold]);
+    return result.rows.map((r) => ({ ...r, works: { ...r.works, lines: [...r.works.lines.filter((l) => !l.door), ...doorWorkLines(r, settings, doorRate, thresholdRate), ...extraWorkLines(extrasFinal[r.code])] } }));
+  }, [result, doors, doorRate, thresholdRate, doorEntrance, doorEntranceByType, doorInteriorFinal, doorSplit, doorThreshold, extrasFinal]);
   const split = useMemo(() => (finalRows ? splitFirstBlock(finalRows, result.firstId) : null), [finalRows, result]);
+  // Двери, окна, решётки, люки и отверстия по типам квартир: ввод вручную или подсчёт по контуру на плане. Показывается на шаге обмера и в результате.
+  const manualOr = (manual, fallback) => (manual !== undefined ? manual : fallback ?? "");
+  const doorTypesPanel = doors ? (
+    <div>
+      <div style={s.groupTitle}>Двери, окна и проёмы по типам квартир</div>
+      {flatTypes.map((c) => {
+        const byContour = doorsByContour[c];
+        const f = extrasFinal[c] || {};
+        const setDoor = (key, value) => setDoorInterior((cur) => ({ ...cur, [c]: { ...(cur[c] || {}), [key]: value } }));
+        const setExtra = (key, value) => setExtraManual((cur) => ({ ...cur, [c]: { ...(cur[c] || {}), [key]: value } }));
+        const inp = (title, value, onChange, placeholder, tip) => (
+          <label key={title} style={s.row}>{title}
+            <input value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} style={{ ...s.input, width: "52px" }} aria-label={`${title}, тип ${c}`} title={tip} />
+          </label>
+        );
+        return (
+          <div key={c} style={{ border: "1px solid #e3e3e3", borderRadius: "8px", padding: "8px 10px", marginBottom: "8px" }}>
+            <div style={s.row}>
+              <b>Тип {c}</b>
+              <button type="button" style={s.btnGhost} onClick={() => setDialogKey(`${c}|doors`)}>{byContour ? "Изменить контур на плане" : "Посчитать на плане (контур квартиры)"}</button>
+              {byContour && <span style={s.small}>по контуру: входных {byContour.entrance}</span>}
+            </div>
+            <div style={{ ...s.row, gap: "10px", marginTop: "6px" }}>
+              {inp("однопольных дверей", byContour ? String(byContour.single) : doorInterior[c]?.single ?? "", (v) => setDoor("single", v), "", byContour ? "посчитано по контуру; чтобы ввести вручную — удалите контур" : "межкомнатных однопольных")}
+              {inp("двупольных дверей", byContour ? String(byContour.double) : doorInterior[c]?.double ?? "", (v) => setDoor("double", v), "", byContour ? "посчитано по контуру" : "межкомнатных двупольных")}
+            </div>
+            <div style={{ ...s.row, gap: "10px", marginTop: "6px" }}>
+              {inp("окон", String(manualOr(extraManual[c]?.windows, f.windows)), (v) => setExtra("windows", v), String(f.auto?.windows ?? ""), "ОК-N; можно посчитать на плане")}
+              {inp("балк. блоков с окном", String(f.blocks ?? ""), (v) => setExtra("blocks", v), "", "дверь + окно: 3 000 тг")}
+              {inp("балк. блоков без окна", String(f.blocksNo ?? ""), (v) => setExtra("blocksNo", v), "", "считаются по расценке окна: 2 000 тг")}
+            </div>
+            <div style={{ ...s.row, gap: "10px", marginTop: "6px" }}>
+              {inp("вент. решёток", String(f.vent ?? ""), (v) => setExtra("vent", v), String(f.auto?.vent ?? ""), "696 тг; можно отметить точками на плане")}
+              {inp("техн. отверстий", String(f.holes ?? ""), (v) => setExtra("holes", v), String(f.auto?.holes ?? ""), "1 160 тг; можно отметить точками на плане")}
+              {inp("ревизионных люков", String(f.hatch ?? ""), (v) => setExtra("hatch", v), "1", "2 320 тг; по умолчанию 1 на квартиру")}
+            </div>
+          </div>
+        );
+      })}
+      <div style={s.small}>
+        Все числа можно ввести вручную; окна, решётки и отверстия можно ещё посчитать на плане (контур квартиры и точки) — тогда они подставятся сами, а введённое вручную их заменит.
+        Балконные блоки только вручную: с окном (3 000 тг) и без окна (по расценке окна, 2 000 тг). Расценки с НДС: решётка 696, люк 2 320, отверстие 1 160.
+      </div>
+    </div>
+  ) : null;
+
   const viewSwitch = (
     <div style={s.row}>
       <button onClick={() => setView("works")} style={view === "works" ? s.tabActive : s.tab}>Работы и расценки</button>
@@ -1229,7 +1301,7 @@ const VdcArDraftPage = () => {
             нужный лист с инструментом замеров (сначала калибровка листа, потом обводка линией).
           </div>
 
-          {tasks.some((t) => t.kind === "walls") && (
+          {tasks.some((t) => t.kind === "walls" || t.kind === "box") && (
             <label style={s.row}>
               <span style={s.label}>Высота от пола до потолка, м</span>
               <input type="text" inputMode="decimal" value={wallHeight} onChange={(e) => setWallHeight(e.target.value)} style={s.input} aria-label="Высота от пола до потолка, м" />
@@ -1297,6 +1369,12 @@ const VdcArDraftPage = () => {
             </div>
           ))}
 
+          {doorTypesPanel && (
+            <div style={{ marginTop: "16px" }}>
+              {doorTypesPanel}
+            </div>
+          )}
+
           <div style={s.meta}>Задано {tasks.filter((t) => taskValue(t)).length} из {tasks.length}. Позиции без обмера останутся без объёма и в сумму не войдут.</div>
 
           <div style={s.actions}>
@@ -1362,27 +1440,7 @@ const VdcArDraftPage = () => {
                   </div>
                   {!splitIsValid(doorSplit) && <div style={s.warnBox}>Доли должны давать 100 %, иначе межкомнатные двери в ВДЦ не добавляются.</div>}
                 </div>
-                <div>
-                  <div style={s.groupTitle}>Двери в квартире по типам</div>
-                  {flatTypes.map((c) => {
-                    const byContour = doorsByContour[c];
-                    const setManual = (key, value) => setDoorInterior((cur) => ({ ...cur, [c]: { ...(cur[c] || {}), [key]: value } }));
-                    return (
-                      <div key={c} style={{ ...s.row, marginBottom: "6px" }}>
-                        <b>Тип {c}</b>
-                        <label style={s.row}>однопольных
-                          <input value={byContour ? String(byContour.single) : doorInterior[c]?.single ?? ""} disabled={!!byContour} onChange={(e) => setManual("single", e.target.value)} style={{ ...s.input, width: "52px" }} aria-label={`Однопольных межкомнатных дверей, тип ${c}`} />
-                        </label>
-                        <label style={s.row}>двупольных
-                          <input value={byContour ? String(byContour.double) : doorInterior[c]?.double ?? ""} disabled={!!byContour} onChange={(e) => setManual("double", e.target.value)} style={{ ...s.input, width: "52px" }} aria-label={`Двупольных межкомнатных дверей, тип ${c}`} />
-                        </label>
-                        <button type="button" style={s.btnGhost} onClick={() => setDialogKey(`${c}|doors`)}>{byContour ? "Изменить контур" : "Обвести контур квартиры"}</button>
-                        {byContour && <span style={s.small}>по контуру: входных {byContour.entrance}</span>}
-                      </div>
-                    );
-                  })}
-                  <div style={s.small}>Обведите контур квартиры на плане — двери посчитаются по меткам «Д-N» внутри. Без контура числа вводятся вручную.</div>
-                </div>
+                {doorTypesPanel}
                 <div>
                   <div style={s.groupTitle}>Сверка по этажам</div>
                   {doorCheck.map((c) => (
@@ -1451,7 +1509,7 @@ const VdcArDraftPage = () => {
           </div>
 
           <div style={{ ...s.actions, marginTop: "16px" }}>
-            <button onClick={() => setStep(tasks.length ? 8 : 7)} style={s.btnGhost}>{tasks.length ? "← К обмеру" : "← К ведомости отделки"}</button>
+            <button onClick={() => setStep(8)} style={s.btnGhost}>← К обмеру</button>
             <button onClick={reset} style={s.btnGhost}>Начать заново</button>
           </div>
         </>

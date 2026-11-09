@@ -9,7 +9,8 @@
 //   в режимах «Площадь», «Длина», «Проём», «Калибровка» — щелчок ставит
 //   точку, Shift — строго по горизонтали/вертикали, двойной щелчок или
 //   Enter — готово, Backspace — убрать последнюю точку, Esc — отменить;
-//   «Прямоугольник» — два щелчка по диагонали (оси параллельны листу).
+//   «Прямоугольник» — два щелчка по диагонали (оси параллельны листу);
+//   «Точка» — каждый щелчок отдаёт одну точку (подсчёт штук).
 //
 // Правка выделенного замера (режим «Выбор»): тянуть точку — переместить,
 // тянуть «+» на середине отрезка — добавить точку, правый щелчок (или
@@ -265,6 +266,11 @@ const TakeoffCanvas = forwardRef(function TakeoffCanvas(
       e.preventDefault();
       pan.current = { sx: e.clientX, sy: e.clientY, tx: view.tx, ty: view.ty, moved: false };
       boxRef.current.setPointerCapture(e.pointerId);
+      return;
+    }
+    // «Точка» — один щелчок = один предмет (решётка, отверстие): сразу готово
+    if (mode === "point" && e.button === 0 && page) {
+      onFinish({ kind: "point", points: [toWorld(e.clientX, e.clientY)] });
       return;
     }
     if (e.button !== 0 || !drawing || !page) return;
