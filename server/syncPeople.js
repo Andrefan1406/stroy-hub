@@ -26,7 +26,8 @@ const { reconstructPeopleTimeline } = require('./peopleGapDetection');
 const CSV_URL =
   'https://docs.google.com/spreadsheets/d/e/2PACX-1vS0qVYHkI9ySfT0LO9SwG36BYrmI-chO09ws7GSjWcnQU2pX4Gzw-R4LXg6tdi44KXa1i5yQYcLF27U/pub?output=csv';
 
-const CRON_SCHEDULE = process.env.PEOPLE_SYNC_CRON || '0 */2 * * *';
+const { SYNC_TZ, DEFAULT_CRON } = require('./syncSchedule');
+const CRON_SCHEDULE = process.env.PEOPLE_SYNC_CRON || DEFAULT_CRON.people;
 
 const clean = (value) => {
   const v = (value || '').toString().trim();
@@ -206,7 +207,7 @@ function startPeopleSync() {
   runSyncOnce().catch((err) => console.error('[people-sync] ошибка стартового синка:', err.message));
   cron.schedule(CRON_SCHEDULE, () => {
     runSyncOnce().catch((err) => console.error('[people-sync] ошибка планового синка:', err.message));
-  });
+  }, { timezone: SYNC_TZ });
 }
 
 module.exports = { startPeopleSync, runSyncOnce, syncRawFromSheet, rebuildDerivedTables, CSV_URL };

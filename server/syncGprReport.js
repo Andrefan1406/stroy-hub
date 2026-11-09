@@ -361,7 +361,8 @@ const SOURCES = [
   },
 ];
 
-const CRON_SCHEDULE = process.env.GPR_REPORT_SYNC_CRON || '0 */6 * * *';
+const { SYNC_TZ, DEFAULT_CRON } = require('./syncSchedule');
+const CRON_SCHEDULE = process.env.GPR_REPORT_SYNC_CRON || DEFAULT_CRON.gprReport;
 
 // Excel/Sheets серийная дата -> 'YYYY-MM-DD'. origin 1899-12-30 — тот же,
 // что в ноутбуке (pandas: unit='D', origin='1899-12-30'), учитывает
@@ -934,7 +935,7 @@ function startGprReportSync() {
   runSyncOnce().catch((err) => console.error('[gpr-report-sync] ошибка стартового синка:', err.message));
   cron.schedule(CRON_SCHEDULE, () => {
     runSyncOnce().catch((err) => console.error('[gpr-report-sync] ошибка планового синка:', err.message));
-  });
+  }, { timezone: SYNC_TZ });
 }
 
 module.exports = {
