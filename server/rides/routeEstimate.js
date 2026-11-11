@@ -1,6 +1,7 @@
 // Оценка расстояния/времени в пути.
 //
-// Пайплайн: геокодируем каждый адрес (Nominatim, с кэшем в таблице
+// Пайплайн: геокодируем каждый адрес (2ГИС при заданном TWOGIS_API_KEY, иначе или
+// при недоступности — Nominatim; с кэшем в таблице
 // geocode_cache — см. db.js), затем строим маршрут через публичный
 // демо-сервер OSRM. Оба — бесплатные OSM-сервисы без API-ключа, но по их
 // же политике использования рассчитаны на невысокую нагрузку (см.
@@ -124,11 +125,163 @@ async function geocodeAddress(address) {
 // числе ошибочно — «г. Шемонаиха, ...») не подхватываются.
 async function searchPlan(address) {
   const split = await splitSettlement(address);
-  if (!split) return { cacheKey: address, queries: [address], viewbox: KNOWN[0].box, text: address };
+  if (!split) return { cacheKey: address, queries: [address], viewbox: KNOWN[0].box, text: address, city: KNOWN[0].query };
   const s = split.settlement;
   if (s.status !== 'found') return { status: s.status === 'unavailable' ? 'unavailable' : 'not_found' };
-  return { cacheKey: `${normalize(s.name)}|${split.rest}`, queries: [`${split.rest}, ${s.query}`, split.rest], viewbox: s.box, text: split.rest };
+  return { cacheKey: `${normalize(s.name)}|${split.rest}`, queries: [`${split.rest}, ${s.query}`, split.rest], viewbox: s.box, text: split.rest, city: s.query };
 }
+
+// ---------- 2ГИС (основной геокодер, если задан TWOGIS_API_KEY) ----------
+// Номера домов в базе 2ГИС по Казахстану почти везде есть, в отличие от
+// OSM. Ключ — из .env (TWOGIS_API_KEY). Нет ключа или 2ГИС не ответил
+// (сеть, исчерпан лимит, ключ отозван) — поиск идёт по-старому, в
+// Nominatim. Типы результата: здание/место — точная точка (found), улица,
+// район, город — только подсказка для карты (street), точку отмечают вручную.
+const TWOGIS_URL = 'https://catalog.api.2gis.com/3.0/items/geocode';
+const TWOGIS_PRECISE_TYPES = new Set(['building', 'attraction', 'branch', 'parking']);
+const TWOGIS_MAX_QUERIES = 2; // не больше двух запросов на адрес — единицы лимита ограничены
+const twogisKey = () => process.env.TWOGIS_API_KEY || '';
+
+// Предохранитель: демо-ключ 2ГИС кончается (срок — месяц, лимит — 1000 единиц),
+// ключ отзывают, сеть пропадает. Чтобы каждая заявка не ждала отказа 2ГИС перед
+// запасным Nominatim, после сбоя 2ГИС отключается на время и поиск идёт сразу
+// в Nominatim; потом 2ГИС пробуется снова (новый ключ подхватится без перезапуска
+// кода — достаточно обновить .env и перезапустить сервер, либо дождаться повтора).
+//   ключ/лимит (401, 403, 429) — пауза час: раз в час пробный запрос;
+//   прочие сбои (сеть, 5xx) — после 3 подряд пауза 2 минуты.
+const TWOGIS_FATAL_CODES = new Set([401, 402, 403, 429]);
+const TWOGIS_FATAL_PAUSE_MS = 60 * 60 * 1000;
+const TWOGIS_SOFT_PAUSE_MS = 2 * 60 * 1000;
+const TWOGIS_SOFT_FAILS = 3;
+const twogisState = { blockedUntil: 0, softFails: 0, lastReason: null };
+
+const twogisAvailable = () => !!twogisKey() && Date.now() >= twogisState.blockedUntil;
+function twogisOk() {
+  twogisState.softFails = 0;
+  twogisState.lastReason = null;
+}
+function twogisFailed(err) {
+  const code = err && err.twogisCode;
+  let pauseMs = 0;
+  if (TWOGIS_FATAL_CODES.has(code)) pauseMs = TWOGIS_FATAL_PAUSE_MS;
+  else if (++twogisState.softFails >= TWOGIS_SOFT_FAILS) pauseMs = TWOGIS_SOFT_PAUSE_MS;
+  if (!pauseMs) return;
+  twogisState.softFails = 0;
+  twogisState.blockedUntil = Date.now() + pauseMs;
+  twogisState.lastReason = err.message;
+  const why = TWOGIS_FATAL_CODES.has(code) ? 'ключ не принят или исчерпан лимит (демо-ключ закончился?)' : 'сервис не отвечает';
+  console.warn(`[rides] 2ГИС отключён на ${Math.round(pauseMs / 60000)} мин, поиск адреса идёт через Nominatim: ${why} — ${err.message}`);
+}
+// Состояние для диагностики (например, страница админа или тесты).
+const twogisStatus = () => ({ enabled: !!twogisKey(), active: twogisAvailable(), blockedUntil: twogisState.blockedUntil || null, reason: twogisState.lastReason });
+
+const inBox = (lat, lng, box) => {
+  const [left, bottom, right, top] = String(box).split(',').map(Number);
+  return lng >= left && lng <= right && lat >= bottom && lat <= top;
+};
+
+// Один запрос к 2ГИС → { lat, lng, precise, matched } | null (не найдено).
+// Бросает ошибку, если сервис не ответил: тогда включается запасной Nominatim.
+async function geocodeTwogis(query, box, text) {
+  const params = new URLSearchParams({ q: query, fields: 'items.point,items.full_name,items.address_name', page_size: '5', key: twogisKey() });
+  const res = await fetch(`${TWOGIS_URL}?${params.toString()}`);
+  const data = await res.json().catch(() => ({}));
+  const code = data && data.meta ? data.meta.code : res.status;
+  if (code === 404) return null; // ничего не найдено
+  if (!res.ok || code !== 200) throw Object.assign(new Error(`2GIS ${code}`), { twogisCode: Number(code) || res.status });
+  const houseNo = (String(text).match(/\d+[а-яa-z]?(?:\s*[/\\]\s*\d+)?\s*$/i) || [])[0];
+  let best = null;
+  for (const item of (data.result && data.result.items) || []) {
+    if (!item.point) continue;
+    const lat = Number(item.point.lat);
+    const lng = Number(item.point.lon);
+    if (!inBox(lat, lng, box)) continue; // та же улица в другом городе — не наш адрес
+    let precise = TWOGIS_PRECISE_TYPES.has(item.type);
+    // Без номера дома в запросе («Штабы», «Центральный офис») 2ГИС подставляет
+    // что-то похожее по названию (аэропорт вместо штаба) — точкой не берём,
+    // точку отмечают на карте. Организацию/место (не здание) принимаем, только
+    // если номер дома подтверждён её адресом.
+    if (precise && !houseNo) precise = false;
+    if (precise && item.type !== 'building' && !item.address_name) precise = false;
+    // Нашёлся дом с другим номером — рядом, но точкой для маршрута не берём.
+    if (precise && houseNo && item.address_name) {
+      const want = houseNo.replace(/\s+/g, '').replace('\\', '/').toLowerCase();
+      if (!String(item.address_name).replace(/\s+/g, '').toLowerCase().includes(want)) precise = false;
+    }
+    const found = { lat, lng, precise, matched: item.full_name || item.address_name || item.name || null };
+    if (precise) return found;
+    if (!best) best = found;
+  }
+  return best;
+}
+
+async function searchTwogis(plan) {
+  const queries = [...new Set(plan.queries.map((q) => (q.toLowerCase().includes(plan.city.toLowerCase()) ? q : `${plan.city}, ${q}`)))].slice(0, TWOGIS_MAX_QUERIES);
+  let result = null;
+  for (const q of queries) {
+    const r = await geocodeTwogis(q, plan.viewbox, plan.text);
+    if (r && (r.precise || !result)) result = r;
+    if (result && result.precise) break;
+  }
+  return result;
+}
+
+async function searchTwogisGuarded(plan) {
+  try {
+    const r = await searchTwogis(plan);
+    twogisOk();
+    return r;
+  } catch (err) {
+    twogisFailed(err);
+    throw err;
+  }
+}
+
+async function searchNominatim(plan) {
+  // Казахское написание карта часто не находит — после запросов как есть
+  // пробуем то же русскими буквами (дальше первого точного ответа не идём).
+  const ruQueries = plan.queries.map(kzToRu).filter((q) => !plan.queries.includes(q));
+  const queries = [...plan.queries, ...ruQueries];
+  let result = null;
+  // До первого точного (дом, здание); иначе — первое неточное (улица).
+  for (const q of queries) {
+    const r = await geocodeRaw(q, plan.viewbox, plan.text); // последовательно — щадим лимит Nominatim
+    if (r && (r.precise || !result)) result = r;
+    if (result && result.precise) break;
+  }
+  return result;
+}
+
+// Ответ с кэшем geocode_cache: свежую запись отдаём сразу; search() — запрос
+// к геокодеру (бросает ошибку, если сервис не ответил).
+async function lookupCached(key, search) {
+  const db = getWriteDb();
+  const row = db.prepare('SELECT lat, lng, found, precise, matched, fetched_at FROM geocode_cache WHERE address = ?').get(key);
+  const fromRow = (r) => (r.found ? { status: r.precise ? 'found' : 'street', lat: r.lat, lng: r.lng, matched: r.matched } : { status: 'not_found' });
+  if (row) {
+    const ageDays = (Date.now() - new Date(row.fetched_at + 'Z').getTime()) / 86400000;
+    // Найденное без точности или без названия (кэш до проверки совпадения
+    // улицы — в нём бывали чужие места) — переспрашиваем.
+    if (ageDays < GEOCODE_TTL_DAYS && (!row.found || (row.precise != null && row.matched))) return fromRow(row);
+  }
+  let result = null;
+  try {
+    result = await search();
+  } catch (err) {
+    if (row && row.found && row.precise != null && row.matched) return { ...fromRow(row), fromStale: true };
+    return { status: 'unavailable', error: err }; // старой записи без проверки совпадения не верим
+  }
+  db.prepare(
+    `INSERT INTO geocode_cache (address, lat, lng, found, precise, matched, fetched_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(address) DO UPDATE SET
+       lat = excluded.lat, lng = excluded.lng, found = excluded.found, precise = excluded.precise,
+       matched = excluded.matched, fetched_at = excluded.fetched_at`
+  ).run(key, result ? result.lat : null, result ? result.lng : null, result ? 1 : 0, result ? (result.precise ? 1 : 0) : null, result ? result.matched : null);
+  return result ? { status: result.precise ? 'found' : 'street', lat: result.lat, lng: result.lng, matched: result.matched } : { status: 'not_found' };
+}
+
+const publicResult = ({ error, fromStale, ...r }) => r;
 
 // Поиск адреса с кэшем и оценкой точности:
 //   found       — конкретное место (дом, здание, организация);
@@ -142,40 +295,18 @@ async function lookupAddress(address) {
   if (!text) return { status: 'not_found' };
   const plan = await searchPlan(text);
   if (plan.status) return { status: plan.status };
-  // Казахское написание карта часто не находит — после запросов как есть
-  // пробуем то же русскими буквами (дальше первого точного ответа не идём).
-  const ruQueries = plan.queries.map(kzToRu).filter((q) => !plan.queries.includes(q));
-  plan.queries = [...plan.queries, ...ruQueries];
-  const key = plan.cacheKey;
-  const db = getWriteDb();
-  const row = db.prepare('SELECT lat, lng, found, precise, matched, fetched_at FROM geocode_cache WHERE address = ?').get(key);
-  const fromRow = (r) => (r.found ? { status: r.precise ? 'found' : 'street', lat: r.lat, lng: r.lng, matched: r.matched } : { status: 'not_found' });
-  if (row) {
-    const ageDays = (Date.now() - new Date(row.fetched_at + 'Z').getTime()) / 86400000;
-    // Найденное без точности или без названия (кэш до проверки совпадения
-    // улицы — в нём бывали чужие места) — переспрашиваем.
-    if (ageDays < GEOCODE_TTL_DAYS && (!row.found || (row.precise != null && row.matched))) return fromRow(row);
+  // Основной геокодер — 2ГИС (если есть ключ). Записи кэша 2ГИС и Nominatim
+  // раздельные (префикс ключа), чтобы старые ответы OSM не заслоняли 2ГИС.
+  if (twogisAvailable()) {
+    const r = await lookupCached(`2gis|${plan.cacheKey}`, () => searchTwogisGuarded(plan));
+    if (r.status !== 'unavailable') return publicResult(r);
+    // сбой уже учтён предохранителем — запасной вариант ниже
+  } else if (twogisKey()) {
+    // 2ГИС на паузе: свежие ответы 2ГИС из кэша всё равно используем (они бесплатны)
+    const cached = await lookupCached(`2gis|${plan.cacheKey}`, () => { throw new Error('2GIS на паузе'); });
+    if (cached.status !== 'unavailable') return publicResult(cached);
   }
-  let result = null;
-  try {
-    // До первого точного (дом, здание); иначе — первое неточное (улица).
-    for (const q of plan.queries) {
-      const r = await geocodeRaw(q, plan.viewbox, plan.text); // последовательно — щадим лимит Nominatim
-      if (r && (r.precise || !result)) result = r;
-      if (result?.precise) break;
-    }
-  } catch (err) {
-    if (row && row.found && row.precise != null && row.matched) return fromRow(row);
-    return { status: 'unavailable' }; // старой записи без проверки совпадения не верим
-  }
-  db.prepare(
-    `INSERT INTO geocode_cache (address, lat, lng, found, precise, matched, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-     ON CONFLICT(address) DO UPDATE SET
-       lat = excluded.lat, lng = excluded.lng, found = excluded.found, precise = excluded.precise,
-       matched = excluded.matched, fetched_at = excluded.fetched_at`
-  ).run(key, result ? result.lat : null, result ? result.lng : null, result ? 1 : 0, result ? (result.precise ? 1 : 0) : null, result ? result.matched : null);
-  return result ? { status: result.precise ? 'found' : 'street', lat: result.lat, lng: result.lng, matched: result.matched } : { status: 'not_found' };
+  return publicResult(await lookupCached(plan.cacheKey, () => searchNominatim(plan)));
 }
 
 async function osrmLegKm(points) {
@@ -413,6 +544,8 @@ module.exports = {
   recomputeRequestEstimate,
   geocodeAddress,
   lookupAddress,
+  twogisStatus,
+  twogisState,
   chooseInsertIndex,
   estimateProposalImpact,
 };
