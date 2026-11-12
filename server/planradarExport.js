@@ -113,8 +113,19 @@ async function fetchAllTickets(projectId) {
       if (inc.type !== 'ticket-types') continue;
       for (const [fieldId, def] of Object.entries(attr(inc, 'typed-fields') || {})) if (def && def.name) fieldNames.set(fieldId, def.name);
     }
-    if (batch.length < PAGESIZE) return { tickets, fieldNames };
+    if (batch.length < PAGESIZE) break;
   }
+  // в ответе замечаний типов нет — берём их отдельным запросом (один на объект); сбой не страшен:
+  // без названий полей фото классифицируются по автору и времени, а описанием остаётся название
+  if (tickets.length && !fieldNames.size) {
+    try {
+      const body = await apiGet(`/v1/${customerId()}/projects/${projectId}/ticket_types`);
+      for (const type of body.data || []) {
+        for (const [fieldId, def] of Object.entries(attr(type, 'typed-fields') || {})) if (def && def.name) fieldNames.set(fieldId, def.name);
+      }
+    } catch (err) { /* см. выше */ }
+  }
+  return { tickets, fieldNames };
 }
 
 async function fetchAll(path) {
@@ -230,7 +241,18 @@ async function fetchRefs(projectId) {
 // ---------- строки и Excel ----------
 const idOf = (v) => (v && typeof v === 'object' ? v.id : v);
 
-function ticketRow(ticket, projectName, refs) {
+// Описание замечания — поле формы «Подробное описание замечания»; нет описания — название.
+function descriptionOf(ticket, fieldNames) {
+  const values = attr(ticket, 'typed-values', 'typed_values') || {};
+  for (const [fieldId, name] of fieldNames || []) {
+    if (!/описание замечания/i.test(name)) continue;
+    const text = values[fieldId];
+    if (typeof text === 'string' && text.trim()) return text.trim();
+  }
+  return attr(ticket, 'subject') || '';
+}
+
+function ticketRow(ticket, projectName, refs, fieldNames) {
   const status = String(attr(ticket, 'status-id', 'status_id') ?? '');
   const authorId = idOf(attr(ticket, 'author-id', 'author_id'));
   const assigneeId = idOf(attr(ticket, 'assigned-to-id', 'assigned_to_id'));
@@ -239,7 +261,7 @@ function ticketRow(ticket, projectName, refs) {
   return {
     project: projectName,
     number: attr(ticket, 'sequential-id', 'sequential_id'),
-    subject: attr(ticket, 'subject') || '',
+    subject: descriptionOf(ticket, fieldNames),
     status: STATUS_NAMES[status] || status,
     author: authorId == null ? '' : refs.users.get(String(authorId)) || String(authorId),
     assignee,
@@ -255,9 +277,8 @@ function ticketRow(ticket, projectName, refs) {
 }
 
 const COLUMNS = [
-  { header: 'Объект', key: 'project', width: 28 },
   { header: '№', key: 'number', width: 8 },
-  { header: 'Название', key: 'subject', width: 60 },
+  { header: 'Описание', key: 'subject', width: 60 },
   { header: 'Статус', key: 'status', width: 14 },
   { header: 'Автор', key: 'author', width: 26 },
   { header: 'Исполнитель', key: 'assignee', width: 26 },
@@ -275,17 +296,22 @@ async function buildWorkbook(rows, errors = [], { withPhotos = false } = {}) {
   const ws = wb.addWorksheet('Замечания');
   const columns = [...COLUMNS];
   if (withPhotos) {
-    columns.push({ header: 'Фото до, шт.', key: 'beforeCount', width: 11 });
-    columns.push({ header: 'Фото после, шт.', key: 'afterCount', width: 12 });
     columns.push({ header: 'Фото до', key: 'photoBefore', width: PHOTO_COLUMN_WIDTH });
     columns.push({ header: 'Фото после', key: 'photoAfter', width: PHOTO_COLUMN_WIDTH });
   }
   ws.columns = columns.map(({ header, key, width }) => ({ header, key, width }));
-  rows.forEach((r) => {
-    const row = ws.addRow(COLUMNS.reduce((acc, c) => ({ ...acc, [c.key]: c.date ? asCellDate(r[c.key]) : r[c.key] }), withPhotos ? { beforeCount: r.beforeCount || null, afterCount: r.afterCount || null } : {}));
+  // объекты — подзаголовки (жирным, на пункт крупнее обычного текста), под ними замечания объекта
+  const byProject = new Map();
+  rows.forEach((r) => { if (!byProject.has(r.project)) byProject.set(r.project, []); byProject.get(r.project).push(r); });
+  const ordered = [...byProject.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ru'));
+  const middle = { vertical: 'middle' };
+  const addTicket = (r) => {
+    const row = ws.addRow(COLUMNS.reduce((acc, c) => ({ ...acc, [c.key]: c.date ? asCellDate(r[c.key]) : r[c.key] }), {}));
+    row.alignment = middle;
+    row.eachCell({ includeEmpty: true }, (cell, n) => { cell.alignment = { vertical: 'middle', wrapText: columns[n - 1] && columns[n - 1].key === 'subject' }; });
     if (!withPhotos || !(r.photosBefore.length || r.photosAfter.length)) return;
     row.height = PHOTO_ROW_HEIGHT;
-    // столбцы: после обычных — два счётчика, затем «Фото до» и «Фото после»;
+    // столбцы: после обычных — «Фото до» и «Фото после»;
     // в каждой ячейке до четырёх фото сеткой 2×2 (слева направо, сверху вниз)
     const place = (photos, col) => photos.forEach((p, i) => {
       // вписываем в плитку с сохранением пропорций, больше натурального размера не растягиваем
@@ -299,17 +325,24 @@ async function buildWorkbook(rows, errors = [], { withPhotos = false } = {}) {
         editAs: 'oneCell',
       });
     });
-    place(r.photosBefore, COLUMNS.length + 2);
-    place(r.photosAfter, COLUMNS.length + 3);
-  });
+    place(r.photosBefore, COLUMNS.length);
+    place(r.photosAfter, COLUMNS.length + 1);
+  };
+  for (const [project, list] of ordered) {
+    const sub = ws.addRow([project]);
+    ws.mergeCells(sub.number, 1, sub.number, columns.length);
+    sub.font = { bold: true, size: 12 };
+    sub.alignment = { vertical: 'middle' };
+    sub.height = 22;
+    sub.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
+    list.forEach(addTicket);
+  }
   COLUMNS.forEach((c, i) => { if (c.date) ws.getColumn(i + 1).numFmt = 'dd.mm.yyyy'; });
   const head = ws.getRow(1);
   head.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
   head.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } };
   head.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
   ws.views = [{ state: 'frozen', ySplit: 1 }];
-  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
-  ws.getColumn('subject').alignment = { wrapText: true, vertical: 'top' };
   if (errors.length) {
     const es = wb.addWorksheet('Ошибки');
     es.columns = [{ header: 'Объект', key: 'project', width: 32 }, { header: 'Ошибка', key: 'error', width: 60 }];
@@ -383,7 +416,7 @@ function startExport({ from, to, projectIds = null, withPhotos = true }) {
           const tickets = filterByPeriod(all.tickets, from, to);
           if (tickets.length) {
             const refs = await fetchRefs(project.id);
-            const projectRows = tickets.map((t) => ticketRow(t, project.name, refs));
+            const projectRows = tickets.map((t) => ticketRow(t, project.name, refs, fieldNames));
             if (withPhotos) {
               const downloads = [];
               for (let i = 0; i < tickets.length; i++) {
@@ -463,4 +496,4 @@ router.get('/exports/:id/file', (req, res) => {
   res.send(job.buffer);
 });
 
-module.exports = { router, startExport, imageInfo, classifyPhoto, MAX_INLINE_PHOTOS, getJob, filterByPeriod, almatyDate, deadlineOf, ticketRow, buildWorkbook, STATUS_NAMES };
+module.exports = { descriptionOf, router, startExport, imageInfo, classifyPhoto, MAX_INLINE_PHOTOS, getJob, filterByPeriod, almatyDate, deadlineOf, ticketRow, buildWorkbook, STATUS_NAMES };

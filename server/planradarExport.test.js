@@ -107,21 +107,25 @@ test('выгрузка: нужный период, имена из справо�
   assert.ok(!calls.some((c) => /projects\/lic\/users/.test(c)), 'справочники — только по объектам с замечаниями');
 
   const ws = await readSheet(job.buffer);
-  assert.deepEqual(ws.getRow(1).values.slice(1), ['Объект', '№', 'Название', 'Статус', 'Автор', 'Исполнитель', 'Слой', 'Срок', 'Создано', 'Закрыто',
-    'Фото до, шт.', 'Фото после, шт.', 'Фото до', 'Фото после']);
-  assert.equal(ws.rowCount, 4);
-  // порядок — по дате создания: №7 (02.11, дом 63), №1 (03.11, КОС), №5 (05.11, дом 63)
-  const first = ws.getRow(2).values;
-  assert.equal(first[1], 'Жилой дом поз.63');
-  assert.equal(first[2], 7);
-  assert.equal(first[4], 'В работе');
-  assert.equal(first[5], 'Иван Петров');
-  assert.equal(first[6], 'sub@x.kz');
-  assert.equal(first[7], 'Блок А, 3 этаж');
-  assert.equal(first[9].toISOString().slice(0, 10), '2026-11-02');
-  assert.equal(ws.getRow(3).values[2], 1);
-  assert.equal(ws.getRow(4).values[2], 5);
-  assert.equal(ws.getRow(4).values[10].toISOString().slice(0, 10), '2026-11-07');
+  assert.deepEqual(ws.getRow(1).values.slice(1), ['№', 'Описание', 'Статус', 'Автор', 'Исполнитель', 'Слой', 'Срок', 'Создано', 'Закрыто', 'Фото до', 'Фото после']);
+  assert.equal(ws.rowCount, 6);
+  // объекты — подзаголовки (по алфавиту), внутри — по дате создания
+  const sub = ws.getRow(2);
+  assert.equal(sub.getCell(1).value, 'Жилой дом поз.63');
+  assert.equal(sub.getCell(1).font.bold, true);
+  assert.equal(sub.getCell(1).font.size, 12);
+  assert.equal(ws.getRow(5).getCell(1).value, 'КОС');
+  const first = ws.getRow(3).values;
+  assert.equal(first[1], 7);
+  assert.equal(first[3], 'В работе');
+  assert.equal(first[4], 'Иван Петров');
+  assert.equal(first[5], 'sub@x.kz');
+  assert.equal(first[6], 'Блок А, 3 этаж');
+  assert.equal(first[8].toISOString().slice(0, 10), '2026-11-02');
+  assert.equal(ws.getRow(3).getCell(2).alignment.vertical, 'middle');
+  assert.equal(ws.getRow(4).values[1], 5);
+  assert.equal(ws.getRow(6).values[1], 1);
+  assert.equal(ws.getRow(4).values[9].toISOString().slice(0, 10), '2026-11-07');
   const errors = await readSheet(job.buffer, 'Ошибки');
   assert.deepEqual(errors.getRow(2).values.slice(1), ['Лицей', 'PlanRadar 503']);
 });
@@ -240,15 +244,11 @@ test('фото: «до» и «после» раздельно, встраива�
   assert.ok(!calls.some((c) => /full\d/.test(c)), 'берутся миниатюры, не оригиналы');
   assert.equal(calls.filter((c) => /s3\.test/.test(c)).length, 6, 'скачиваются 2 фото «до» и первые 4 «после»');
   const ws = await readSheet(job.buffer);
-  const row = ws.getRow(2).values;
-  assert.equal(row[11], 2, 'фото до — всего');
-  assert.equal(row[12], 6, 'фото после — всего (видео не считается)');
-  assert.equal(ws.getRow(3).values[11], undefined);
-  assert.equal(ws.getRow(2).height, 347, 'строка с фото вмещает две плитки по высоте');
-  assert.equal(ws.getColumn(13).width, 87, 'столбец под фото вмещает две плитки по ширине');
+  assert.equal(ws.getRow(3).height, 347, 'строка с фото вмещает две плитки по высоте');
+  assert.equal(ws.getColumn(10).width, 87, 'столбец под фото вмещает две плитки по ширине');
 
   const imgs = ws.getImages().map((i) => ({ col: Math.floor(i.range.tl.col), ext: i.range.ext }));
-  assert.deepEqual(imgs.map((i) => i.col), [12, 12, 13, 13, 13], 'до — 2 фото в столбце «Фото до», после — 3 в «Фото после» (img3 не скачалась)');
+  assert.deepEqual(imgs.map((i) => i.col), [9, 9, 10, 10, 10], 'до — 2 фото в столбце «Фото до», после — 3 в «Фото после» (img3 не скачалась)');
   // 300×200 вписывается в 330×244 без растягивания: остаётся натуральный размер
   assert.deepEqual(imgs[0].ext, { width: 300, height: 200 });
 });
@@ -260,7 +260,7 @@ test('без фото: запросов вложений нет, столбцо�
   await job.promise;
   assert.ok(!calls.some((c) => /attachments/.test(c)));
   const ws = await readSheet(job.buffer);
-  assert.equal(ws.getRow(1).values.length - 1, 10);
+  assert.equal(ws.getRow(1).values.length - 1, 9);
   assert.equal(ws.getImages().length, 0);
 });
 
@@ -275,4 +275,14 @@ test('несколько отмеченных объектов: опрашива
   await job.promise;
   assert.equal(job.count, 2);
   assert.ok(!calls.some((c) => /projects\/lic\//.test(c)), 'неотмеченный объект не запрашивается');
+});
+
+test('описание замечания — поле «Подробное описание замечания», нет описания — название', () => {
+  const { descriptionOf } = require('./planradarExport');
+  const names = new Map([['tfD', 'Подробное описание замечания'], ['tfN', 'Примечания']]);
+  const t = (values) => ({ attributes: { subject: 'Штукатурка стен', 'typed-values': values } });
+  assert.equal(descriptionOf(t({ tfD: '  Отклонение от вертикали  ', tfN: 'прим' }), names), 'Отклонение от вертикали');
+  assert.equal(descriptionOf(t({ tfD: '   ', tfN: 'прим' }), names), 'Штукатурка стен');
+  assert.equal(descriptionOf(t({ tfD: null }), names), 'Штукатурка стен');
+  assert.equal(descriptionOf(t({ tfD: 'x' }), new Map()), 'Штукатурка стен');
 });
