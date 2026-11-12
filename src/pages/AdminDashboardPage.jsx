@@ -54,6 +54,12 @@ const SECTIONS = [
     path: "/admin/financing-resync",
     color: "#7c5cff",
   },
+  {
+    title: "Замечания PlanRadar",
+    description: "Выгрузить в Excel замечания, созданные в PlanRadar за выбранный период",
+    path: "/admin/planradar-export",
+    color: "#0b7285",
+  },
 ];
 
 const AdminDashboardPage = () => {

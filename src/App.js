@@ -49,6 +49,7 @@ import RidesAdminPage from "./pages/rides/RidesAdminPage";
 import TelegramMiniApp, { TelegramMiniAppRoute } from "./pages/rides/TelegramMiniApp";
 import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
+import PlanradarExportAdminPage from "./pages/PlanradarExportAdminPage";
 
 
 const Protected = ({ children }) => (
@@ -374,6 +375,16 @@ const App = () => {
             <Protected>
               <AdminRoute>
                 <FinancingResyncAdminPage />
+              </AdminRoute>
+            </Protected>
+          }
+        />
+        <Route
+          path="/admin/planradar-export"
+          element={
+            <Protected>
+              <AdminRoute>
+                <PlanradarExportAdminPage />
               </AdminRoute>
             </Protected>
           }

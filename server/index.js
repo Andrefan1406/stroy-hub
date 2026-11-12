@@ -86,6 +86,7 @@ app.use('/api/people-gaps', peopleGapsCheckRouter);
 app.use('/api/admin/gpr-report', gprReportAdminRouter);
 app.use('/api/gpr-report', gprReportCheckRouter);
 app.use('/api/admin/planradar', planradarAdminRouter);
+app.use('/api/admin/planradar', require('./planradarExport').router);
 app.use('/api/planradar', planradarCheckRouter);
 app.use('/api/admin/blocked-users/manual', manualBlockAdminRouter);
 app.use('/api/admin/blocked-users', blockedUsersAdminRouter);

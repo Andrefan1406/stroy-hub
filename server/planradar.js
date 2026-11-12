@@ -187,5 +187,6 @@ function startPlanradarSync() {
 
 module.exports = {
   checkRouter, adminRouter, startPlanradarSync, refreshOverdue, overdueForEmail,
+  loadProjects, attr, API_BASE,
   countOverdue, ticketDeadline, daysBefore, todayAlmaty, OVERDUE_DAYS,
 };
