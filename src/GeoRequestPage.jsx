@@ -15,6 +15,7 @@ import {
 } from './data/constructionData';
 import Dialog from './components/RequestDialog';
 import { Field, SelectField } from './components/RequestFormFields';
+import { clearSubmissionId, getSubmissionId } from './utils/submissionId';
 
 // Скрипт Google Apps Script для записи в таблицу (адрес — в переменной окружения сборки).
 const SCRIPT_URL = process.env.REACT_APP_GEO_SCRIPT_URL || '';
@@ -240,6 +241,10 @@ const GeoRequestPage = () => {
       phone: userPhone,
     }));
 
+    // Один и тот же заполненный набор данных — один и тот же ID при любом числе повторов:
+    // скрипт запишет такую заявку один раз, даже если ответ не дошёл (см. utils/submissionId.js).
+    const submissionId = getSubmissionId('geo', payload);
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
     try {
@@ -247,9 +252,10 @@ const GeoRequestPage = () => {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(payload.map((row) => ({ ...row, submissionId }))),
         signal: controller.signal,
       });
+      clearSubmissionId('geo');
       localStorage.setItem(RESPONSIBLE_KEY, JSON.stringify({
         fullName: userFullName.trim(), position: userPosition.trim(), phone: userPhone.trim()
       }));
@@ -260,10 +266,11 @@ const GeoRequestPage = () => {
       setSent(true);
     } catch (err) {
       console.error(err);
-      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор без проверки даст дубль.
+      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор безопасен: у заявки тот же ID,
+      // и скрипт второй раз её не запишет.
       setSubmitError(
         err && err.name === 'AbortError'
-          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти: уточните у геодезической службы, прежде чем отправлять ещё раз, иначе получится дубль.'
+          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти. Нажмите «Отправить заявку» ещё раз: если она уже дошла, повторно не запишется.'
           : 'Заявка не отправлена: нет связи с сервером. Проверьте интернет и нажмите «Отправить заявку» ещё раз — введённые данные сохранены.'
       );
     } finally {

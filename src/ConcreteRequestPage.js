@@ -17,6 +17,7 @@ import ConcretePendingRequestsTable from './components/ConcretePendingRequestsTa
 import Dialog from './components/RequestDialog';
 import { Field, SelectField } from './components/RequestFormFields';
 import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
+import { clearSubmissionId, getSubmissionId } from './utils/submissionId';
 
 // poaNumber/poaDate/poaName — доверенность на получение бетона (номер,
 // дата, ФИО доверенного лица), обязательна в каждой строке. В таблице
@@ -455,13 +456,18 @@ const ConcreteRequestPage = () => {
     responsiblePhone: userPhone
   }));
 
+  // Один и тот же заполненный набор данных — один и тот же ID при любом числе повторов:
+  // скрипт запишет такую заявку один раз, даже если ответ не дошёл (см. utils/submissionId.js).
+  const submissionId = getSubmissionId('concrete', payload);
+
   try {
     await fetch('https://script.google.com/macros/s/AKfycbx9_aWErej5qsHUaY_x8k0D7mrPYRcY-1WqdI2zge39VZoADllt7Xv12cxdys72-4U/exec', {
       method: 'POST',
       mode: 'no-cors',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(payload.map((row) => ({ ...row, submissionId }))),
       headers: { 'Content-Type': 'application/json' }
     });
+    clearSubmissionId('concrete');
 
     setNotice({
       kind: 'success',

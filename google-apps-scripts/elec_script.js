@@ -3,6 +3,8 @@
 // пишет в таблицу "заявка на электриков (Ответы)" по её ID.
 // Deploy → New deployment → Web app → Execute as: Me, Who has access: Anyone.
 // Полученный URL /exec положить в переменную окружения REACT_APP_ELEC_SCRIPT_URL (Netlify).
+// После правки: Deploy → Manage deployments → Edit → Version: New version
+// (тот же URL /exec остаётся рабочим).
 
 const SPREADSHEET_ID = '1XniY3_hC9hdSPllqxLj45JSbKfc3avY0AD49dW0lM_Y';
 const SHEET_NAME = 'Заявки';
@@ -20,7 +22,37 @@ const HEADERS = [
   'ФИО и должность',     // I
   'Телефон',             // J
   'Выполнено',           // K
+  'ID отправки',         // L — защита от дублей, см. ensureIdColumn_
 ];
+
+// ---- Защита от дублей ----------------------------------------------------
+// Форма шлёт запрос без возможности прочитать ответ (no-cors); при обрыве по
+// таймауту заявка могла дойти, и человек отправлял её снова. Поэтому каждая
+// отправка несёт submissionId (одинаковый у всех повторов), а ID записывается
+// в крайний правый столбец «ID отправки». Если такой ID уже есть среди
+// последних DEDUPE_ROWS строк — повтор не записывается.
+const ID_HEADER = 'ID отправки';
+const DEDUPE_ROWS = 2000;
+
+// Номер столбца «ID отправки»: найденный в заголовке или новый — правее всех
+// заполненных (но не левее minCol, чтобы не залезть на столбцы формы).
+function ensureIdColumn_(sheet, minCol) {
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const found = headers.indexOf(ID_HEADER);
+  if (found >= 0) return found + 1;
+  const col = Math.max(lastCol + 1, minCol);
+  sheet.getRange(1, col).setValue(ID_HEADER);
+  return col;
+}
+
+function hasSubmission_(sheet, idCol, id) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
+  const start = Math.max(2, lastRow - DEDUPE_ROWS + 1);
+  const ids = sheet.getRange(start, idCol, lastRow - start + 1, 1).getValues();
+  return ids.some(r => String(r[0]) === id);
+}
 
 function doPost(e) {
   try {
@@ -43,25 +75,46 @@ function doPost(e) {
 
     const data = JSON.parse(e.postData.contents);
     const rows = Array.isArray(data) ? data : [data];
+    const submissionId = String((rows[0] && rows[0].submissionId) || '');
 
     const now = new Date();
     const timestamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'dd.MM.yyyy HH:mm:ss');
 
-    rows.forEach(row => {
-      sheet.appendRow([
-        timestamp,                  // A: Отметка времени
-        row.date            || '', // B: Дата работ
-        row.startTime       || '', // C: Время начала
-        row.objectCategory  || '', // D: Категория объекта
-        row.object          || '', // E: Объект
-        row.position        || '', // F: Позиция
-        row.workCategory    || '', // G: Категория работ
-        row.workDescription || '', // H: Описание работ
-        row.fullName        || '', // I: ФИО и должность
-        row.phone           || '', // J: Телефон
-        '',                        // K: Выполнено (заполняется вручную)
-      ]);
-    });
+    // Проверка и запись — под одной блокировкой, чтобы два почти одновременных
+    // повтора не прошли проверку оба.
+    const lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      const idCol = ensureIdColumn_(sheet, HEADERS.length);
+      if (submissionId && hasSubmission_(sheet, idCol, submissionId)) {
+        return ContentService
+          .createTextOutput(JSON.stringify({ status: 'duplicate', added: 0 }))
+          .setMimeType(ContentService.MimeType.JSON);
+      }
+
+      const values = rows.map(row => {
+        const line = [
+          timestamp,                  // A: Отметка времени
+          row.date            || '', // B: Дата работ
+          row.startTime       || '', // C: Время начала
+          row.objectCategory  || '', // D: Категория объекта
+          row.object          || '', // E: Объект
+          row.position        || '', // F: Позиция
+          row.workCategory    || '', // G: Категория работ
+          row.workDescription || '', // H: Описание работ
+          row.fullName        || '', // I: ФИО и должность
+          row.phone           || '', // J: Телефон
+          '',                        // K: Выполнено (заполняется вручную)
+        ];
+        while (line.length < idCol - 1) line.push('');
+        line[idCol - 1] = submissionId; // крайний правый столбец
+        return line;
+      });
+      // Одной записью — чтобы обрыв посреди отправки не оставил половину заявки.
+      sheet.getRange(sheet.getLastRow() + 1, 1, values.length, idCol).setValues(values);
+    } finally {
+      lock.releaseLock();
+    }
 
     return ContentService
       .createTextOutput(JSON.stringify({ status: 'ok', added: rows.length }))
