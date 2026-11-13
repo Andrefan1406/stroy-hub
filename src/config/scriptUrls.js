@@ -3,9 +3,8 @@
 //
 // Значение задаётся переменной окружения REACT_APP_<ФОРМА>_SCRIPT_URL (Netlify / .env).
 // CRA подставляет переменные при сборке, поэтому после смены значения сайт нужно пересобрать.
-// Для форм, чей адрес уже был в коде, остался запасной вариант — чтобы сайт не сломался,
-// пока переменные не заведены. Для электриков и геодезии запасного адреса нет: пустой адрес
-// страница показывает как ошибку настройки.
+// У каждой формы есть запасной адрес на случай, если переменная не задана (например, в локальном
+// .env), — чтобы форма не ломалась. Адрес /exec не секрет: он виден в браузере любому.
 //
 // Адрес берётся в Apps Script: Deploy → Manage deployments → Web app URL.
 // Исходный код скриптов лежит в google-apps-scripts/.
@@ -18,9 +17,13 @@ export const SCRIPT_URLS = {
     trim(process.env.REACT_APP_CONCRETE_SCRIPT_URL) ||
     'https://script.google.com/macros/s/AKfycbx9_aWErej5qsHUaY_x8k0D7mrPYRcY-1WqdI2zge39VZoADllt7Xv12cxdys72-4U/exec',
   // google-apps-scripts/elec_script.js
-  elec: trim(process.env.REACT_APP_ELEC_SCRIPT_URL),
+  elec:
+    trim(process.env.REACT_APP_ELEC_SCRIPT_URL) ||
+    'https://script.google.com/macros/s/AKfycbwlXkDFUUxOrvMadrXqNxEi2YIul4MzkwHk3GBXZI-8UZzCQnXNODURuhrNM7U8AqucKA/exec',
   // google-apps-scripts/geo_script.js
-  geo: trim(process.env.REACT_APP_GEO_SCRIPT_URL),
+  geo:
+    trim(process.env.REACT_APP_GEO_SCRIPT_URL) ||
+    'https://script.google.com/macros/s/AKfycbxMH1b71k3j732ezPk4FL-QSfNkYsAytxXiQpxm8Got_DShHj83MLmewtxKnvHx4FTv/exec',
   // google-apps-scripts/equipment_script.js
   equipment:
     trim(process.env.REACT_APP_EQUIPMENT_SCRIPT_URL) ||
