@@ -18,6 +18,7 @@ import Dialog from './components/RequestDialog';
 import { Field, SelectField } from './components/RequestFormFields';
 import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
 import { clearSubmissionId, getSubmissionId } from './utils/submissionId';
+import { SCRIPT_URLS } from './config/scriptUrls';
 
 // poaNumber/poaDate/poaName — доверенность на получение бетона (номер,
 // дата, ФИО доверенного лица), обязательна в каждой строке. В таблице
@@ -461,7 +462,7 @@ const ConcreteRequestPage = () => {
   const submissionId = getSubmissionId('concrete', payload);
 
   try {
-    await fetch('https://script.google.com/macros/s/AKfycbx9_aWErej5qsHUaY_x8k0D7mrPYRcY-1WqdI2zge39VZoADllt7Xv12cxdys72-4U/exec', {
+    await fetch(SCRIPT_URLS.concrete, {
       method: 'POST',
       mode: 'no-cors',
       body: JSON.stringify(payload.map((row) => ({ ...row, submissionId }))),

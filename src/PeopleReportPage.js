@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { getAuth } from "firebase/auth";
 import { objectCategoryOptions, objectPositionOptions } from "./data/constructionData";
 import { peopleSiteOptions as siteOptions } from "./data/peopleSites";
+import { SCRIPT_URLS } from "./config/scriptUrls";
 
 const API_URL = process.env.REACT_APP_CONCRETE_CHAT_API_URL || "http://localhost:4000";
 
@@ -216,7 +217,7 @@ const PeopleReportPage = () => {
     }));
 
     try {
-      await fetch("https://script.google.com/macros/s/AKfycbwuh3ksOR53O039FnsoYsgAfPjhgUAQbbX-EG1mUgmqQXubFwgmDZf0tCBNz23rVomA/exec", {
+      await fetch(SCRIPT_URLS.peopleReport, {
         method: "POST",
         mode: "no-cors",
         headers: { "Content-Type": "application/json" },

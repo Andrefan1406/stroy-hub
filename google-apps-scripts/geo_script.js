@@ -2,9 +2,9 @@
 // Автономный скрипт (script.google.com/home) — не привязан к таблице,
 // пишет в таблицу "Заявки на геодезию" по её ID.
 // Deploy → New deployment → Web app → Execute as: Me, Who has access: Anyone.
-// Полученный URL /exec положить в переменную окружения REACT_APP_GEO_SCRIPT_URL (Netlify).
+// URL /exec задаётся в переменной окружения REACT_APP_GEO_SCRIPT_URL (Netlify / .env), см. src/config/scriptUrls.js.
 // После правки: Deploy → Manage deployments → Edit → Version: New version
-// (тот же URL /exec остаётся рабочим).
+// (тот же URL /exec остаётся рабочим, менять его в форме не нужно).
 
 const SPREADSHEET_ID = '1qZ3ud2_-0ZhkwpwY-hUdXNnliOGKMq067E02pX2zP5c';
 const SHEET_NAME = 'Заявки';

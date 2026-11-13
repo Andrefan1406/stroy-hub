@@ -27,6 +27,8 @@ npm run rascenki:seed  # разовая загрузка таблицы расц
 
 Обоим процессам нужен `.env` в корне репозитория (загружается через `dotenv` в `server/index.js`). Используемые ключи: `OLLAMA_API_KEY`, `QDRANT_API_KEY`, `QDRANT_URL`, `VOYAGE_API_KEY`, `GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON`, `GOOGLE_APPLICATION_CREDENTIALS`, `GEMINI_API_KEY`, `RASCENKI_SYNC_CSV_URL`, `INTERNAL_API_KEY`. Фронтенд обращается к бэкенду через `REACT_APP_CONCRETE_CHAT_API_URL` (по умолчанию `http://localhost:4000`).
 
+Адреса Google Apps Script, в которые формы пишут заявки, собраны в `src/config/scriptUrls.js` и задаются переменными `REACT_APP_<ФОРМА>_SCRIPT_URL` (CONCRETE, ELEC, GEO, EQUIPMENT, BLB, ZNB, LAB, PEOPLE_REPORT) — полный список с пояснениями в `.env.example`. У форм, чей адрес уже был в коде, есть запасное значение; у электриков и геодезии его нет, пустой адрес страница показывает как ошибку настройки. Исходники скриптов — в `google-apps-scripts/`; каждый разворачивается в Apps Script вручную, новой версией по тому же URL.
+
 ## Архитектура
 
 ### Поток данных: Google Таблицы → SQLite (только в одну сторону)

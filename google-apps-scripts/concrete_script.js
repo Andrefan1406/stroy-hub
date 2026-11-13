@@ -1,6 +1,7 @@
 // Google Apps Script для записи заявок на бетон/раствор
 // (src/ConcreteRequestPage.js). Привязан к таблице заявок: пишет в активный
 // лист (у веб-приложения это первый лист книги — «Лист1»).
+// URL /exec задаётся в переменной окружения REACT_APP_CONCRETE_SCRIPT_URL (Netlify / .env), см. src/config/scriptUrls.js.
 // После правки: Deploy → Manage deployments → Edit → Version: New version
 // (тот же URL /exec остаётся рабочим, менять его в форме не нужно).
 //

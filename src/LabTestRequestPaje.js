@@ -15,8 +15,10 @@ import {
 } from './data/constructionData';
 import Dialog from './components/RequestDialog';
 import { Field, SelectField } from './components/RequestFormFields';
+import { clearSubmissionId, getSubmissionId } from './utils/submissionId';
+import { SCRIPT_URLS } from './config/scriptUrls';
 
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxQJ1OVUlO-Qp9t5J0bAB2zMC5jMgOb79VT3GVi0_xaEazGClzYaR9sVo82gosrDwFj/exec';
+const SCRIPT_URL = SCRIPT_URLS.lab;
 // Ответ скрипта прочитать нельзя (no-cors): зависшую отправку обрываем сами
 // и просим убедиться, что заявка не дошла, прежде чем отправлять повторно.
 const SEND_TIMEOUT_MS = 20000;
@@ -282,16 +284,21 @@ const LabTestRequestPaje = () => {
       responsiblePhone: userPhone
     }));
 
+    // Тот же набор данных — тот же ID при любом числе повторов: скрипт запишет заявку один раз,
+    // даже если ответ не дошёл (см. utils/submissionId.js).
+    const submissionId = getSubmissionId('lab', payload);
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
     try {
       await fetch(SCRIPT_URL, {
         method: 'POST',
         mode: 'no-cors',
-        body: JSON.stringify(payload),
+        body: JSON.stringify(payload.map((row) => ({ ...row, submissionId }))),
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal
       });
+      clearSubmissionId('lab');
       localStorage.setItem(RESPONSIBLE_KEY, JSON.stringify({ name: userName.trim(), phone: userPhone.trim() }));
       setShowModal(false);
       setFormRows([emptyRow()]);
@@ -300,10 +307,11 @@ const LabTestRequestPaje = () => {
       setSent(true);
     } catch (error) {
       console.error('Ошибка отправки:', error);
-      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор без проверки даст дубль.
+      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор безопасен: у заявки тот же ID,
+      // и скрипт второй раз её не запишет.
       setSubmitError(
         error && error.name === 'AbortError'
-          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти: уточните у лаборатории, прежде чем отправлять ещё раз, иначе получится дубль.'
+          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти. Нажмите «Отправить заявку» ещё раз: если она уже дошла, повторно не запишется.'
           : 'Заявка не отправлена: нет связи с сервером. Проверьте интернет и нажмите «Отправить заявку» ещё раз — введённые данные сохранены.'
       );
     } finally {

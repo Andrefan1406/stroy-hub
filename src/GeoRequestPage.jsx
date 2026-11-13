@@ -16,9 +16,10 @@ import {
 import Dialog from './components/RequestDialog';
 import { Field, SelectField } from './components/RequestFormFields';
 import { clearSubmissionId, getSubmissionId } from './utils/submissionId';
+import { SCRIPT_URLS } from './config/scriptUrls';
 
 // Скрипт Google Apps Script для записи в таблицу (адрес — в переменной окружения сборки).
-const SCRIPT_URL = process.env.REACT_APP_GEO_SCRIPT_URL || '';
+const SCRIPT_URL = SCRIPT_URLS.geo;
 // Ответ скрипта прочитать нельзя (no-cors): зависшую отправку обрываем сами
 // и просим убедиться, что заявка не дошла, прежде чем отправлять повторно.
 const SEND_TIMEOUT_MS = 20000;
