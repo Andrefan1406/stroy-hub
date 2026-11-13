@@ -39,6 +39,7 @@ import BlockedUsersAdminPage from "./pages/BlockedUsersAdminPage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
 import RascenkiReindexAdminPage from "./pages/RascenkiReindexAdminPage";
 import LzkDraftPage from "./pages/LzkDraftPage";
+import TakeoffPage from "./pages/TakeoffPage";
 import LzkUsageAdminPage from "./pages/LzkUsageAdminPage";
 import ConcreteDashboardPage from "./pages/ConcreteDashboardPage";
 import RideAccessGate from "./components/RideAccessGate";
@@ -382,6 +383,14 @@ const App = () => {
               <AdminRoute>
                 <FinancingResyncAdminPage />
               </AdminRoute>
+            </Protected>
+          }
+        />
+        <Route
+          path="/takeoff"
+          element={
+            <Protected>
+              <TakeoffPage />
             </Protected>
           }
         />

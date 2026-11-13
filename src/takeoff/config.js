@@ -1,0 +1,12 @@
+// Видимость редактора справочника работ. Включён — кнопку «Справочник
+// работ» видят те, кому сервер разрешает правку (canEdit); выключен — не
+// видит никто. Это только удобство: менять справочник сервер даёт одним
+// админам независимо от флага.
+//
+// Выключить без правки кода: REACT_APP_TAKEOFF_CATALOG_EDITOR=off при сборке
+// (переменная окружения на Netlify).
+// Справочник работ с сервера пока отключён: замеры идут со «своим видом работ».
+// Включить — REACT_APP_TAKEOFF_WORK_CATALOG=on при сборке (и перезапустить сервер).
+export const WORK_CATALOG_ENABLED = process.env.REACT_APP_TAKEOFF_WORK_CATALOG === "on";
+
+export const SHOW_CATALOG_EDITOR = process.env.REACT_APP_TAKEOFF_CATALOG_EDITOR !== "off";

@@ -8,7 +8,7 @@ import { ROLE_HOME_PATH } from './rides/constants';
 import { fetchManualBlock, manualBlockMessage } from './manualBlockGate';
 import {
   TbAlertTriangle, TbBolt, TbCar, TbChartBar, TbChevronRight, TbCrane, TbFileSpreadsheet, TbFlask,
-  TbLayoutGrid, TbLoader2, TbLock, TbRulerMeasure, TbSparkles, TbTruck, TbUsers, TbWall,
+  TbLayoutGrid, TbLoader2, TbLock, TbRuler2, TbRulerMeasure, TbSparkles, TbTruck, TbUsers, TbWall,
 } from 'react-icons/tb';
 import styles from './HomePage.module.css';
 
@@ -295,6 +295,9 @@ const HomePage = () => {
         <Section title="ПТО">
           <Tile icon={<TbFileSpreadsheet />} to="/lzk-draft">
             Черновики ЛЗК и М-29 по ВДЦ
+          </Tile>
+          <Tile icon={<TbRuler2 />} to="/takeoff">
+            Обмер по чертежу
           </Tile>
         </Section>
 
