@@ -7,11 +7,9 @@
 // замечания и период отбирается здесь. Лимит API — 30 запросов в минуту на
 // аккаунт, выгрузка по всем объектам идёт минуты — поэтому это фоновая
 // задача: POST создаёт её, GET отдаёт ход выполнения, затем файл.
-// Фото «до» и «после»: фото «после» лежат в поле формы «Фотоподтверждение
-// устранения замечания» (у вложения заполнен field-id), фото «до» загружены при
-// создании замечания и ни к какому полю не привязаны. Исключение — фото без поля,
-// добавленное позже чем через час не автором замечания (исполнитель прикрепил
-// результат без поля) — это «после». См. classifyPhoto.
+// Фото: в столбец «Фото после устранения» попадают только фото из поля формы
+// «Фотоподтверждение устранения замечания» (у вложения заполнен field-id этого
+// поля), все остальные фото замечания — в столбец «Фото». См. classifyPhoto.
 //
 // Фото: список вложений замечания — отдельный запрос на каждое замечание
 // (общий список вложений объекта неполный, признак «есть вложения» в самом
@@ -30,8 +28,7 @@ const PAGESIZE = 500;
 const REFS_TTL_MS = 6 * 3600 * 1000;
 const JOB_TTL_MS = 30 * 60 * 1000;
 const MAX_RETRIES = 3;
-const MAX_INLINE_PHOTOS = 4; // сколько фото «до» и сколько «после» встраивается в строку; сколько всего — в столбцах «Фото до, шт.» / «Фото после, шт.»
-const AFTER_LATE_MS = 60 * 60 * 1000; // фото без поля позже этого срока от создания и не от автора — «после»
+const MAX_INLINE_PHOTOS = 4; // сколько фото встраивается в ячейку «Фото» и в ячейку «Фото после устранения»
 const PHOTO_MAX_BYTES = 8 * 1024 * 1024;
 const PHOTO_BOX = { width: 300, height: 225 }; // плитка под одно фото, пиксели; в ячейке 2×2 плитки
 const PHOTO_GAP = 4; // отступ между плитками и от края ячейки, пиксели
@@ -159,22 +156,11 @@ function imageInfo(buf) {
   return null; // другие форматы (webp, heic…) в таблицу не встраиваем
 }
 
-// «before» — фото при создании замечания, «after» — подтверждение устранения.
-function classifyPhoto(image, ticket, fieldNames = new Map()) {
+// «after» — только фото из поля «Фотоподтверждение устранения замечания»;
+// «before» — все остальные (столбец «Фото»).
+function classifyPhoto(image, fieldNames = new Map()) {
   const fieldId = attr(image, 'field-id');
-  if (fieldId) {
-    const name = String(fieldNames.get(fieldId) || '');
-    // поле формы с фото — «после» (так называется поле устранения), если название явно не про нарушение до устранения
-    const toRepair = /устран|после/i.test(name);
-    const aboutViolation = /нарушен|замечани|(^|\s)до(\s|$)/i.test(name);
-    return aboutViolation && !toRepair ? 'before' : 'after';
-  }
-  const author = attr(ticket, 'author-id', 'author_id');
-  const by = attr(image, 'created-by');
-  const created = Date.parse(attr(ticket, 'created-at', 'created_at'));
-  const at = Date.parse(attr(image, 'created-at'));
-  const notAuthor = author != null && by != null && String(by) !== String(author);
-  return notAuthor && Number.isFinite(created) && Number.isFinite(at) && at - created > AFTER_LATE_MS ? 'after' : 'before';
+  return fieldId && /фотоподтвержд/i.test(String(fieldNames.get(fieldId) || '')) ? 'after' : 'before';
 }
 
 // Фото замечания: { before: { total, urls }, after: { total, urls } } — total всех
@@ -190,7 +176,7 @@ async function fetchTicketPhotos(projectId, ticket, fieldNames) {
     .filter((i) => i.type === 'defectradar-issue-images')
     .sort((a, b) => String(attr(a, 'created-at')).localeCompare(String(attr(b, 'created-at'))));
   for (const image of images) {
-    const group = result[classifyPhoto(image, ticket, fieldNames)];
+    const group = result[classifyPhoto(image, fieldNames)];
     group.total += 1;
     const url = attr(image, 'image-url-thumb-300px', 'image-url-thumb-web', 'image-url-thumb', 'image-url');
     if (url && group.urls.length < MAX_INLINE_PHOTOS) group.urls.push(url);
@@ -277,27 +263,19 @@ function ticketRow(ticket, projectName, refs, fieldNames) {
 }
 
 const COLUMNS = [
-  { header: '№', key: 'number', width: 8 },
+  { header: '№', key: 'number', width: 8 }, // порядковый номер в этом отчёте, не номер замечания в PlanRadar
   { header: 'Описание', key: 'subject', width: 60 },
   { header: 'Статус', key: 'status', width: 14 },
-  { header: 'Автор', key: 'author', width: 26 },
-  { header: 'Исполнитель', key: 'assignee', width: 26 },
   { header: 'Слой', key: 'layer', width: 26 },
-  { header: 'Срок', key: 'deadline', width: 12, date: true },
-  { header: 'Создано', key: 'created', width: 12, date: true },
-  { header: 'Закрыто', key: 'closed', width: 12, date: true },
 ];
-
-// Дата «YYYY-MM-DD» → ячейка-дата без сдвига по часовому поясу.
-const asCellDate = (s) => (s ? new Date(`${s}T00:00:00Z`) : null);
 
 async function buildWorkbook(rows, errors = [], { withPhotos = false } = {}) {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Замечания');
   const columns = [...COLUMNS];
   if (withPhotos) {
-    columns.push({ header: 'Фото до', key: 'photoBefore', width: PHOTO_COLUMN_WIDTH });
-    columns.push({ header: 'Фото после', key: 'photoAfter', width: PHOTO_COLUMN_WIDTH });
+    columns.push({ header: 'Фото', key: 'photoBefore', width: PHOTO_COLUMN_WIDTH });
+    columns.push({ header: 'Фото после устранения', key: 'photoAfter', width: PHOTO_COLUMN_WIDTH });
   }
   ws.columns = columns.map(({ header, key, width }) => ({ header, key, width }));
   // объекты — подзаголовки (жирным, на пункт крупнее обычного текста), под ними замечания объекта
@@ -305,13 +283,15 @@ async function buildWorkbook(rows, errors = [], { withPhotos = false } = {}) {
   rows.forEach((r) => { if (!byProject.has(r.project)) byProject.set(r.project, []); byProject.get(r.project).push(r); });
   const ordered = [...byProject.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ru'));
   const middle = { vertical: 'middle' };
+  let seq = 0; // сквозной номер по порядку в отчёте
   const addTicket = (r) => {
-    const row = ws.addRow(COLUMNS.reduce((acc, c) => ({ ...acc, [c.key]: c.date ? asCellDate(r[c.key]) : r[c.key] }), {}));
+    seq += 1;
+    const row = ws.addRow(COLUMNS.reduce((acc, c) => ({ ...acc, [c.key]: c.key === 'number' ? seq : r[c.key] }), {}));
     row.alignment = middle;
     row.eachCell({ includeEmpty: true }, (cell, n) => { cell.alignment = { vertical: 'middle', wrapText: columns[n - 1] && columns[n - 1].key === 'subject' }; });
     if (!withPhotos || !(r.photosBefore.length || r.photosAfter.length)) return;
     row.height = PHOTO_ROW_HEIGHT;
-    // столбцы: после обычных — «Фото до» и «Фото после»;
+    // столбцы: после обычных — «Фото» и «Фото после устранения»;
     // в каждой ячейке до четырёх фото сеткой 2×2 (слева направо, сверху вниз)
     const place = (photos, col) => photos.forEach((p, i) => {
       // вписываем в плитку с сохранением пропорций, больше натурального размера не растягиваем
@@ -337,7 +317,6 @@ async function buildWorkbook(rows, errors = [], { withPhotos = false } = {}) {
     sub.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
     list.forEach(addTicket);
   }
-  COLUMNS.forEach((c, i) => { if (c.date) ws.getColumn(i + 1).numFmt = 'dd.mm.yyyy'; });
   const head = ws.getRow(1);
   head.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
   head.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } };

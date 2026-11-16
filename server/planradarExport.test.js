@@ -107,7 +107,7 @@ test('выгрузка: нужный период, имена из справо�
   assert.ok(!calls.some((c) => /projects\/lic\/users/.test(c)), 'справочники — только по объектам с замечаниями');
 
   const ws = await readSheet(job.buffer);
-  assert.deepEqual(ws.getRow(1).values.slice(1), ['№', 'Описание', 'Статус', 'Автор', 'Исполнитель', 'Слой', 'Срок', 'Создано', 'Закрыто', 'Фото до', 'Фото после']);
+  assert.deepEqual(ws.getRow(1).values.slice(1), ['№', 'Описание', 'Статус', 'Слой', 'Фото', 'Фото после устранения']);
   assert.equal(ws.rowCount, 6);
   // объекты — подзаголовки (по алфавиту), внутри — по дате создания
   const sub = ws.getRow(2);
@@ -116,16 +116,13 @@ test('выгрузка: нужный период, имена из справо�
   assert.equal(sub.getCell(1).font.size, 12);
   assert.equal(ws.getRow(5).getCell(1).value, 'КОС');
   const first = ws.getRow(3).values;
-  assert.equal(first[1], 7);
+  // № — по порядку в отчёте (сквозной), а не номер замечания в PlanRadar
+  assert.equal(first[1], 1);
   assert.equal(first[3], 'В работе');
-  assert.equal(first[4], 'Иван Петров');
-  assert.equal(first[5], 'sub@x.kz');
-  assert.equal(first[6], 'Блок А, 3 этаж');
-  assert.equal(first[8].toISOString().slice(0, 10), '2026-11-02');
+  assert.equal(first[4], 'Блок А, 3 этаж');
   assert.equal(ws.getRow(3).getCell(2).alignment.vertical, 'middle');
-  assert.equal(ws.getRow(4).values[1], 5);
-  assert.equal(ws.getRow(6).values[1], 1);
-  assert.equal(ws.getRow(4).values[9].toISOString().slice(0, 10), '2026-11-07');
+  assert.equal(ws.getRow(4).values[1], 2);
+  assert.equal(ws.getRow(6).values[1], 3);
   const errors = await readSheet(job.buffer, 'Ошибки');
   assert.deepEqual(errors.getRow(2).values.slice(1), ['Лицей', 'PlanRadar 503']);
 });
@@ -195,26 +192,23 @@ test('размер картинки читается по заголовку (JP
   assert.equal(imageInfo(Buffer.from('RIFFxxxxWEBPVP8 ')), null);
 });
 
-test('фото «до» и «после»: по полю формы, а без поля — по автору и времени', () => {
-  const t = { attributes: { 'author-id': 'author1', 'created-at': '2026-11-05T05:00:00.000Z' } };
-  const names = new Map([[FIELD_AFTER, 'Фотоподтверждение устранения замечания'], ['tfBefore', 'Фото нарушения']]);
-  // при создании замечания автором, без поля — «до» (в том числе загруженное ДО сохранения замечания)
-  assert.equal(classifyPhoto(image(1), t, names), 'before');
-  assert.equal(classifyPhoto(image(2, { at: '2026-11-05T04:20:00.000Z' }), t, names), 'before');
+test('фото «после устранения» — только из поля «Фотоподтверждение», остальные — в «Фото»', () => {
+  const names = new Map([[FIELD_AFTER, 'Фотоподтверждение устранения замечания'], ['tfBefore', 'Фото нарушения'], ['tfOther', 'Устранено ли']]);
   // поле «Фотоподтверждение устранения замечания» — «после», кем и когда бы ни загрузили
-  assert.equal(classifyPhoto(image(3, { field: FIELD_AFTER, by: 'fixer', at: '2026-11-20T05:00:00.000Z' }), t, names), 'after');
-  assert.equal(classifyPhoto(image(4, { field: FIELD_AFTER }), t, names), 'after');
-  // другое поле с названием про нарушение — «до»; неизвестное поле — «после»
-  assert.equal(classifyPhoto(image(5, { field: 'tfBefore' }), t, names), 'before');
-  assert.equal(classifyPhoto(image(6, { field: 'tfUnknown' }), t, names), 'after');
-  // без поля: исполнитель (не автор) приложил позже чем через час — «после»; сразу — «до»
-  assert.equal(classifyPhoto(image(7, { by: 'fixer', at: '2026-11-07T05:00:00.000Z' }), t, names), 'after');
-  assert.equal(classifyPhoto(image(8, { by: 'fixer', at: '2026-11-05T05:10:00.000Z' }), t, names), 'before');
-  // автор дозагрузил своё фото на следующий день — это всё равно «до»
-  assert.equal(classifyPhoto(image(9, { by: 'author1', at: '2026-11-06T05:00:00.000Z' }), t, names), 'before');
+  assert.equal(classifyPhoto(image(1, { field: FIELD_AFTER }), names), 'after');
+  assert.equal(classifyPhoto(image(2, { field: FIELD_AFTER, by: 'fixer', at: '2026-11-20T05:00:00.000Z' }), names), 'after');
+  // фото без поля — «Фото»; даже если его загрузил не автор и позже (раньше такое считалось «после»)
+  assert.equal(classifyPhoto(image(3), names), 'before');
+  assert.equal(classifyPhoto(image(4, { by: 'fixer', at: '2026-11-07T05:00:00.000Z' }), names), 'before');
+  // другие поля, в том числе с «устран» в названии, и неизвестное поле — «Фото»
+  assert.equal(classifyPhoto(image(5, { field: 'tfBefore' }), names), 'before');
+  assert.equal(classifyPhoto(image(6, { field: 'tfOther' }), names), 'before');
+  assert.equal(classifyPhoto(image(7, { field: 'tfUnknown' }), names), 'before');
+  // названия полей не получены — определить подтверждение нельзя, фото остаётся в «Фото»
+  assert.equal(classifyPhoto(image(8, { field: FIELD_AFTER })), 'before');
 });
 
-test('фото: «до» и «после» раздельно, встраиваются в свои столбцы, размеры вдвое крупнее', async () => {
+test('фото: «Фото» и «Фото после устранения» раздельно, встраиваются в свои столбцы, размеры вдвое крупнее', async () => {
   mock.restoreAll();
   const withUuid = (n, created) => {
     const tk = ticket(n, created);
@@ -245,10 +239,10 @@ test('фото: «до» и «после» раздельно, встраива�
   assert.equal(calls.filter((c) => /s3\.test/.test(c)).length, 6, 'скачиваются 2 фото «до» и первые 4 «после»');
   const ws = await readSheet(job.buffer);
   assert.equal(ws.getRow(3).height, 347, 'строка с фото вмещает две плитки по высоте');
-  assert.equal(ws.getColumn(10).width, 87, 'столбец под фото вмещает две плитки по ширине');
+  assert.equal(ws.getColumn(6).width, 87, 'столбец под фото вмещает две плитки по ширине');
 
   const imgs = ws.getImages().map((i) => ({ col: Math.floor(i.range.tl.col), ext: i.range.ext }));
-  assert.deepEqual(imgs.map((i) => i.col), [9, 9, 10, 10, 10], 'до — 2 фото в столбце «Фото до», после — 3 в «Фото после» (img3 не скачалась)');
+  assert.deepEqual(imgs.map((i) => i.col), [4, 4, 5, 5, 5], '2 фото в столбце «Фото», 3 — в «Фото после устранения» (img3 не скачалась)');
   // 300×200 вписывается в 330×244 без растягивания: остаётся натуральный размер
   assert.deepEqual(imgs[0].ext, { width: 300, height: 200 });
 });
@@ -260,7 +254,7 @@ test('без фото: запросов вложений нет, столбцо�
   await job.promise;
   assert.ok(!calls.some((c) => /attachments/.test(c)));
   const ws = await readSheet(job.buffer);
-  assert.equal(ws.getRow(1).values.length - 1, 9);
+  assert.equal(ws.getRow(1).values.length - 1, 4);
   assert.equal(ws.getImages().length, 0);
 });
 
