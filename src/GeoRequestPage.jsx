@@ -41,6 +41,8 @@ const getCurrentDate = () => {
 };
 
 const applicantPositions = ['Начальник участка', 'Производитель работ', 'Мастер', 'Геодезист'];
+// Значение пункта «Другое…» в списке должностей: открывает поле для ручного ввода.
+const OTHER_POSITION = '__other__';
 
 const emptyRow = () => ({
   objectCategory: '',
@@ -78,6 +80,11 @@ const GeoRequestPage = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [userFullName, setUserFullName] = useState(() => loadResponsible().fullName);
   const [userPosition, setUserPosition] = useState(() => loadResponsible().position);
+  // Должность, которой нет в списке (вписанная вручную раньше), показываем в поле ввода.
+  const [customPosition, setCustomPosition] = useState(() => {
+    const saved = loadResponsible().position;
+    return Boolean(saved) && !applicantPositions.includes(saved);
+  });
   const [userPhone, setUserPhone] = useState(() => loadResponsible().phone);
 
   // Заявка, подготовленная «Умной заявкой».
@@ -480,12 +487,35 @@ const GeoRequestPage = () => {
               <select
                 id='applicant-position'
                 className={css.input}
-                value={userPosition}
-                onChange={(e) => setUserPosition(e.target.value)}
+                value={customPosition ? OTHER_POSITION : userPosition}
+                onChange={(e) => {
+                  if (e.target.value === OTHER_POSITION) {
+                    setCustomPosition(true);
+                    setUserPosition('');
+                  } else {
+                    setCustomPosition(false);
+                    setUserPosition(e.target.value);
+                  }
+                }}
               >
                 <option value=''>Выберите должность</option>
                 {applicantPositions.map((p) => <option key={p} value={p}>{p}</option>)}
+                <option value={OTHER_POSITION}>Другое (ввести вручную)…</option>
               </select>
+              {customPosition && (
+                <input
+                  type='text'
+                  className={css.input}
+                  style={{ marginTop: 8 }}
+                  value={userPosition}
+                  onChange={(e) => setUserPosition(e.target.value)}
+                  placeholder='Введите должность'
+                  aria-label='Должность (вручную)'
+                  autoComplete='organization-title'
+                  maxLength={80}
+                  autoFocus
+                />
+              )}
             </Field>
 
             <Field label='Телефон' required htmlFor='applicant-phone'>
