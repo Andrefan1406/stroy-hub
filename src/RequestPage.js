@@ -13,8 +13,10 @@ import css from './ConcreteRequestPage.module.css';
 import { objectCategoryOptions, objectPositionOptions, equipmentCategoryOptions } from './data/constructionData';
 import Dialog from './components/RequestDialog';
 import { Field, SelectField } from './components/RequestFormFields';
+import { clearSubmissionId, getSubmissionId } from './utils/submissionId';
+import { SCRIPT_URLS } from './config/scriptUrls';
 
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyyXRi_lPGYJZI-C1uHmqRhlIOtKQtkrFW7-ha772JZbMxP3oXwcsH5QvHAprH-4fnL/exec';
+const SCRIPT_URL = SCRIPT_URLS.equipment;
 const SHEET_URL = 'https://docs.google.com/spreadsheets/d/1nd1AxUUgxLcd6GYlnY5ZJZ0WYr-qmvrP67CGe1Ut4i8/edit?pli=1&gid=0#gid=0';
 
 // Ответ скрипта таблицы прочитать нельзя (no-cors), поэтому зависшую отправку
@@ -321,6 +323,10 @@ const RequestPage = () => {
       phone: userPhone
     }));
 
+    // Тот же набор данных — тот же ID при любом числе повторов: скрипт запишет заявку один раз,
+    // даже если ответ не дошёл (см. utils/submissionId.js).
+    const submissionId = getSubmissionId('equipment', updatedRequests);
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
     try {
@@ -328,9 +334,10 @@ const RequestPage = () => {
         method: 'POST',
         mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedRequests),
+        body: JSON.stringify(updatedRequests.map((row) => ({ ...row, submissionId }))),
         signal: controller.signal,
       });
+      clearSubmissionId('equipment');
       localStorage.setItem('lastRequestData', JSON.stringify(updatedRequests));
       localStorage.setItem('lastRequestDate', selectedDate);
       localStorage.setItem(RESPONSIBLE_KEY, JSON.stringify({ fullName: userFullName.trim(), position: userPosition.trim(), phone: userPhone.trim() }));
@@ -342,10 +349,11 @@ const RequestPage = () => {
       setSent(true);
     } catch (error) {
       console.error('Ошибка при отправке:', error);
-      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор без проверки даст дубль.
+      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор безопасен: у заявки тот же ID,
+      // и скрипт второй раз её не запишет.
       setSubmitError(
         error && error.name === 'AbortError'
-          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти: откройте таблицу и проверьте, прежде чем отправлять ещё раз, иначе получится дубль.'
+          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти. Нажмите «Отправить заявку» ещё раз: если она уже дошла, повторно не запишется.'
           : 'Заявка не отправлена: нет связи с сервером. Проверьте интернет и нажмите «Отправить заявку» ещё раз — введённые данные сохранены.'
       );
     } finally {

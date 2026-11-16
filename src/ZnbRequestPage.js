@@ -13,8 +13,10 @@ import {
 } from './data/constructionData';
 import Dialog from './components/RequestDialog';
 import { Field, SelectField } from './components/RequestFormFields';
+import { clearSubmissionId, getSubmissionId } from './utils/submissionId';
+import { SCRIPT_URLS } from './config/scriptUrls';
 
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxcWkEmO50NPCIubp2VkZV73QuvNkCMhItjgn1ecy2BxRWglx3l7kGXzIzrBHT5FETuoQ/exec';
+const SCRIPT_URL = SCRIPT_URLS.znb;
 // Ответ скрипта прочитать нельзя (no-cors): зависшую отправку обрываем сами
 // и просим убедиться, что заявка не дошла, прежде чем отправлять повторно.
 const SEND_TIMEOUT_MS = 20000;
@@ -511,7 +513,7 @@ const ZnbRequestPage = () => {
     setSubmitError('');
     setIsSubmitting(true);
 
-    const payload = JSON.stringify(formRows.map((row) => ({
+    const rows = formRows.map((row) => ({
       date: row.date,
       category: row.category,
       object: row.object,
@@ -524,10 +526,14 @@ const ZnbRequestPage = () => {
       note: row.note,
       responsibleName: userName,
       responsiblePhone: userPhone
-    })));
+    }));
+
+    // Тот же набор данных — тот же ID при любом числе повторов: скрипт запишет заявку один раз,
+    // даже если ответ не дошёл (см. utils/submissionId.js).
+    const submissionId = getSubmissionId('znb', rows);
 
     const formData = new FormData();
-    formData.append('data', payload);
+    formData.append('data', JSON.stringify(rows.map((row) => ({ ...row, submissionId }))));
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
@@ -538,6 +544,7 @@ const ZnbRequestPage = () => {
         body: formData,
         signal: controller.signal
       });
+      clearSubmissionId('znb');
       localStorage.setItem(RESPONSIBLE_KEY, JSON.stringify({ name: userName.trim(), phone: userPhone.trim() }));
       setShowModal(false);
       setFormRows([emptyZnbRow()]);
@@ -546,10 +553,11 @@ const ZnbRequestPage = () => {
       setSent(true);
     } catch (error) {
       console.error('Ошибка отправки:', error);
-      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор без проверки даст дубль.
+      // Обрыв по таймауту: запрос мог дойти, а ответ — нет. Повтор безопасен: у заявки тот же ID,
+      // и скрипт второй раз её не запишет.
       setSubmitError(
         error && error.name === 'AbortError'
-          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти: уточните у ответственного за заявки на ж/б изделия, прежде чем отправлять ещё раз, иначе получится дубль.'
+          ? 'Нет ответа за 20 секунд — связь слабая. Заявка могла дойти. Нажмите «Отправить заявку» ещё раз: если она уже дошла, повторно не запишется.'
           : 'Заявка не отправлена: нет связи с сервером. Проверьте интернет и нажмите «Отправить заявку» ещё раз — введённые данные сохранены.'
       );
     } finally {
