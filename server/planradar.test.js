@@ -21,6 +21,7 @@ const { initSchema } = require('./db');
 initSchema();
 const { countOverdue, ticketDeadline, daysBefore, refreshOverdue, overdueForEmail } = require('./planradar');
 
+const realFetch = globalThis.fetch; // настоящий fetch — тесты ниже подменяют глобальный
 const ticket = (due, ext) => ({ attributes: { 'due-date': due, ...(ext ? { 'extension-date': ext } : {}) } });
 
 test('граница: срок истёк три дня назад и раньше — считается, позже — нет', () => {
@@ -71,4 +72,30 @@ test('сбой PlanRadar не стирает прежнее значение и 
   mock.timers.reset();
   assert.deepEqual(res, { ok: 0, failed: 2 });
   assert.equal(overdueForEmail('a@x.kz')[0].count, 2, 'прежнее значение осталось');
+});
+
+test('выключатель: по умолчанию блокировка выключена, /check отдаёт blocked:false; после включения — блокирует', async () => {
+  const express = require('express');
+  const { checkRouter, isBlockEnabled, setBlockEnabled, listBlockedUsers } = require('./planradar');
+  const app = express();
+  app.use('/api/planradar', checkRouter);
+  const server = app.listen(0);
+  const base = `http://127.0.0.1:${server.address().port}/api/planradar/check?email=a@x.kz`;
+  try {
+    assert.equal(isBlockEnabled(), false);
+    assert.deepEqual(await (await realFetch(base)).json(), { blocked: false, items: [] });
+    setBlockEnabled(true, 'admin@x.kz');
+    assert.equal(isBlockEnabled(), true);
+    const on = await (await realFetch(base)).json();
+    assert.equal(on.blocked, true);
+    assert.deepEqual(on.items, [{ project: 'Жилой дом поз.63', count: 2 }]);
+    setBlockEnabled(false, 'admin@x.kz');
+    assert.equal((await (await realFetch(base)).json()).blocked, false);
+  } finally {
+    server.close();
+  }
+  // сводка для админки не зависит от выключателя
+  const users = listBlockedUsers();
+  assert.deepEqual(users.map((u) => u.email), ['a@x.kz', 'both@x.kz']);
+  assert.deepEqual(users[1].items.map((i) => i.project), ['Жилой дом поз.63', 'Лицей']);
 });

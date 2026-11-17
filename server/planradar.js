@@ -158,11 +158,46 @@ function overdueForEmail(email) {
     .sort((a, b) => b.count - a.count || a.project.localeCompare(b.project, 'ru'));
 }
 
+// Общий выключатель блокировки (app_settings). По умолчанию ВЫКЛЮЧЕН: пока
+// администратор не включит, опрос PlanRadar идёт, список виден в админке, но
+// пользователям подача заявок не закрывается.
+const SETTING_KEY = 'planradar_block_enabled';
+function isBlockEnabled() {
+  const row = getWriteDb().prepare('SELECT value FROM app_settings WHERE key = ?').get(SETTING_KEY);
+  return row?.value === '1';
+}
+function setBlockEnabled(enabled, by) {
+  getWriteDb().prepare(
+    `INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`
+  ).run(SETTING_KEY, enabled ? '1' : '0', by || null);
+}
+
+// Сводка для админки: у кого сейчас были бы закрыты заявки (независимо от выключателя).
+function listBlockedUsers() {
+  const counts = new Map(
+    getWriteDb().prepare('SELECT project_id, overdue_count FROM planradar_overdue').all().map((r) => [r.project_id, r.overdue_count])
+  );
+  const byEmail = new Map();
+  for (const p of loadProjects()) {
+    const count = counts.get(p.id) || 0;
+    if (!count) continue;
+    for (const email of p.emails) {
+      if (!byEmail.has(email)) byEmail.set(email, []);
+      byEmail.get(email).push({ project: p.name, count });
+    }
+  }
+  return [...byEmail.entries()]
+    .map(([email, items]) => ({ email, items: items.sort((a, b) => b.count - a.count || a.project.localeCompare(b.project, 'ru')) }))
+    .sort((a, b) => a.email.localeCompare(b.email));
+}
+
 // Публичная проверка для форм и главной (как /api/gpr-report/check).
 const checkRouter = express.Router();
 checkRouter.get('/check', (req, res) => {
   const email = normalizeEmail(req.query.email);
   if (!email) return res.status(400).json({ error: 'Параметр email обязателен' });
+  if (!isBlockEnabled()) return res.json({ blocked: false, items: [] });
   const items = overdueForEmail(email);
   res.json({ blocked: items.length > 0, items });
 });
@@ -172,6 +207,23 @@ const adminRouter = express.Router();
 adminRouter.use(requireAdmin);
 adminRouter.post('/resync', async (req, res) => {
   res.json(await refreshOverdue());
+});
+
+function blockStatus() {
+  const checked = getWriteDb().prepare('SELECT MAX(checked_at) AS at FROM planradar_overdue').get();
+  return {
+    enabled: isBlockEnabled(),
+    configured: !!process.env.PLANRADAR_API_KEY,
+    lastChecked: checked?.at || null, // UTC, «YYYY-MM-DD HH:MM:SS»
+    overdueDays: OVERDUE_DAYS,
+    users: listBlockedUsers(),
+  };
+}
+adminRouter.get('/block', (req, res) => res.json(blockStatus()));
+adminRouter.put('/block', (req, res) => {
+  if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ error: 'Нужно поле enabled (true/false)' });
+  setBlockEnabled(req.body.enabled, req.userEmail);
+  res.json(blockStatus());
 });
 
 function startPlanradarSync() {
@@ -187,6 +239,7 @@ function startPlanradarSync() {
 
 module.exports = {
   checkRouter, adminRouter, startPlanradarSync, refreshOverdue, overdueForEmail,
+  isBlockEnabled, setBlockEnabled, listBlockedUsers,
   loadProjects, attr, API_BASE,
   countOverdue, ticketDeadline, daysBefore, todayAlmaty, OVERDUE_DAYS,
 };

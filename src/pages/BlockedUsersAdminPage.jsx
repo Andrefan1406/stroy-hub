@@ -280,6 +280,112 @@ const ManualBlocksSection = ({ onChanged }) => {
   );
 };
 
+const fmtChecked = (utc) => {
+  if (!utc) return "ещё не опрашивался";
+  const d = new Date(utc.replace(" ", "T") + "Z");
+  return Number.isNaN(d.getTime()) ? utc : d.toLocaleString("ru-RU", { timeZone: "Asia/Almaty", dateStyle: "short", timeStyle: "short" });
+};
+
+// Блокировка из-за просроченных замечаний PlanRadar (server/planradar.js).
+// Общий выключатель: пока он выключен, опрос идёт и список ниже виден, но
+// пользователям подача заявок не закрывается — это «кого заблокировало бы».
+const PlanradarSection = () => {
+  const [state, setState] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setState(await apiFetch("/api/admin/planradar/block"));
+      setError("");
+    } catch (err) {
+      setError(err.message || "Не удалось загрузить данные PlanRadar");
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const toggle = async (enabled) => {
+    if (enabled && !window.confirm(
+      `Включить блокировку? Сотрудники из списка ниже (${state?.users.length || 0}) сразу не смогут подать заявки на технику и бетон, пока не закроют замечания.`
+    )) return;
+    setBusy(true);
+    try {
+      setState(await apiFetch("/api/admin/planradar/block", { method: "PUT", body: JSON.stringify({ enabled }) }));
+      setError("");
+    } catch (err) {
+      setError(err.message || "Не удалось сохранить");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resync = async () => {
+    setBusy(true);
+    try {
+      await apiFetch("/api/admin/planradar/resync", { method: "POST" });
+      await load();
+    } catch (err) {
+      setError(err.message || "Не удалось опросить PlanRadar");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section style={s.section}>
+      <h2 style={s.sectionTitle}>Замечания PlanRadar</h2>
+      <p style={s.hint}>
+        Сотрудник, закреплённый за объектом, не может подать заявку на технику и бетон, пока по объекту есть незакрытые
+        замечания со сроком, истёкшим {state?.overdueDays ?? 3} дня назад и раньше. PlanRadar опрашивается раз в час.
+      </p>
+      {error && <div style={s.error}>{error}</div>}
+      {!state ? (
+        !error && <p>Загрузка...</p>
+      ) : (
+        <>
+          <label style={{ ...s.toggleLabel, marginBottom: "6px" }}>
+            <Toggle checked={state.enabled} disabled={busy} onChange={toggle} />
+            <b>{state.enabled ? "Блокировка включена для всех" : "Блокировка выключена"}</b>
+          </label>
+          {!state.enabled && (
+            <p style={s.hint}>Сейчас никому не мешает: список ниже — это те, кого заблокирует включение.</p>
+          )}
+          {!state.configured && (
+            <div style={s.error}>На сервере не задан PLANRADAR_API_KEY — опрос не работает, данные не обновляются.</div>
+          )}
+          <div style={{ ...s.actions, marginTop: "10px" }}>
+            <button onClick={resync} disabled={busy}>Опросить PlanRadar сейчас</button>
+            <span style={s.meta}>Последний опрос: {fmtChecked(state.lastChecked)}</span>
+          </div>
+          {state.users.length === 0 ? (
+            <p style={s.muted}>Просроченных замечаний у закреплённых сотрудников нет.</p>
+          ) : (
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  <th style={s.th}>Email</th>
+                  <th style={s.th}>Объекты с просроченными замечаниями</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.users.map((u) => (
+                  <tr key={u.email}>
+                    <td style={{ ...s.td, ...s.tdEmail }}>{u.email}</td>
+                    <td style={s.td}>{u.items.map((i) => `${i.project} — ${i.count} шт.`).join("; ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+    </section>
+  );
+};
+
 const BlockedUsersAdminPage = () => {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -340,6 +446,8 @@ const BlockedUsersAdminPage = () => {
           <div style={s.cardValue}>{summary.byGpr}</div>
         </div>
       </div>
+
+      <PlanradarSection />
 
       <ManualBlocksSection onChanged={load} />
 

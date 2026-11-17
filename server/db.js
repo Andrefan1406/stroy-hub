@@ -335,6 +335,16 @@ CREATE TABLE IF NOT EXISTS planradar_overdue (
   checked_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- app_settings — переключатели администратора (key/value). Сейчас там
+-- 'planradar_block_enabled': включена ли блокировка заявок из-за PlanRadar.
+-- ПОСТОЯННОЕ хранилище, не пересоздаётся при синке.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_by TEXT,
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS gpr_report_check_rules (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   email      TEXT NOT NULL,
