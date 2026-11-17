@@ -85,8 +85,9 @@ app.use('/api/admin/people-gaps', peopleGapsAdminRouter);
 app.use('/api/people-gaps', peopleGapsCheckRouter);
 app.use('/api/admin/gpr-report', gprReportAdminRouter);
 app.use('/api/gpr-report', gprReportCheckRouter);
-app.use('/api/admin/planradar', planradarAdminRouter);
+// Выгрузка замечаний — раньше adminRouter: у неё свой список допущенных, а adminRouter пускает только админа
 app.use('/api/admin/planradar', require('./planradarExport').router);
+app.use('/api/admin/planradar', planradarAdminRouter);
 app.use('/api/planradar', planradarCheckRouter);
 app.use('/api/admin/blocked-users/manual', manualBlockAdminRouter);
 app.use('/api/admin/blocked-users', blockedUsersAdminRouter);

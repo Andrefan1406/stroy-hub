@@ -29,8 +29,8 @@ export async function fetchPlanradarProjects() {
 }
 
 // from/to — «ГГГГ-ММ-ДД»; projectIds — id объектов или null (все); withPhotos — встраивать фото.
-export async function startPlanradarExport({ from, to, projectIds, withPhotos = true }) {
-  const res = await request("/exports", { method: "POST", body: JSON.stringify({ from, to, projectIds, withPhotos }) });
+export async function startPlanradarExport({ from, to, projectIds, withPhotos = true, reportNumber = "" }) {
+  const res = await request("/exports", { method: "POST", body: JSON.stringify({ from, to, projectIds, withPhotos, reportNumber }) });
   return res.json();
 }
 

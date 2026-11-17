@@ -5,6 +5,8 @@
 // Бэкенд: server/planradarExport.js.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getAuth } from "firebase/auth";
+import { restrictedHome } from "../restrictedAccess";
 import {
   downloadPlanradarExport,
   fetchPlanradarExport,
@@ -28,6 +30,7 @@ const PlanradarExportAdminPage = () => {
   const [selected, setSelected] = useState(() => new Set()); // id отмеченных объектов
   const [search, setSearch] = useState("");
   const [withPhotos, setWithPhotos] = useState(true);
+  const [reportNumber, setReportNumber] = useState("");
   const [job, setJob] = useState(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
@@ -97,7 +100,7 @@ const PlanradarExportAdminPage = () => {
     setStarting(true);
     setError("");
     try {
-      setJob(await startPlanradarExport({ from, to, projectIds: allSelected ? null : [...selected], withPhotos }));
+      setJob(await startPlanradarExport({ from, to, projectIds: allSelected ? null : [...selected], withPhotos, reportNumber: reportNumber.trim() }));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -111,7 +114,9 @@ const PlanradarExportAdminPage = () => {
   return (
     <div style={s.page}>
       <div style={s.header}>
-        <button onClick={() => navigate("/admin")} style={s.back}>← Назад</button>
+        {!restrictedHome(getAuth().currentUser?.email) && (
+          <button onClick={() => navigate("/admin")} style={s.back}>← Назад</button>
+        )}
         <h1 style={s.title}>Замечания PlanRadar</h1>
       </div>
 
@@ -132,6 +137,10 @@ const PlanradarExportAdminPage = () => {
           <label style={s.field}>
             <span style={s.label}>По дату</span>
             <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} style={s.input} disabled={running} />
+          </label>
+          <label style={s.field}>
+            <span style={s.label}>№ отчёта (на титульном листе)</span>
+            <input type="text" value={reportNumber} maxLength={12} placeholder="например, 6" onChange={(e) => setReportNumber(e.target.value)} style={{ ...s.input, width: "140px" }} disabled={running} />
           </label>
         </div>
 

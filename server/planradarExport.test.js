@@ -107,7 +107,7 @@ test('выгрузка: нужный период, имена из справо�
   assert.ok(!calls.some((c) => /projects\/lic\/users/.test(c)), 'справочники — только по объектам с замечаниями');
 
   const ws = await readSheet(job.buffer);
-  assert.deepEqual(ws.getRow(1).values.slice(1), ['№', 'Описание', 'Статус', 'Слой', 'Фото', 'Фото после устранения']);
+  assert.deepEqual(ws.getRow(1).values.slice(1), ['№', 'Описание', 'Статус', 'Расположение']);
   assert.equal(ws.rowCount, 6);
   // объекты — подзаголовки (по алфавиту), внутри — по дате создания
   const sub = ws.getRow(2);
@@ -238,13 +238,26 @@ test('фото: «Фото» и «Фото после устранения» р�
   assert.ok(!calls.some((c) => /full\d/.test(c)), 'берутся миниатюры, не оригиналы');
   assert.equal(calls.filter((c) => /s3\.test/.test(c)).length, 6, 'скачиваются 2 фото «до» и первые 4 «после»');
   const ws = await readSheet(job.buffer);
-  assert.equal(ws.getRow(3).height, 347, 'строка с фото вмещает две плитки по высоте');
-  assert.equal(ws.getColumn(6).width, 87, 'столбец под фото вмещает две плитки по ширине');
+  // под замечанием: строка с описанием, подпись «Фото | Фото после устранения», строка с фото (две плитки по высоте)
+  assert.deepEqual([ws.getRow(3).getCell(2).value, ws.getRow(3).getCell(1).value], ['Замечание 1', 1]);
+  assert.equal(ws.getRow(4).getCell(1).value, 'Фото');
+  assert.equal(ws.getRow(4).getCell(3).value, 'Фото после устранения');
+  assert.equal(ws.getRow(5).height, 245, 'строка с фото вмещает две плитки по высоте');
+  assert.equal(ws.getRow(6).getCell(2).value, 'Замечание 2', 'у следующего замечания фото нет — подписей и строки с фото нет');
+  for (const m of ['A2:D2', 'A4:B4', 'C4:D4', 'A5:B5', 'C5:D5']) assert.ok(ws.model.merges.includes(m), `нет объединения ${m}`);
 
-  const imgs = ws.getImages().map((i) => ({ col: Math.floor(i.range.tl.col), ext: i.range.ext }));
-  assert.deepEqual(imgs.map((i) => i.col), [4, 4, 5, 5, 5], '2 фото в столбце «Фото», 3 — в «Фото после устранения» (img3 не скачалась)');
-  // 300×200 вписывается в 330×244 без растягивания: остаётся натуральный размер
-  assert.deepEqual(imgs[0].ext, { width: 300, height: 200 });
+  // раскладка на печать: A4 книжная, на всю ширину, шапка повторяется, ячейки в рамке
+  assert.equal(ws.pageSetup.paperSize, 9);
+  assert.equal(ws.pageSetup.orientation, 'portrait');
+  assert.equal(ws.pageSetup.fitToWidth, 1);
+  assert.equal(ws.pageSetup.printTitlesRow, '1:1');
+  for (const addr of ['A3', 'D3', 'A5', 'D5', 'B4']) assert.equal(ws.getCell(addr).border.top.style, 'thin', addr);
+
+  const imgs = ws.getImages().map((i) => ({ col: Math.floor(i.range.tl.col), row: Math.floor(i.range.tl.row), ext: i.range.ext }));
+  assert.deepEqual(imgs.map((i) => i.col), [0, 1, 2, 3, 2], '2 фото под «Фото» (слева), 3 — под «Фото после устранения» (справа; img3 не скачалась)');
+  assert.ok(imgs.every((i) => i.row === 4), 'все фото в строке с фото');
+  // 300×200 вписывается в плитку 209×157 с сохранением пропорций
+  assert.deepEqual(imgs[0].ext, { width: 209, height: 139 });
 });
 
 test('без фото: запросов вложений нет, столбцов фото нет', async () => {
@@ -279,4 +292,57 @@ test('описание замечания — поле «Подробное оп
   assert.equal(descriptionOf(t({ tfD: '   ', tfN: 'прим' }), names), 'Штукатурка стен');
   assert.equal(descriptionOf(t({ tfD: null }), names), 'Штукатурка стен');
   assert.equal(descriptionOf(t({ tfD: 'x' }), new Map()), 'Штукатурка стен');
+});
+
+test('вкладки «Титульный» и «Сводная»: период, номер отчёта, картинки, полные названия, закрыто только «Закрыто»', async () => {
+  const { buildWorkbook } = require('./planradarExport');
+  const row = (project, status, n) => ({ project, number: n, subject: `З${n}`, status, layer: '', photosBefore: [], photosAfter: [] });
+  const rows = [
+    row('Жилой дом поз.64', 'Закрыто', 1), row('Жилой дом поз.64', 'Устранено', 2), row('Жилой дом поз.64', 'Открыто', 3),
+    row('Нурлы Жол 4', 'Закрыто', 4), row('Нурлы Жол 4', 'Отклонено', 5),
+  ];
+  const wbOf = async (period, reportNumber) => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(await buildWorkbook(rows, [], { period, reportNumber }));
+    return wb;
+  };
+
+  // календарный месяц целиком
+  const wb = await wbOf({ from: '2026-10-01', to: '2026-10-31' }, '6');
+  assert.deepEqual(wb.worksheets.map((w) => w.name), ['Титульный', 'Сводная', 'Замечания']);
+  const title = wb.getWorksheet('Титульный');
+  const titleTexts = [];
+  title.eachRow((r) => r.eachCell((c) => { if (typeof c.value === 'string' && c.value) titleTexts.push(c.value); }));
+  assert.ok(titleTexts.includes('ЕЖЕМЕСЯЧНЫЙ ОТЧЕТ № 6'));
+  assert.ok(titleTexts.includes('За Октябрь'));
+  assert.ok(titleTexts.includes('от 31.10.2026 года.'));
+  assert.ok(titleTexts.includes('Усть-Каменогорск 2026 г.'));
+  assert.ok(titleTexts.includes('Руководитель группы технического надзора'));
+  assert.equal(title.getImages().length, 3, 'логотип, картинка с рулеткой и подпись');
+
+  const sum = wb.getWorksheet('Сводная');
+  const cells = (n) => sum.getRow(n).values.slice(1);
+  assert.equal(cells(1)[0], 'Выявленные замечания и их устранения за Октябрь 2026 год:');
+  assert.equal(cells(3)[0], 'За Октябрь месяц экспертами ТН было выявлено 5 замечаний по объектам');
+  assert.deepEqual(cells(6).filter((v) => v != null), ['№', 'Наименование объекта', 'Всего за месяц', 'Открыто', 'Закрыто']);
+  // по алфавиту: Жилой дом поз.64 — полное название из реестра; Нурлы Жол 4 — короткое
+  const r1 = cells(7);
+  assert.equal(r1[0], 1);
+  assert.match(r1[1], /^«Строительство многоэтажных жилых домов со встроенными коммерческими помещениями .*Поз\. 64»$/);
+  assert.deepEqual(r1.slice(2, 5), [3, 2, 1], 'Всего 3, закрыто 1 (только «Закрыто»), открыто 2');
+  assert.deepEqual([cells(8)[1], ...cells(8).slice(2, 5)], ['Нурлы Жол 4', 2, 1, 1]);
+  assert.deepEqual([sum.getCell('A9').value, ...cells(9).slice(2, 5)], ['Итого', 5, 3, 2]);
+
+  // произвольный период и без номера
+  const wb2 = await wbOf({ from: '2026-11-01', to: '2026-11-12' }, '');
+  const t2 = [];
+  wb2.getWorksheet('Титульный').eachRow((r) => r.eachCell((c) => { if (typeof c.value === 'string') t2.push(c.value); }));
+  assert.ok(t2.includes('ЕЖЕМЕСЯЧНЫЙ ОТЧЕТ'));
+  assert.ok(t2.includes('За период с 01.11.2026 по 12.11.2026'));
+  assert.equal(wb2.getWorksheet('Сводная').getRow(6).getCell(3).value, 'Всего за период');
+
+  // без периода вкладок нет (прежнее поведение)
+  const plain = new ExcelJS.Workbook();
+  await plain.xlsx.load(await buildWorkbook(rows, []));
+  assert.deepEqual(plain.worksheets.map((w) => w.name), ['Замечания']);
 });

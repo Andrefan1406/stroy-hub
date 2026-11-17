@@ -20,8 +20,12 @@
 // группы, слои) кэшируются на несколько часов — они почти не меняются.
 const express = require('express');
 const ExcelJS = require('exceljs');
-const { requireAdmin } = require('./adminAuth');
+const { requireEmails, ADMIN_EMAIL } = require('./adminAuth');
+
+// Кроме админа выгрузка открыта сотруднику технадзора (см. src/restrictedAccess.js: у него доступна только эта страница).
+const EXPORT_USERS = [ADMIN_EMAIL, 'rabdrakhmanov@kazmintech.com'];
 const { loadProjects, attr, API_BASE } = require('./planradar');
+const { addTitleSheet, addSummarySheet, describePeriod } = require('./planradarReportSheets');
 
 const TIMEZONE = 'Asia/Almaty';
 const PAGESIZE = 500;
@@ -30,11 +34,8 @@ const JOB_TTL_MS = 30 * 60 * 1000;
 const MAX_RETRIES = 3;
 const MAX_INLINE_PHOTOS = 4; // сколько фото встраивается в ячейку «Фото» и в ячейку «Фото после устранения»
 const PHOTO_MAX_BYTES = 8 * 1024 * 1024;
-const PHOTO_BOX = { width: 300, height: 225 }; // плитка под одно фото, пиксели; в ячейке 2×2 плитки
 const PHOTO_GAP = 4; // отступ между плитками и от края ячейки, пиксели
 const EMU = 9525; // EMU в пикселе
-const PHOTO_ROW_HEIGHT = 347; // пункты (≈ 462 пикселя = 2 плитки + отступы)
-const PHOTO_COLUMN_WIDTH = 87; // ширина столбца с фото, символы (≈ 612 пикселей = 2 плитки + отступы)
 const RETRY_PAUSE_MS = 20000; // после 429 («слишком часто») ждём, пока освободится минутное окно
 
 // Пауза между запросами, мс. Читается при каждом запросе (в тестах — 0).
@@ -262,66 +263,150 @@ function ticketRow(ticket, projectName, refs, fieldNames) {
   };
 }
 
-const COLUMNS = [
-  { header: '№', key: 'number', width: 8 }, // порядковый номер в этом отчёте, не номер замечания в PlanRadar
-  { header: 'Описание', key: 'subject', width: 60 },
+// Вкладка «Замечания» рассчитана на печать на A4 в книжной ориентации: у каждого замечания строка
+// «№ / Описание / Статус / Расположение», а под ней — две колонки с фото: «Фото» и «Фото после устранения»
+// (до четырёх в каждой, сеткой 2×2). Все ячейки в рамке. Шапка повторяется на каждой странице,
+// блок замечания по возможности не разрывается между страницами.
+const ISSUE_COLS = [
+  { header: '№', key: 'number', width: 6 }, // порядковый номер в этом отчёте, не номер замечания в PlanRadar
+  { header: 'Описание', key: 'subject', width: 54 },
   { header: 'Статус', key: 'status', width: 14 },
-  { header: 'Слой', key: 'layer', width: 26 },
+  { header: 'Расположение', key: 'layer', width: 46 },
 ];
+const colPx = (width) => Math.round(width * 7 + 5); // ширина столбца в пикселях
+const PAGE_CAPACITY_PT = 850; // сколько пунктов высоты (в масштабе листа) помещается на страницу A4 при печати
+const FONT = 'Arial';
 
-async function buildWorkbook(rows, errors = [], { withPhotos = false } = {}) {
-  const wb = new ExcelJS.Workbook();
+function addIssuesSheet(wb, rows, { withPhotos }) {
   const ws = wb.addWorksheet('Замечания');
-  const columns = [...COLUMNS];
-  if (withPhotos) {
-    columns.push({ header: 'Фото', key: 'photoBefore', width: PHOTO_COLUMN_WIDTH });
-    columns.push({ header: 'Фото после устранения', key: 'photoAfter', width: PHOTO_COLUMN_WIDTH });
-  }
-  ws.columns = columns.map(({ header, key, width }) => ({ header, key, width }));
+  ws.columns = ISSUE_COLS.map(({ header, key, width }) => ({ header, key, width }));
+  const widths = ISSUE_COLS.map((c) => colPx(c.width));
+  const half = widths[0] + widths[1]; // «Фото» — под № и описанием, «Фото после» — под статусом и слоем (обе половины равны)
+  const tileW = Math.floor((half - 3 * PHOTO_GAP) / 2);
+  const tileH = Math.round(tileW * 0.75);
+  const thin = { style: 'thin', color: { argb: 'FF808080' } };
+  const border = { top: thin, left: thin, bottom: thin, right: thin };
+  const frame = (r, c1 = 1, c2 = ISSUE_COLS.length) => { for (let c = c1; c <= c2; c++) ws.getCell(r, c).border = border; };
+  const pt = (px) => Math.ceil(px * 0.75);
+
+  ws.pageSetup = {
+    paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true,
+    margins: { left: 0.25, right: 0.25, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 },
+    printTitlesRow: '1:1',
+  };
+  ws.headerFooter.oddFooter = '&CСтраница &P из &N';
+
+  const head = ws.getRow(1);
+  head.height = 22;
+  head.eachCell((cell) => {
+    cell.font = { name: FONT, size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = border;
+  });
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+
+  // номер столбца и сдвиг в нём по абсолютной координате x (пикселей от левого края листа)
+  const colAt = (x) => {
+    let left = 0;
+    for (let i = 0; i < widths.length; i++) {
+      if (x < left + widths[i] || i === widths.length - 1) return { nativeCol: i, nativeColOff: (x - left) * EMU };
+      left += widths[i];
+    }
+    return { nativeCol: 0, nativeColOff: 0 };
+  };
+
+  let used = 22; // высота текущей страницы, пункты
+  const ensureSpace = (height) => {
+    if (used + height > PAGE_CAPACITY_PT && used > 22) {
+      ws.getRow(ws.rowCount).addPageBreak(); // новая страница начнётся со следующей строки
+      used = 22;
+    }
+    used += height;
+  };
+
+  const place = (photos, row, left, startY) => photos.forEach((p, i) => {
+    // вписываем в плитку с сохранением пропорций, больше натурального размера не растягиваем
+    const scale = Math.min(tileW / p.width, tileH / p.height, 1);
+    const id = wb.addImage({ buffer: p.buffer, extension: p.extension });
+    const x = left + PHOTO_GAP + (i % 2) * (tileW + PHOTO_GAP);
+    const y = startY + PHOTO_GAP + Math.floor(i / 2) * (tileH + PHOTO_GAP);
+    ws.addImage(id, {
+      tl: { ...colAt(x), nativeRow: row - 1, nativeRowOff: y * EMU },
+      ext: { width: Math.round(p.width * scale), height: Math.round(p.height * scale) },
+      editAs: 'oneCell',
+    });
+  });
+
+  const heightOf = (r) => {
+    const lines = Math.max(Math.ceil((r.subject || '').length / 50), Math.ceil((r.layer || '').length / 42), 1);
+    return Math.max(20, lines * 13 + 6);
+  };
+  const photoRowsFor = (r) => Math.min(2, Math.max(Math.ceil(r.photosBefore.length / 2), Math.ceil(r.photosAfter.length / 2)));
+
+  let seq = 0; // сквозной номер по порядку в отчёте
+  const addTicket = (r) => {
+    seq += 1;
+    const row = ws.addRow({ number: seq, subject: r.subject, status: r.status, layer: r.layer });
+    row.height = heightOf(r);
+    row.eachCell({ includeEmpty: true }, (cell, n) => {
+      cell.font = { name: FONT, size: 10 };
+      cell.alignment = { vertical: 'middle', horizontal: n === 1 ? 'center' : 'left', wrapText: true };
+    });
+    frame(row.number);
+    if (!withPhotos || !(r.photosBefore.length || r.photosAfter.length)) return;
+    const caption = ws.addRow(['Фото', null, 'Фото после устранения', null]);
+    ws.mergeCells(caption.number, 1, caption.number, 2);
+    ws.mergeCells(caption.number, 3, caption.number, 4);
+    caption.height = 16;
+    caption.eachCell({ includeEmpty: true }, (cell) => {
+      cell.font = { name: FONT, size: 9, bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    frame(caption.number);
+    const photoRow = ws.addRow([]);
+    ws.mergeCells(photoRow.number, 1, photoRow.number, 2);
+    ws.mergeCells(photoRow.number, 3, photoRow.number, 4);
+    const px = photoRowsFor(r) * (tileH + PHOTO_GAP) + PHOTO_GAP;
+    photoRow.height = pt(px);
+    frame(photoRow.number);
+    place(r.photosBefore, photoRow.number, 0, 0);
+    place(r.photosAfter, photoRow.number, half, 0);
+  };
+  const blockHeight = (r) => heightOf(r) + (withPhotos && (r.photosBefore.length || r.photosAfter.length) ? 16 + pt(photoRowsFor(r) * (tileH + PHOTO_GAP) + PHOTO_GAP) : 0);
+
   // объекты — подзаголовки (жирным, на пункт крупнее обычного текста), под ними замечания объекта
   const byProject = new Map();
   rows.forEach((r) => { if (!byProject.has(r.project)) byProject.set(r.project, []); byProject.get(r.project).push(r); });
   const ordered = [...byProject.entries()].sort((a, b) => a[0].localeCompare(b[0], 'ru'));
-  const middle = { vertical: 'middle' };
-  let seq = 0; // сквозной номер по порядку в отчёте
-  const addTicket = (r) => {
-    seq += 1;
-    const row = ws.addRow(COLUMNS.reduce((acc, c) => ({ ...acc, [c.key]: c.key === 'number' ? seq : r[c.key] }), {}));
-    row.alignment = middle;
-    row.eachCell({ includeEmpty: true }, (cell, n) => { cell.alignment = { vertical: 'middle', wrapText: columns[n - 1] && columns[n - 1].key === 'subject' }; });
-    if (!withPhotos || !(r.photosBefore.length || r.photosAfter.length)) return;
-    row.height = PHOTO_ROW_HEIGHT;
-    // столбцы: после обычных — «Фото» и «Фото после устранения»;
-    // в каждой ячейке до четырёх фото сеткой 2×2 (слева направо, сверху вниз)
-    const place = (photos, col) => photos.forEach((p, i) => {
-      // вписываем в плитку с сохранением пропорций, больше натурального размера не растягиваем
-      const scale = Math.min(PHOTO_BOX.width / p.width, PHOTO_BOX.height / p.height, 1);
-      const imageId = wb.addImage({ buffer: p.buffer, extension: p.extension });
-      const x = PHOTO_GAP + (i % 2) * (PHOTO_BOX.width + PHOTO_GAP);
-      const y = PHOTO_GAP + Math.floor(i / 2) * (PHOTO_BOX.height + PHOTO_GAP);
-      ws.addImage(imageId, {
-        tl: { nativeCol: col, nativeColOff: x * EMU, nativeRow: row.number - 1, nativeRowOff: y * EMU },
-        ext: { width: Math.round(p.width * scale), height: Math.round(p.height * scale) },
-        editAs: 'oneCell',
-      });
-    });
-    place(r.photosBefore, COLUMNS.length);
-    place(r.photosAfter, COLUMNS.length + 1);
-  };
   for (const [project, list] of ordered) {
+    ensureSpace(22 + blockHeight(list[0])); // подзаголовок не остаётся один в конце страницы
     const sub = ws.addRow([project]);
-    ws.mergeCells(sub.number, 1, sub.number, columns.length);
-    sub.font = { bold: true, size: 12 };
-    sub.alignment = { vertical: 'middle' };
+    ws.mergeCells(sub.number, 1, sub.number, ISSUE_COLS.length);
     sub.height = 22;
+    sub.getCell(1).font = { name: FONT, size: 12, bold: true };
+    sub.getCell(1).alignment = { vertical: 'middle' };
     sub.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDDEBF7' } };
-    list.forEach(addTicket);
+    frame(sub.number);
+    list.forEach((r, i) => {
+      if (i > 0) ensureSpace(blockHeight(r)); // у первого замечания место уже учтено вместе с подзаголовком
+      addTicket(r);
+    });
   }
-  const head = ws.getRow(1);
-  head.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
-  head.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF305496' } };
-  head.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-  ws.views = [{ state: 'frozen', ySplit: 1 }];
+  return ws;
+}
+
+// period ({ from, to }) — если задан, перед замечаниями добавляются вкладки «Титульный» и «Сводная»;
+// reportNumber — номер отчёта на титульном листе (необязательный).
+async function buildWorkbook(rows, errors = [], { withPhotos = false, period = null, reportNumber = '' } = {}) {
+  const wb = new ExcelJS.Workbook();
+  if (period) {
+    const info = describePeriod(period.from, period.to);
+    addTitleSheet(wb, { period: info, reportNumber });
+    addSummarySheet(wb, rows, { period: info });
+  }
+  addIssuesSheet(wb, rows, { withPhotos });
   if (errors.length) {
     const es = wb.addWorksheet('Ошибки');
     es.columns = [{ header: 'Объект', key: 'project', width: 32 }, { header: 'Ошибка', key: 'error', width: 60 }];
@@ -359,7 +444,7 @@ const publicJob = (j) => ({
 });
 
 // projectIds — только эти объекты (по умолчанию все из справочника).
-function startExport({ from, to, projectIds = null, withPhotos = true }) {
+function startExport({ from, to, projectIds = null, withPhotos = true, reportNumber = '' }) {
   if (!isDate(from) || !isDate(to)) throw Object.assign(new Error('Укажите даты в формате ГГГГ-ММ-ДД'), { status: 400 });
   if (from > to) throw Object.assign(new Error('Начальная дата позже конечной'), { status: 400 });
   if (!process.env.PLANRADAR_API_KEY) throw Object.assign(new Error('На сервере не задан PLANRADAR_API_KEY'), { status: 503 });
@@ -377,6 +462,7 @@ function startExport({ from, to, projectIds = null, withPhotos = true }) {
     to,
     progress: { done: 0, total: projects.length, current: null },
     withPhotos: !!withPhotos,
+    reportNumber: String(reportNumber || '').trim(),
     photoFailures: 0,
     count: 0,
     errors: [],
@@ -426,7 +512,7 @@ function startExport({ from, to, projectIds = null, withPhotos = true }) {
       }
       if (job.errors.length === projects.length) throw new Error('PlanRadar не ответил ни по одному объекту');
       job.count = rows.length;
-      job.buffer = await buildWorkbook(sortRows(rows), job.errors, { withPhotos });
+      job.buffer = await buildWorkbook(sortRows(rows), job.errors, { withPhotos, period: { from, to }, reportNumber: job.reportNumber });
       job.filename = `PlanRadar_замечания_${from}_${to}.xlsx`;
       job.status = 'done';
     } catch (err) {
@@ -444,7 +530,7 @@ const getJob = (id) => jobs.get(id) || null;
 
 // ---------- маршруты (только администратор) ----------
 const router = express.Router();
-router.use(requireAdmin);
+router.use(requireEmails(EXPORT_USERS));
 router.use(express.json());
 
 router.get('/projects', (req, res) => {
@@ -453,8 +539,9 @@ router.get('/projects', (req, res) => {
 
 router.post('/exports', (req, res) => {
   try {
-    const { from, to, projectIds } = req.body || {};
-    const job = startExport({ from, to, projectIds: Array.isArray(projectIds) ? projectIds.map(String) : null, withPhotos: (req.body || {}).withPhotos !== false });
+    const { from, to, projectIds, reportNumber } = req.body || {};
+    const number = String(reportNumber ?? '').trim().slice(0, 12);
+    const job = startExport({ from, to, projectIds: Array.isArray(projectIds) ? projectIds.map(String) : null, withPhotos: (req.body || {}).withPhotos !== false, reportNumber: number });
     res.status(202).json(publicJob(job));
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message });
