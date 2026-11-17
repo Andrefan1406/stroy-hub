@@ -325,6 +325,16 @@ CREATE TABLE gpr_report_plan_dates (
 -- вдруг один человек отвечает за оба), но не дважды на один и тот же.
 -- ПОСТОЯННОЕ хранилище (CREATE TABLE IF NOT EXISTS, без DROP) — правила не
 -- должны пропадать при синке/рестарте, как и people_gap_check_rules.
+-- planradar_overdue — сколько незакрытых замечаний PlanRadar просрочено на
+-- три дня и больше по каждому объекту (см. server/planradar.js). Обновляется
+-- по расписанию, переживает рестарт; по ней же форм-гварды блокируют заявки.
+CREATE TABLE IF NOT EXISTS planradar_overdue (
+  project_id    TEXT PRIMARY KEY,
+  project_name  TEXT NOT NULL,
+  overdue_count INTEGER NOT NULL DEFAULT 0,
+  checked_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS gpr_report_check_rules (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   email      TEXT NOT NULL,

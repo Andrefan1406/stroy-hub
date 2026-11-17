@@ -1,0 +1,348 @@
+// Выгрузка замечаний PlanRadar за период в Excel (server/planradarExport.js):
+// период — по дате создания в Алматы, постраничный забор, справочники имён,
+// сбой по одному объекту не рушит выгрузку, содержимое файла.
+const { test, mock } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const ExcelJS = require('exceljs');
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'planradar-export-'));
+process.env.PLANRADAR_API_KEY = 'k';
+process.env.PLANRADAR_CUSTOMER_ID = '1';
+process.env.PLANRADAR_EXPORT_PAUSE_MS = '0';
+process.env.PLANRADAR_EXPORT_RETRY_MS = '0';
+process.env.PLANRADAR_PROJECTS_FILE = path.join(dir, 'projects.json');
+fs.writeFileSync(process.env.PLANRADAR_PROJECTS_FILE, JSON.stringify({
+  'Жилой дом поз.63': { id: 'p63', emails: [] },
+  'Лицей': { id: 'lic', emails: [] },
+  'КОС': { id: 'kos', emails: [] },
+}));
+
+const { startExport, filterByPeriod, almatyDate, deadlineOf, STATUS_NAMES, imageInfo, classifyPhoto } = require('./planradarExport');
+
+const ticket = (n, created, extra = {}) => ({
+  id: `t${n}`,
+  attributes: {
+    'sequential-id': n,
+    subject: `Замечание ${n}`,
+    'status-id': '1',
+    'created-at': created,
+    'due-date': '2026-11-20',
+    'author-id': 'u1',
+    'assigned-to-id': 'u2',
+    'component-id': 'c1',
+    ...extra,
+  },
+});
+
+test('период — по дате создания в Алматы (UTC+5), границы включительно', () => {
+  assert.equal(almatyDate('2026-10-31T20:00:00.000Z'), '2026-11-01', 'ночью по Алматы уже следующий день');
+  assert.equal(almatyDate('2026-11-01T18:59:00.000Z'), '2026-11-01');
+  assert.equal(almatyDate(null), null);
+  const list = [
+    ticket(1, '2026-10-31T18:59:00.000Z'), // 31.10 23:59 Алматы — до периода
+    ticket(2, '2026-10-31T19:00:00.000Z'), // 01.11 00:00 — первый день
+    ticket(3, '2026-11-12T18:59:00.000Z'), // 12.11 23:59 — последний день
+    ticket(4, '2026-11-12T19:00:00.000Z'), // 13.11 00:00 — после
+    { id: 'x', attributes: {} }, // без даты создания — не берём
+  ];
+  assert.deepEqual(filterByPeriod(list, '2026-11-01', '2026-11-12').map((t) => t.id), ['t2', 't3']);
+});
+
+test('действующий срок — дата продления, если она позже; статусы переведены', () => {
+  assert.equal(deadlineOf({ attributes: { 'due-date': '2026-11-01', 'extension-date': '2026-11-10' } }), '2026-11-10');
+  assert.equal(deadlineOf({ attributes: {} }), null);
+  assert.equal(STATUS_NAMES['3'], 'Устранено');
+});
+
+function mockApi(handlers) {
+  const calls = [];
+  mock.method(globalThis, 'fetch', async (url) => {
+    const u = String(url);
+    calls.push(u);
+    for (const [re, fn] of handlers) {
+      if (re.test(u)) return fn(u);
+    }
+    return { ok: true, status: 200, json: async () => ({ data: [] }) };
+  });
+  return calls;
+}
+const ok = (data) => ({ ok: true, status: 200, json: async () => ({ data }) });
+const fail = (status) => ({ ok: false, status, json: async () => ({}) });
+const readSheet = async (buffer, name = 'Замечания') => {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buffer);
+  return wb.getWorksheet(name);
+};
+
+test('выгрузка: нужный период, имена из справочников, сбой одного объекта виден в файле', async () => {
+  mock.restoreAll();
+  const calls = mockApi([
+    [/projects\/p63\/tickets/, () => ok([
+      ticket(5, '2026-11-05T05:00:00.000Z', { 'closed-at': '2026-11-07T05:00:00.000Z', 'status-id': '5' }),
+      ticket(6, '2026-09-01T05:00:00.000Z'), // вне периода
+      ticket(7, '2026-11-02T05:00:00.000Z', { 'status-id': 'ol' }),
+    ])],
+    [/projects\/p63\/users/, () => ok([
+      { id: 'u1', attributes: { firstname: 'Иван', lastname: 'Петров' } },
+      { id: 'u2', attributes: { mail: 'sub@x.kz' } },
+    ])],
+    [/projects\/p63\/project_groups/, () => ok([])],
+    [/projects\/p63\/components\/project_components/, () => ok([{ id: 'c1', attributes: { name: 'Блок А, 3 этаж' } }])],
+    [/projects\/lic\/tickets/, () => fail(503)],
+    [/projects\/kos\/tickets/, () => ok([ticket(1, '2026-11-03T05:00:00.000Z')])],
+  ]);
+  const job = startExport({ from: '2026-11-01', to: '2026-11-12' });
+  assert.equal(job.status, 'running');
+  assert.throws(() => startExport({ from: '2026-11-01', to: '2026-11-12' }), /уже выполняется/);
+  await job.promise;
+
+  assert.equal(job.status, 'done');
+  assert.equal(job.count, 3);
+  assert.deepEqual(job.errors, [{ project: 'Лицей', error: 'PlanRadar 503' }]);
+  assert.equal(job.progress.done, 3);
+  assert.equal(job.filename, 'PlanRadar_замечания_2026-11-01_2026-11-12.xlsx');
+  assert.ok(!calls.some((c) => /projects\/lic\/users/.test(c)), 'справочники — только по объектам с замечаниями');
+
+  const ws = await readSheet(job.buffer);
+  assert.deepEqual(ws.getRow(1).values.slice(1), ['№', 'Описание', 'Статус', 'Расположение']);
+  assert.equal(ws.rowCount, 6);
+  // объекты — подзаголовки (по алфавиту), внутри — по дате создания
+  const sub = ws.getRow(2);
+  assert.equal(sub.getCell(1).value, 'Жилой дом поз.63');
+  assert.equal(sub.getCell(1).font.bold, true);
+  assert.equal(sub.getCell(1).font.size, 12);
+  assert.equal(ws.getRow(5).getCell(1).value, 'КОС');
+  const first = ws.getRow(3).values;
+  // № — по порядку в отчёте (сквозной), а не номер замечания в PlanRadar
+  assert.equal(first[1], 1);
+  assert.equal(first[3], 'В работе');
+  assert.equal(first[4], 'Блок А, 3 этаж');
+  assert.equal(ws.getRow(3).getCell(2).alignment.vertical, 'middle');
+  assert.equal(ws.getRow(4).values[1], 2);
+  assert.equal(ws.getRow(6).values[1], 3);
+  const errors = await readSheet(job.buffer, 'Ошибки');
+  assert.deepEqual(errors.getRow(2).values.slice(1), ['Лицей', 'PlanRadar 503']);
+});
+
+test('постраничная выгрузка: вторая страница запрашивается, если первая полная', async () => {
+  mock.restoreAll();
+  const page1 = Array.from({ length: 500 }, (_, i) => ticket(i + 1, '2026-01-01T05:00:00.000Z'));
+  const calls = mockApi([
+    [/projects\/p63\/tickets\?page=1/, () => ok(page1)],
+    [/projects\/p63\/tickets\?page=2/, () => ok([ticket(501, '2026-11-05T05:00:00.000Z')])],
+  ]);
+  const job = startExport({ from: '2026-11-01', to: '2026-11-12', projectIds: ['p63'] });
+  await job.promise;
+  assert.equal(job.count, 1);
+  assert.ok(calls.some((c) => /tickets\?page=2/.test(c)));
+  assert.ok(!calls.some((c) => /projects\/(lic|kos)\//.test(c)), 'выбран один объект');
+});
+
+test('PlanRadar не ответил ни по одному объекту — ошибка, а не пустой файл', async () => {
+  mock.restoreAll();
+  mockApi([[/tickets/, () => fail(500)]]);
+  const job = startExport({ from: '2026-11-01', to: '2026-11-12' });
+  await job.promise;
+  assert.equal(job.status, 'error');
+  assert.match(job.error, /не ответил/);
+});
+
+test('429: ждём и повторяем запрос', async () => {
+  mock.restoreAll();
+  let n = 0;
+  mockApi([[/projects\/p63\/tickets/, () => (++n === 1 ? fail(429) : ok([ticket(9, '2026-11-05T05:00:00.000Z')]))]]);
+  const job = startExport({ from: '2026-11-01', to: '2026-11-12', projectIds: ['p63'] });
+  await job.promise;
+  assert.equal(job.status, 'done');
+  assert.equal(job.count, 1);
+  assert.equal(n, 2);
+});
+
+test('проверка дат, объектов и ключа', () => {
+  assert.throws(() => startExport({ from: '12.11.2026', to: '2026-11-12' }), /формате/);
+  assert.throws(() => startExport({ from: '2026-11-12', to: '2026-11-01' }), /позже/);
+  assert.throws(() => startExport({ from: '2026-11-01', to: '2026-11-12', projectIds: ['нет такого'] }), /Не найдено объектов/);
+  const key = process.env.PLANRADAR_API_KEY;
+  delete process.env.PLANRADAR_API_KEY;
+  assert.throws(() => startExport({ from: '2026-11-01', to: '2026-11-12' }), /PLANRADAR_API_KEY/);
+  process.env.PLANRADAR_API_KEY = key;
+});
+
+// Минимальный JPEG с заголовком SOF0: высота 60, ширина 120 — хватает, чтобы прочитать размер.
+const tinyJpeg = (w, h) => Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, h >> 8, h & 255, w >> 8, w & 255, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xd9]);
+const FIELD_AFTER = 'tf797eb4c4bcf526aa';
+// фото вложения: field — id поля формы (у фото «после»), by — кто загрузил, at — когда
+const image = (n, { field = null, by = 'author1', at = '2026-11-05T05:05:00.000Z' } = {}) => ({
+  type: 'defectradar-issue-images',
+  id: `img${n}`,
+  attributes: { 'image-url-thumb-300px': `https://s3.test/img${n}.jpg`, 'image-url': `https://s3.test/full${n}.jpg`, 'field-id': field, 'created-by': by, 'created-at': at },
+});
+const imageResponse = (bytes) => ({ ok: true, status: 200, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) });
+
+test('размер картинки читается по заголовку (JPEG, PNG), чужие форматы не встраиваются', () => {
+  assert.deepEqual(imageInfo(tinyJpeg(120, 60)), { extension: 'jpeg', width: 120, height: 60 });
+  const png = Buffer.alloc(32);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47]).copy(png);
+  png.writeUInt32BE(300, 16);
+  png.writeUInt32BE(200, 20);
+  assert.deepEqual(imageInfo(png), { extension: 'png', width: 300, height: 200 });
+  assert.equal(imageInfo(Buffer.from('RIFFxxxxWEBPVP8 ')), null);
+});
+
+test('фото «после устранения» — только из поля «Фотоподтверждение», остальные — в «Фото»', () => {
+  const names = new Map([[FIELD_AFTER, 'Фотоподтверждение устранения замечания'], ['tfBefore', 'Фото нарушения'], ['tfOther', 'Устранено ли']]);
+  // поле «Фотоподтверждение устранения замечания» — «после», кем и когда бы ни загрузили
+  assert.equal(classifyPhoto(image(1, { field: FIELD_AFTER }), names), 'after');
+  assert.equal(classifyPhoto(image(2, { field: FIELD_AFTER, by: 'fixer', at: '2026-11-20T05:00:00.000Z' }), names), 'after');
+  // фото без поля — «Фото»; даже если его загрузил не автор и позже (раньше такое считалось «после»)
+  assert.equal(classifyPhoto(image(3), names), 'before');
+  assert.equal(classifyPhoto(image(4, { by: 'fixer', at: '2026-11-07T05:00:00.000Z' }), names), 'before');
+  // другие поля, в том числе с «устран» в названии, и неизвестное поле — «Фото»
+  assert.equal(classifyPhoto(image(5, { field: 'tfBefore' }), names), 'before');
+  assert.equal(classifyPhoto(image(6, { field: 'tfOther' }), names), 'before');
+  assert.equal(classifyPhoto(image(7, { field: 'tfUnknown' }), names), 'before');
+  // названия полей не получены — определить подтверждение нельзя, фото остаётся в «Фото»
+  assert.equal(classifyPhoto(image(8, { field: FIELD_AFTER })), 'before');
+});
+
+test('фото: «Фото» и «Фото после устранения» раздельно, встраиваются в свои столбцы, размеры вдвое крупнее', async () => {
+  mock.restoreAll();
+  const withUuid = (n, created) => {
+    const tk = ticket(n, created);
+    return { ...tk, attributes: { ...tk.attributes, uuid: `uuid-${n}`, 'author-id': 'author1' } };
+  };
+  const calls = mockApi([
+    [/projects\/p63\/tickets\?/, () => ({ ok: true, status: 200, json: async () => ({
+      data: [withUuid(1, '2026-11-05T05:00:00.000Z'), withUuid(2, '2026-11-06T05:00:00.000Z')],
+      included: [{ type: 'ticket-types', id: 'tt', attributes: { 'typed-fields': { [FIELD_AFTER]: { name: 'Фотоподтверждение устранения замечания' } } } }],
+    }) })],
+    // замечание 1: 2 фото «до», 6 «после» (встраиваются первые четыре), не скачается img3; замечание 2: нет фото
+    [/tickets\/uuid-1\/attachments/, () => ({ ok: true, status: 200, json: async () => ({
+      data: [],
+      included: [image(1), image(2)]
+        .concat([3, 4, 5, 6, 7, 8].map((n) => image(n, { field: FIELD_AFTER, by: 'fixer', at: `2026-11-1${n - 3}T05:00:00.000Z` })))
+        .concat([{ type: 'videos', id: 'v1', attributes: {} }]),
+    }) })],
+    [/tickets\/uuid-2\/attachments/, () => ({ ok: true, status: 200, json: async () => ({ data: [], included: [] }) })],
+    [/s3\.test\/img3\.jpg/, () => ({ ok: false, status: 403 })], // одно фото «после» не скачалось
+    [/s3\.test\/img/, () => imageResponse(tinyJpeg(300, 200))],
+  ]);
+  const job = startExport({ from: '2026-11-01', to: '2026-11-12', projectIds: ['p63'] });
+  await job.promise;
+
+  assert.equal(job.status, 'done');
+  assert.equal(job.photoFailures, 1);
+  assert.ok(!calls.some((c) => /full\d/.test(c)), 'берутся миниатюры, не оригиналы');
+  assert.equal(calls.filter((c) => /s3\.test/.test(c)).length, 6, 'скачиваются 2 фото «до» и первые 4 «после»');
+  const ws = await readSheet(job.buffer);
+  // под замечанием: строка с описанием, подпись «Фото | Фото после устранения», строка с фото (две плитки по высоте)
+  assert.deepEqual([ws.getRow(3).getCell(2).value, ws.getRow(3).getCell(1).value], ['Замечание 1', 1]);
+  assert.equal(ws.getRow(4).getCell(1).value, 'Фото');
+  assert.equal(ws.getRow(4).getCell(3).value, 'Фото после устранения');
+  assert.equal(ws.getRow(5).height, 245, 'строка с фото вмещает две плитки по высоте');
+  assert.equal(ws.getRow(6).getCell(2).value, 'Замечание 2', 'у следующего замечания фото нет — подписей и строки с фото нет');
+  for (const m of ['A2:D2', 'A4:B4', 'C4:D4', 'A5:B5', 'C5:D5']) assert.ok(ws.model.merges.includes(m), `нет объединения ${m}`);
+
+  // раскладка на печать: A4 книжная, на всю ширину, шапка повторяется, ячейки в рамке
+  assert.equal(ws.pageSetup.paperSize, 9);
+  assert.equal(ws.pageSetup.orientation, 'portrait');
+  assert.equal(ws.pageSetup.fitToWidth, 1);
+  assert.equal(ws.pageSetup.printTitlesRow, '1:1');
+  for (const addr of ['A3', 'D3', 'A5', 'D5', 'B4']) assert.equal(ws.getCell(addr).border.top.style, 'thin', addr);
+
+  const imgs = ws.getImages().map((i) => ({ col: Math.floor(i.range.tl.col), row: Math.floor(i.range.tl.row), ext: i.range.ext }));
+  assert.deepEqual(imgs.map((i) => i.col), [0, 1, 2, 3, 2], '2 фото под «Фото» (слева), 3 — под «Фото после устранения» (справа; img3 не скачалась)');
+  assert.ok(imgs.every((i) => i.row === 4), 'все фото в строке с фото');
+  // 300×200 вписывается в плитку 209×157 с сохранением пропорций
+  assert.deepEqual(imgs[0].ext, { width: 209, height: 139 });
+});
+
+test('без фото: запросов вложений нет, столбцов фото нет', async () => {
+  mock.restoreAll();
+  const calls = mockApi([[/projects\/p63\/tickets\?/, () => ok([ticket(1, '2026-11-05T05:00:00.000Z')])]]);
+  const job = startExport({ from: '2026-11-01', to: '2026-11-12', projectIds: ['p63'], withPhotos: false });
+  await job.promise;
+  assert.ok(!calls.some((c) => /attachments/.test(c)));
+  const ws = await readSheet(job.buffer);
+  assert.equal(ws.getRow(1).values.length - 1, 4);
+  assert.equal(ws.getImages().length, 0);
+});
+
+test('несколько отмеченных объектов: опрашиваются только они', async () => {
+  mock.restoreAll();
+  const calls = mockApi([
+    [/projects\/p63\/tickets/, () => ok([ticket(1, '2026-11-05T05:00:00.000Z')])],
+    [/projects\/kos\/tickets/, () => ok([ticket(2, '2026-11-06T05:00:00.000Z')])],
+  ]);
+  const job = startExport({ from: '2026-11-01', to: '2026-11-12', projectIds: ['p63', 'kos'] });
+  assert.equal(job.progress.total, 2);
+  await job.promise;
+  assert.equal(job.count, 2);
+  assert.ok(!calls.some((c) => /projects\/lic\//.test(c)), 'неотмеченный объект не запрашивается');
+});
+
+test('описание замечания — поле «Подробное описание замечания», нет описания — название', () => {
+  const { descriptionOf } = require('./planradarExport');
+  const names = new Map([['tfD', 'Подробное описание замечания'], ['tfN', 'Примечания']]);
+  const t = (values) => ({ attributes: { subject: 'Штукатурка стен', 'typed-values': values } });
+  assert.equal(descriptionOf(t({ tfD: '  Отклонение от вертикали  ', tfN: 'прим' }), names), 'Отклонение от вертикали');
+  assert.equal(descriptionOf(t({ tfD: '   ', tfN: 'прим' }), names), 'Штукатурка стен');
+  assert.equal(descriptionOf(t({ tfD: null }), names), 'Штукатурка стен');
+  assert.equal(descriptionOf(t({ tfD: 'x' }), new Map()), 'Штукатурка стен');
+});
+
+test('вкладки «Титульный» и «Сводная»: период, номер отчёта, картинки, полные названия, закрыто только «Закрыто»', async () => {
+  const { buildWorkbook } = require('./planradarExport');
+  const row = (project, status, n) => ({ project, number: n, subject: `З${n}`, status, layer: '', photosBefore: [], photosAfter: [] });
+  const rows = [
+    row('Жилой дом поз.64', 'Закрыто', 1), row('Жилой дом поз.64', 'Устранено', 2), row('Жилой дом поз.64', 'Открыто', 3),
+    row('Нурлы Жол 4', 'Закрыто', 4), row('Нурлы Жол 4', 'Отклонено', 5),
+  ];
+  const wbOf = async (period, reportNumber) => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(await buildWorkbook(rows, [], { period, reportNumber }));
+    return wb;
+  };
+
+  // календарный месяц целиком
+  const wb = await wbOf({ from: '2026-10-01', to: '2026-10-31' }, '6');
+  assert.deepEqual(wb.worksheets.map((w) => w.name), ['Титульный', 'Сводная', 'Замечания']);
+  const title = wb.getWorksheet('Титульный');
+  const titleTexts = [];
+  title.eachRow((r) => r.eachCell((c) => { if (typeof c.value === 'string' && c.value) titleTexts.push(c.value); }));
+  assert.ok(titleTexts.includes('ЕЖЕМЕСЯЧНЫЙ ОТЧЕТ № 6'));
+  assert.ok(titleTexts.includes('За Октябрь'));
+  assert.ok(titleTexts.includes('от 31.10.2026 года.'));
+  assert.ok(titleTexts.includes('Усть-Каменогорск 2026 г.'));
+  assert.ok(titleTexts.includes('Руководитель группы технического надзора'));
+  assert.equal(title.getImages().length, 3, 'логотип, картинка с рулеткой и подпись');
+
+  const sum = wb.getWorksheet('Сводная');
+  const cells = (n) => sum.getRow(n).values.slice(1);
+  assert.equal(cells(1)[0], 'Выявленные замечания и их устранения за Октябрь 2026 год:');
+  assert.equal(cells(3)[0], 'За Октябрь месяц экспертами ТН было выявлено 5 замечаний по объектам');
+  assert.deepEqual(cells(6).filter((v) => v != null), ['№', 'Наименование объекта', 'Всего за месяц', 'Открыто', 'Закрыто']);
+  // по алфавиту: Жилой дом поз.64 — полное название из реестра; Нурлы Жол 4 — короткое
+  const r1 = cells(7);
+  assert.equal(r1[0], 1);
+  assert.match(r1[1], /^«Строительство многоэтажных жилых домов со встроенными коммерческими помещениями .*Поз\. 64»$/);
+  assert.deepEqual(r1.slice(2, 5), [3, 2, 1], 'Всего 3, закрыто 1 (только «Закрыто»), открыто 2');
+  assert.deepEqual([cells(8)[1], ...cells(8).slice(2, 5)], ['Нурлы Жол 4', 2, 1, 1]);
+  assert.deepEqual([sum.getCell('A9').value, ...cells(9).slice(2, 5)], ['Итого', 5, 3, 2]);
+
+  // произвольный период и без номера
+  const wb2 = await wbOf({ from: '2026-11-01', to: '2026-11-12' }, '');
+  const t2 = [];
+  wb2.getWorksheet('Титульный').eachRow((r) => r.eachCell((c) => { if (typeof c.value === 'string') t2.push(c.value); }));
+  assert.ok(t2.includes('ЕЖЕМЕСЯЧНЫЙ ОТЧЕТ'));
+  assert.ok(t2.includes('За период с 01.11.2026 по 12.11.2026'));
+  assert.equal(wb2.getWorksheet('Сводная').getRow(6).getCell(3).value, 'Всего за период');
+
+  // без периода вкладок нет (прежнее поведение)
+  const plain = new ExcelJS.Workbook();
+  await plain.xlsx.load(await buildWorkbook(rows, []));
+  assert.deepEqual(plain.worksheets.map((w) => w.name), ['Замечания']);
+});

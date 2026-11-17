@@ -9,7 +9,8 @@ import { auth } from "../firebase";
 // email, присланному отсюда.
 const ADMIN_EMAIL = "admin@vkdev.kz";
 
-export default function AdminRoute({ children }) {
+// extraEmails — дополнительные адреса, которым открыта именно эта страница (не весь админский раздел).
+export default function AdminRoute({ children, extraEmails = [] }) {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(true);
 
@@ -30,7 +31,8 @@ export default function AdminRoute({ children }) {
     return <Navigate to="/login" replace />;
   }
 
-  if (user.email !== ADMIN_EMAIL) {
+  const allowed = user.email === ADMIN_EMAIL || extraEmails.includes((user.email || "").toLowerCase());
+  if (!allowed) {
     return <Navigate to="/" replace />;
   }
 

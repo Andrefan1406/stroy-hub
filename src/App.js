@@ -28,6 +28,7 @@ import AdminRoute from './components/AdminRoute';
 import FinancingRoute from './components/FinancingRoute';
 import PeopleGapsGuard from './components/PeopleGapsGuard';
 import GprReportGuard from './components/GprReportGuard';
+import PlanradarGuard from './components/PlanradarGuard';
 import ManualBlockGuard from './components/ManualBlockGuard';
 import PageTracker from './components/PageTracker';
 import AccountBar from './components/AccountBar';
@@ -50,6 +51,9 @@ import RidesAdminPage from "./pages/rides/RidesAdminPage";
 import TelegramMiniApp, { TelegramMiniAppRoute } from "./pages/rides/TelegramMiniApp";
 import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
+import PlanradarExportAdminPage from "./pages/PlanradarExportAdminPage";
+import RestrictedUserGate from "./components/RestrictedUserGate";
+import { PLANRADAR_REPORT_EMAILS } from "./restrictedAccess";
 
 
 const Protected = ({ children }) => (
@@ -63,6 +67,7 @@ const App = () => {
     <Router>
       <PageTracker />
       <AccountBar />
+      <RestrictedUserGate>
       <RideAccessGate>
       <Routes>
 
@@ -119,9 +124,11 @@ const App = () => {
             <Protected>
               <ManualBlockGuard>
                 <GprReportGuard>
-                  <PeopleGapsGuard>
-                    <RequestPage />
-                  </PeopleGapsGuard>
+                  <PlanradarGuard>
+                    <PeopleGapsGuard>
+                      <RequestPage />
+                    </PeopleGapsGuard>
+                  </PlanradarGuard>
                 </GprReportGuard>
               </ManualBlockGuard>
             </Protected>
@@ -152,9 +159,11 @@ const App = () => {
             <Protected>
               <ManualBlockGuard>
                 <GprReportGuard>
-                  <PeopleGapsGuard>
-                    <ConcreteRequestPage />
-                  </PeopleGapsGuard>
+                  <PlanradarGuard>
+                    <PeopleGapsGuard>
+                      <ConcreteRequestPage />
+                    </PeopleGapsGuard>
+                  </PlanradarGuard>
                 </GprReportGuard>
               </ManualBlockGuard>
             </Protected>
@@ -394,6 +403,16 @@ const App = () => {
           }
         />
         <Route
+          path="/admin/planradar-export"
+          element={
+            <Protected>
+              <AdminRoute extraEmails={PLANRADAR_REPORT_EMAILS}>
+                <PlanradarExportAdminPage />
+              </AdminRoute>
+            </Protected>
+          }
+        />
+        <Route
           path="/smart-request"
           element={
             <Protected>
@@ -403,6 +422,7 @@ const App = () => {
         />
       </Routes>
       </RideAccessGate>
+      </RestrictedUserGate>
     </Router>
   );
 };

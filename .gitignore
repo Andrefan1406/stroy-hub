@@ -47,3 +47,6 @@ __pycache__/
 
 # Локальный архив критики дизайна ($impeccable critique)
 .impeccable/
+
+# Выгрузки PlanRadar (scripts/planradar) — данные компании, не коммитить
+scripts/planradar/output/
