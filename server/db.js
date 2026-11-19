@@ -345,6 +345,80 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Заявки на технологическое бурение и резку (server/drilling/). Первичные
+-- данные (не зеркало Таблиц), поэтому ПОСТОЯННЫЕ таблицы — CREATE TABLE IF NOT
+-- EXISTS, без DROP; живут на Persistent Disk (CONCRETE_DATA_DIR).
+-- drilling_companies — исполнители в «линиях»: линия 1 — своя компания, линия 2 —
+-- субподрядчики (все равнозначны, принимает первый). name — коротко для
+-- колонтитула, addressee — строка «Директору …» в шапке Word.
+CREATE TABLE IF NOT EXISTS drilling_companies (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  name      TEXT NOT NULL UNIQUE,
+  addressee TEXT NOT NULL,
+  line      INTEGER NOT NULL CHECK(line IN (1, 2)),
+  active    INTEGER NOT NULL DEFAULT 1
+);
+-- drilling_company_users — кто из сотрудников отвечает за компанию (реагирует на заявки).
+CREATE TABLE IF NOT EXISTS drilling_company_users (
+  company_id INTEGER NOT NULL,
+  email      TEXT NOT NULL,
+  PRIMARY KEY (company_id, email)
+);
+-- drilling_staff — справочник для подписей в Word (подставляется по email).
+CREATE TABLE IF NOT EXISTS drilling_staff (
+  email        TEXT PRIMARY KEY,
+  full_name    TEXT NOT NULL,
+  position     TEXT NOT NULL,
+  organization TEXT NOT NULL DEFAULT ''
+);
+-- drilling_requests.status: line1/line2 — ждёт реакции линии, returned — отказали
+-- все, у инициатора; accepted — принята (идёт выполнение); completed; cancelled.
+-- round — номер круга согласования (растёт при перезапуске инициатором).
+CREATE TABLE IF NOT EXISTS drilling_requests (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  initiator_email     TEXT NOT NULL,
+  status              TEXT NOT NULL CHECK(status IN ('line1','line2','returned','accepted','completed','cancelled')),
+  round               INTEGER NOT NULL DEFAULT 1,
+  accepted_company_id INTEGER,
+  accepted_by         TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_drilling_requests_status ON drilling_requests(status);
+CREATE INDEX IF NOT EXISTS idx_drilling_requests_initiator ON drilling_requests(initiator_email);
+-- Строка заявки: work_type drill — diameter_mm + quantity (шт, целое);
+-- cut — quantity = длина реза в м.п. (1 знак), thickness_cm = толщина реза.
+CREATE TABLE IF NOT EXISTS drilling_request_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id    INTEGER NOT NULL,
+  line_no       INTEGER NOT NULL,
+  object        TEXT NOT NULL,
+  obj_position  TEXT NOT NULL,
+  work_type     TEXT NOT NULL CHECK(work_type IN ('drill','cut')),
+  material      TEXT NOT NULL,
+  diameter_mm   INTEGER,
+  thickness_cm  REAL,
+  quantity      REAL NOT NULL,
+  reason        TEXT NOT NULL DEFAULT '',
+  fact_quantity REAL,
+  done_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_drilling_items_request ON drilling_request_items(request_id);
+-- Журнал событий со всеми временными отметками (все круги); колонтитул Word берёт
+-- из него только отметки текущего круга.
+CREATE TABLE IF NOT EXISTS drilling_events (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id INTEGER NOT NULL,
+  round      INTEGER NOT NULL,
+  at         TEXT NOT NULL,
+  type       TEXT NOT NULL,
+  actor_email TEXT,
+  company_id INTEGER,
+  line       INTEGER,
+  reason     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_drilling_events_request ON drilling_events(request_id);
+
 CREATE TABLE IF NOT EXISTS gpr_report_check_rules (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   email      TEXT NOT NULL,

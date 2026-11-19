@@ -1,0 +1,156 @@
+// REST для заявок на бурение и резку. Права определяются данными: автор,
+// ответственные линии, админ — проверяются в service.js; здесь только вход по
+// Firebase ID-токену (requireUser) и перевод ошибок в HTTP-ответы.
+const express = require('express');
+const { requireUser, requireAdmin, ADMIN_EMAIL } = require('../adminAuth');
+const svc = require('./service');
+const { buildDocx } = require('./docx');
+const { buildRegistryXlsx } = require('./xlsx');
+const { MATERIALS } = require('./validation');
+const taxonomy = require('../../src/data/concreteObjectTaxonomy.json');
+
+const isAdmin = (email) => email === ADMIN_EMAIL;
+
+const wrap = (fn) => async (req, res) => {
+  try {
+    await fn(req, res);
+  } catch (err) {
+    if (err instanceof svc.DrillingError) return res.status(err.status).json({ error: err.message });
+    console.error('[drilling]', err);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+};
+
+const router = express.Router();
+router.use(requireUser);
+
+router.get('/me', wrap((req, res) => {
+  res.json({
+    email: req.userEmail,
+    isAdmin: isAdmin(req.userEmail),
+    companies: svc.companiesOfUser(req.userEmail),
+    counters: svc.counters(req.userEmail),
+  });
+}));
+
+// Справочники формы (объекты и позиции — те же, что у заявки на бетон).
+router.get('/options', wrap((req, res) => {
+  res.json({ objectPositions: taxonomy.objectPositionOptions, materials: MATERIALS });
+}));
+
+// Реестр: фильтры берутся из query (from, to, status=a,b, object, workType, company, author, onlyMine=1).
+const registryFilters = (q) => ({
+  from: /^\d{4}-\d{2}-\d{2}$/.test(q.from || '') ? q.from : '',
+  to: /^\d{4}-\d{2}-\d{2}$/.test(q.to || '') ? q.to : '',
+  status: String(q.status || '').split(',').filter(Boolean),
+  object: q.object || '',
+  workType: ['drill', 'cut'].includes(q.workType) ? q.workType : '',
+  company: q.company || '',
+  author: q.author || '',
+  onlyMine: q.onlyMine === '1',
+});
+
+router.get('/registry', wrap((req, res) => {
+  res.json(svc.registry(req.userEmail, isAdmin(req.userEmail), registryFilters(req.query)));
+}));
+
+router.get('/registry.xlsx', wrap(async (req, res) => {
+  const data = svc.registry(req.userEmail, isAdmin(req.userEmail), registryFilters(req.query));
+  const buffer = await buildRegistryXlsx(data);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="drilling-registry.xlsx"');
+  res.send(buffer);
+}));
+
+router.get('/counter', wrap((req, res) => res.json(svc.counters(req.userEmail))));
+
+router.get('/requests', wrap((req, res) => {
+  const scope = ['mine', 'inbox', 'all'].includes(req.query.scope) ? req.query.scope : 'mine';
+  res.json({ requests: svc.listRequests(req.userEmail, scope, isAdmin(req.userEmail)) });
+}));
+
+router.post('/requests', wrap((req, res) => {
+  const id = svc.createRequest(req.userEmail, req.body?.items);
+  res.status(201).json(svc.getRequestView(id, req.userEmail, isAdmin(req.userEmail)));
+}));
+
+const viewOf = (req, id) => svc.getRequestView(id, req.userEmail, isAdmin(req.userEmail));
+const idOf = (req) => Number(req.params.id);
+
+router.get('/requests/:id', wrap((req, res) => res.json(viewOf(req, idOf(req)))));
+
+router.put('/requests/:id', wrap((req, res) => {
+  svc.updateRequest(idOf(req), req.userEmail, req.body?.items);
+  res.json(viewOf(req, idOf(req)));
+}));
+
+router.post('/requests/:id/restart', wrap((req, res) => {
+  svc.restartRequest(idOf(req), req.userEmail);
+  res.json(viewOf(req, idOf(req)));
+}));
+
+router.post('/requests/:id/cancel', wrap((req, res) => {
+  svc.cancelRequest(idOf(req), req.userEmail);
+  res.json(viewOf(req, idOf(req)));
+}));
+
+router.post('/requests/:id/accept', wrap((req, res) => {
+  svc.respond(idOf(req), req.userEmail, 'accept');
+  res.json(viewOf(req, idOf(req)));
+}));
+
+router.post('/requests/:id/reject', wrap((req, res) => {
+  svc.respond(idOf(req), req.userEmail, 'reject', req.body?.reason);
+  res.json(viewOf(req, idOf(req)));
+}));
+
+router.post('/requests/:id/items/:itemId/done', wrap((req, res) => {
+  svc.markItemDone(idOf(req), Number(req.params.itemId), req.userEmail, req.body?.factQuantity);
+  res.json(viewOf(req, idOf(req)));
+}));
+
+router.get('/requests/:id/docx', wrap(async (req, res) => {
+  const view = viewOf(req, idOf(req)); // заодно проверка доступа
+  if (!view.permissions.download) return res.status(409).json({ error: 'Документ доступен после принятия заявки в работу' });
+  const buffer = await buildDocx(svc.getDocData(idOf(req)));
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename="drilling-request-${view.id}.docx"`);
+  res.send(buffer);
+}));
+
+// ---------- админка ----------
+const adminRouter = express.Router();
+adminRouter.use(requireAdmin);
+
+adminRouter.get('/', wrap((req, res) => {
+  res.json({ companies: svc.listCompanies(), staff: svc.listStaff(), approver: svc.getApprover() });
+}));
+adminRouter.post('/companies', wrap((req, res) => {
+  svc.saveCompany(req.body || {});
+  res.json({ companies: svc.listCompanies() });
+}));
+adminRouter.put('/companies/:id', wrap((req, res) => {
+  svc.saveCompany({ ...(req.body || {}), id: Number(req.params.id) });
+  res.json({ companies: svc.listCompanies() });
+}));
+adminRouter.post('/companies/:id/users', wrap((req, res) => {
+  svc.addCompanyUser(Number(req.params.id), req.body?.email);
+  res.json({ companies: svc.listCompanies() });
+}));
+adminRouter.delete('/companies/:id/users/:email', wrap((req, res) => {
+  svc.removeCompanyUser(Number(req.params.id), req.params.email);
+  res.json({ companies: svc.listCompanies() });
+}));
+adminRouter.put('/staff', wrap((req, res) => {
+  svc.saveStaff(req.body || {});
+  res.json({ staff: svc.listStaff() });
+}));
+adminRouter.delete('/staff/:email', wrap((req, res) => {
+  svc.deleteStaff(req.params.email);
+  res.json({ staff: svc.listStaff() });
+}));
+adminRouter.put('/approver', wrap((req, res) => {
+  res.json({ approver: svc.setApprover(req.body || {}, req.adminEmail) });
+}));
+
+module.exports = { router, adminRouter };

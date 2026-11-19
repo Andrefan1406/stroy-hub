@@ -95,6 +95,9 @@ app.use('/api/admin/blocked-users/manual', manualBlockAdminRouter);
 app.use('/api/admin/blocked-users', blockedUsersAdminRouter);
 app.use('/api/manual-block', manualBlockCheckRouter);
 app.use('/api/admin/rascenki', rascenkiAdminRouter);
+const drilling = require('./drilling/router');
+app.use('/api/drilling', drilling.router);
+app.use('/api/admin/drilling', drilling.adminRouter);
 app.use('/api/lzk', lzkRouter);
 app.use('/api/admin/lzk-usage', lzkUsageAdminRouter);
 // Оба роутера смонтированы на одном префиксе — их пути не пересекаются
@@ -117,6 +120,7 @@ app.use('/api/v1/geocode', ridesGeocodeRouter);
 app.use('/api/internal', internalApiRouter);
 
 initSchema();
+require('./drilling/service').seedDefaults();
 initRidesSchema();
 startProposalTimeoutJob();
 // «Занят» = на заказе прямо сейчас: когда подходит время подачи уже
