@@ -88,4 +88,7 @@ function validateFact(raw, item) {
   return { ok: true, value };
 }
 
-module.exports = { MATERIALS, WORK_TYPES, UNITS, OBJECTS, MAX_ITEMS, parseNumber, positionsOf, validateItem, validateItems, validateFact };
+// Позиция в справочнике иногда уже начинается с «поз.» («поз.56») — второе «поз.» не добавляем.
+const positionLabel = (position) => (/^\s*поз/i.test(String(position)) ? String(position).trim() : `поз. ${position}`);
+
+module.exports = { positionLabel, MATERIALS, WORK_TYPES, UNITS, OBJECTS, MAX_ITEMS, parseNumber, positionsOf, validateItem, validateItems, validateFact };

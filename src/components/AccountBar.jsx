@@ -9,6 +9,7 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { TbLogout } from "react-icons/tb";
 import { auth } from "../firebase";
 import { restrictedHome } from "../restrictedAccess";
+import { useConfirm } from "./ConfirmDialog";
 import { ATTENTION_LABELS, useDrillingAttention } from "../pages/drilling/useDrillingCounter";
 
 const ADMIN_EMAIL = "admin@vkdev.kz";
@@ -20,6 +21,7 @@ export default function AccountBar() {
   const { total: drillingCount, items: drillingItems } = useDrillingAttention();
   const [open, setOpen] = useState(false);
   const barRef = useRef(null);
+  const [confirm, confirmDialog] = useConfirm();
 
   useEffect(() => onAuthStateChanged(auth, (user) => setEmail(user?.email?.toLowerCase() || "")), []);
 
@@ -40,13 +42,13 @@ export default function AccountBar() {
   const login = email.split("@")[0];
 
   const handleLogout = async () => {
-    if (!window.confirm("Вы уверены, что хотите выйти?")) return;
+    if (!(await confirm({ title: "Выйти из аккаунта?", confirmLabel: "Выйти" }))) return;
     await signOut(auth);
     navigate("/login");
   };
 
   return (
-    <div style={styles.bar} ref={barRef}>
+    <div style={styles.bar} ref={barRef} className="no-print">
       {restrictedHome(email) ? (
         <span style={styles.accountEmail}>{login}</span>
       ) : (
@@ -72,6 +74,7 @@ export default function AccountBar() {
       <button type="button" onClick={handleLogout} style={styles.logoutIconBtn} title="Выход" aria-label="Выход">
         <TbLogout aria-hidden="true" />
       </button>
+      {confirmDialog}
       {open && (
         <div style={styles.popover} role="menu" aria-label="Заявки на бурение и резку">
           <div style={styles.popoverTitle}>Заявки на бурение и резку</div>

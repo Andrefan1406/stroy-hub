@@ -1,14 +1,22 @@
-// Заявки на технологическое бурение и резку: создание, согласование в две
-// линии, выполнение по строкам. Все изменения статуса — в транзакции (SQLite
-// синхронный), поэтому «кто первый среагировал, тот и зафиксирован» гарантировано.
+// Заявки на технологическое бурение и резку: создание, согласование, выполнение
+// по строкам. Все изменения статуса — в транзакции (SQLite синхронный), поэтому
+// «кто первый среагировал, тот и зафиксирован» гарантировано.
 //
-// Линия 1 — своя компания (несколько равнозначных ответственных): любой отказ
-// передаёт заявку в линию 2; принял первый. Линия 2 — субподрядчики, все
-// равнозначны: принял первый; вернуть инициатору можно, только когда отказали
-// ВСЕ субподрядчики (отказ компании — это первая реакция любого её сотрудника).
-// Отказ последней линии возвращает заявку инициатору; он может исправить и
-// перезапустить (новый круг с линии 1). Все события пишутся в drilling_events.
+// Путь заявки в каждом круге: главный инженер → линия 1 (Пром Альянс) → линия 2
+// (субподрядчики).
+// - Главный инженер (роль chief_engineer, один): согласует — заявка идёт в линию 1,
+//   отклоняет (с причиной) — сразу возвращается автору. Его собственная заявка этот
+//   этап пропускает и идёт в линию 1.
+// - Линия 1 (роль prom_alyans, несколько равнозначных): любой отказ передаёт заявку
+//   в линию 2; принял первый.
+// - Линия 2 (роль driller + компания-субподрядчик): все равнозначны, принимает
+//   первый; автору возвращают, только когда отказали ВСЕ субподрядчики (отказ
+//   компании — первая реакция любого её бурильщика).
+// После возврата автор может исправить и перезапустить: новый круг, снова с главного
+// инженера. Люди (роль, ФИО, должность, компания бурильщика) берутся из rides.users —
+// они назначаются главным админом на /rides-admin. События — в drilling_events.
 const { getWriteDb } = require('../db');
+const { getWriteDb: ridesDb } = require('../rides/db');
 const { validateItems, validateFact } = require('./validation');
 
 class DrillingError extends Error {
@@ -22,10 +30,11 @@ const now = () => new Date().toISOString();
 const normEmail = (e) => String(e || '').trim().toLowerCase();
 const db = () => getWriteDb();
 
-const APPROVER_KEY = 'drilling_approver';
-const DEFAULT_APPROVER = { fullName: 'Титаренко В.С.', position: 'Главный инженер ТОО «VK development group»' };
+// Роли, которым подача заявок на бурение закрыта (исполнители не подают сами себе).
+const SUBMIT_FORBIDDEN_ROLES = ['prom_alyans', 'driller'];
+const OPEN_STATUSES = ['engineer', 'line1', 'line2'];
 
-// Первичное наполнение: две линии из согласованного сценария.
+// Первичное наполнение: две компании из согласованного сценария.
 function seedDefaults() {
   const d = db();
   if (d.prepare('SELECT COUNT(*) AS n FROM drilling_companies').get().n > 0) return;
@@ -34,35 +43,38 @@ function seedDefaults() {
   ins.run('Жеңіс групп', 'Директору ТОО "Жеңіс групп"', 2);
 }
 
-// ---------- справочники и настройки (админка) ----------
+// ---------- люди: роли и карточки (rides.users) ----------
 
-function getApprover() {
-  const row = db().prepare('SELECT value FROM app_settings WHERE key = ?').get(APPROVER_KEY);
-  try {
-    return { ...DEFAULT_APPROVER, ...(row ? JSON.parse(row.value) : {}) };
-  } catch {
-    return { ...DEFAULT_APPROVER };
-  }
+const ridesUser = (email) => ridesDb().prepare('SELECT * FROM users WHERE email = ?').get(normEmail(email)) || null;
+const chiefEngineer = () => ridesDb().prepare("SELECT * FROM users WHERE role = 'chief_engineer' ORDER BY id LIMIT 1").get() || null;
+
+// ФИО и должность автора/подписанта для документов и списков.
+function personCard(email) {
+  const u = ridesUser(email);
+  return { email: normEmail(email), fullName: u?.name?.trim() || normEmail(email), position: u?.position?.trim() || '' };
 }
 
-function setApprover({ fullName, position }, by) {
-  const fn = String(fullName || '').trim();
-  const pos = String(position || '').trim();
-  if (!fn || !pos) throw new DrillingError('Укажите ФИО и должность');
-  db().prepare(
-    `INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`
-  ).run(APPROVER_KEY, JSON.stringify({ fullName: fn, position: pos }), by || null);
-  return getApprover();
+// ---------- исполнители (админка) ----------
+
+function companyById(id) {
+  return db().prepare('SELECT id, name, addressee, line, active FROM drilling_companies WHERE id = ?').get(id) || null;
 }
 
+// Компания-субподрядчик (линия 2, активная) — к ней можно привязать бурильщика.
+function isSubcontractor(id) {
+  const c = companyById(id);
+  return !!c && c.line === 2 && !!c.active;
+}
+
+// Список для админки; users — кто назначен ролями: линия 1 — все Пром Альянс,
+// линия 2 — бурильщики этой компании (read-only, назначаются на /rides-admin).
 function listCompanies() {
-  const d = db();
-  const users = d.prepare('SELECT company_id, email FROM drilling_company_users ORDER BY email').all();
-  return d.prepare('SELECT id, name, addressee, line, active FROM drilling_companies ORDER BY line, id').all().map((c) => ({
+  const r = ridesDb();
+  const prom = r.prepare("SELECT email FROM users WHERE role = 'prom_alyans' ORDER BY email").all().map((u) => u.email);
+  return db().prepare('SELECT id, name, addressee, line, active FROM drilling_companies ORDER BY line, id').all().map((c) => ({
     ...c,
     active: !!c.active,
-    users: users.filter((u) => u.company_id === c.id).map((u) => u.email),
+    users: c.line === 1 ? prom : r.prepare("SELECT email FROM users WHERE role = 'driller' AND company_id = ? ORDER BY email").all(c.id).map((u) => u.email),
   }));
 }
 
@@ -72,6 +84,10 @@ function saveCompany({ id, name, addressee, line, active = true }) {
   if (!n || !a) throw new DrillingError('Укажите название и адресата (строка «Директору …»)');
   if (![1, 2].includes(Number(line))) throw new DrillingError('Линия — 1 или 2');
   const d = db();
+  if (Number(line) === 1) {
+    const other = d.prepare('SELECT id FROM drilling_companies WHERE line = 1 AND id != ?').get(id || 0);
+    if (other) throw new DrillingError('Линия 1 — одна компания (Пром Альянс). Субподрядчики добавляются в линию 2', 409);
+  }
   try {
     if (id) {
       const r = d.prepare('UPDATE drilling_companies SET name = ?, addressee = ?, line = ?, active = ? WHERE id = ?')
@@ -87,55 +103,32 @@ function saveCompany({ id, name, addressee, line, active = true }) {
   }
 }
 
-function addCompanyUser(companyId, email) {
-  const e = normEmail(email);
-  if (!/^\S+@\S+\.\S+$/.test(e)) throw new DrillingError('Некорректный email');
-  if (!db().prepare('SELECT 1 FROM drilling_companies WHERE id = ?').get(companyId)) throw new DrillingError('Компания не найдена', 404);
-  db().prepare('INSERT OR IGNORE INTO drilling_company_users (company_id, email) VALUES (?, ?)').run(companyId, e);
-}
+// ---------- кто за какую линию отвечает ----------
 
-function removeCompanyUser(companyId, email) {
-  db().prepare('DELETE FROM drilling_company_users WHERE company_id = ? AND email = ?').run(companyId, normEmail(email));
-}
-
-function listStaff() {
-  return db().prepare('SELECT email, full_name AS fullName, position, organization FROM drilling_staff ORDER BY full_name').all();
-}
-
-function saveStaff({ email, fullName, position, organization }) {
-  const e = normEmail(email);
-  const fn = String(fullName || '').trim();
-  const pos = String(position || '').trim();
-  if (!/^\S+@\S+\.\S+$/.test(e)) throw new DrillingError('Некорректный email');
-  if (!fn || !pos) throw new DrillingError('Укажите ФИО и должность');
-  db().prepare(
-    `INSERT INTO drilling_staff (email, full_name, position, organization) VALUES (?, ?, ?, ?)
-     ON CONFLICT(email) DO UPDATE SET full_name = excluded.full_name, position = excluded.position, organization = excluded.organization`
-  ).run(e, fn, pos, String(organization || '').trim());
-}
-
-function deleteStaff(email) {
-  db().prepare('DELETE FROM drilling_staff WHERE email = ?').run(normEmail(email));
-}
-
-// ---------- вспомогательное ----------
-
+// Компании, за которые отвечает пользователь: Пром Альянс — компания линии 1,
+// бурильщик — своя компания (users.company_id).
 function companiesOfUser(email) {
-  return db().prepare(
-    `SELECT c.id, c.name, c.addressee, c.line FROM drilling_companies c
-     JOIN drilling_company_users u ON u.company_id = c.id
-     WHERE u.email = ? AND c.active = 1 ORDER BY c.line, c.id`
-  ).all(normEmail(email));
+  const u = ridesUser(email);
+  if (!u) return [];
+  let company = null;
+  if (u.role === 'prom_alyans') {
+    company = db().prepare('SELECT id, name, addressee, line FROM drilling_companies WHERE line = 1 AND active = 1 ORDER BY id LIMIT 1').get();
+  } else if (u.role === 'driller' && u.company_id) {
+    company = db().prepare('SELECT id, name, addressee, line FROM drilling_companies WHERE id = ? AND active = 1').get(u.company_id);
+  }
+  return company ? [company] : [];
 }
 
 // Компании линии, у которых есть хотя бы один ответственный (иначе реагировать некому).
 function staffedCompanies(line) {
-  return db().prepare(
-    `SELECT c.id, c.name FROM drilling_companies c
-     WHERE c.line = ? AND c.active = 1 AND EXISTS (SELECT 1 FROM drilling_company_users u WHERE u.company_id = c.id)
-     ORDER BY c.id`
-  ).all(line);
+  const r = ridesDb();
+  return db().prepare('SELECT id, name FROM drilling_companies WHERE line = ? AND active = 1 ORDER BY id').all(line)
+    .filter((c) => (line === 1
+      ? r.prepare("SELECT 1 FROM users WHERE role = 'prom_alyans' LIMIT 1").get()
+      : r.prepare("SELECT 1 FROM users WHERE role = 'driller' AND company_id = ? LIMIT 1").get(c.id)));
 }
+
+// ---------- вспомогательное ----------
 
 function logEvent(requestId, round, type, { actor = null, companyId = null, line = null, reason = null } = {}) {
   db().prepare('INSERT INTO drilling_events (request_id, round, at, type, actor_email, company_id, line, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -148,10 +141,34 @@ function getRequestRow(id) {
   return row;
 }
 
-function firstLineStatus() {
+// Первая линия исполнителей, у которой есть ответственные (после согласования
+// главного инженера).
+function executorStage() {
   if (staffedCompanies(1).length) return { status: 'line1', line: 1 };
   if (staffedCompanies(2).length) return { status: 'line2', line: 2 };
-  throw new DrillingError('Ответственные не назначены — обратитесь к администратору', 409);
+  throw new DrillingError('Исполнители не назначены — обратитесь к администратору', 409);
+}
+
+// С какого этапа начинается круг: главный инженер, а для его собственной заявки —
+// сразу исполнители. Без главного инженера заявку подать нельзя.
+function firstStage(initiatorEmail) {
+  const chief = chiefEngineer();
+  if (!chief) throw new DrillingError('Главный инженер не назначен — обратитесь к администратору', 409);
+  const executors = executorStage(); // проверяем заранее, чтобы заявка не застряла после согласования
+  if (chief.email === normEmail(initiatorEmail)) return executors;
+  return { status: 'engineer', line: null };
+}
+
+// Может ли человек подавать заявки: исполнителям (Пром Альянс, бурильщик) нельзя; у остальных
+// должна быть карточка с ФИО и должностью (они печатаются в «Составил»). Админ — без проверки карточки.
+function submitBlock(email, isAdmin) {
+  const u = ridesUser(email);
+  if (u && SUBMIT_FORBIDDEN_ROLES.includes(u.role)) return { status: 403, message: 'Вашей роли недоступна подача заявок на бурение и резку' };
+  if (isAdmin) return null;
+  if (!u || !u.name.trim() || !u.position.trim()) {
+    return { status: 409, message: 'В вашей карточке не заполнены ФИО и должность — обратитесь к администратору' };
+  }
+  return null;
 }
 
 function writeItems(requestId, items) {
@@ -172,11 +189,13 @@ function requireInitiator(row, email) {
 
 // ---------- действия ----------
 
-function createRequest(email, rawItems) {
+function createRequest(email, rawItems, { isAdmin = false } = {}) {
+  const block = submitBlock(email, isAdmin);
+  if (block) throw new DrillingError(block.message, block.status);
   const v = validateItems(rawItems);
   if (!v.ok) throw new DrillingError(v.error);
   return tx(() => {
-    const first = firstLineStatus();
+    const first = firstStage(email);
     const t = now();
     const id = db().prepare('INSERT INTO drilling_requests (initiator_email, status, round, created_at, updated_at) VALUES (?, ?, 1, ?, ?)')
       .run(normEmail(email), first.status, t, t).lastInsertRowid;
@@ -204,7 +223,7 @@ function restartRequest(id, email) {
     const row = getRequestRow(id);
     requireInitiator(row, email);
     if (row.status !== 'returned') throw new DrillingError('Перезапустить можно только возвращённую заявку', 409);
-    const first = firstLineStatus();
+    const first = firstStage(row.initiator_email);
     const round = row.round + 1;
     db().prepare('UPDATE drilling_requests SET status = ?, round = ?, updated_at = ? WHERE id = ?').run(first.status, round, now(), id);
     logEvent(id, round, 'restarted', { actor: normEmail(email), line: first.line });
@@ -215,7 +234,7 @@ function cancelRequest(id, email) {
   return tx(() => {
     const row = getRequestRow(id);
     requireInitiator(row, email);
-    if (!['line1', 'line2', 'returned'].includes(row.status)) throw new DrillingError('Заявку уже нельзя отменить', 409);
+    if (![...OPEN_STATUSES, 'returned'].includes(row.status)) throw new DrillingError('Заявку уже нельзя отменить', 409);
     db().prepare("UPDATE drilling_requests SET status = 'cancelled', updated_at = ? WHERE id = ?").run(now(), id);
     logEvent(id, row.round, 'cancelled', { actor: normEmail(email) });
   });
@@ -235,6 +254,7 @@ function rejectedCompanyIds(requestId, round, line) {
   );
 }
 
+// Реакция на заявку: главный инженер на своём этапе, исполнители — на своей линии.
 function respond(id, email, action, reason) {
   if (!['accept', 'reject'].includes(action)) throw new DrillingError('Неизвестное действие');
   const why = String(reason || '').trim();
@@ -242,7 +262,22 @@ function respond(id, email, action, reason) {
   if (why.length > 500) throw new DrillingError('Причина длиннее 500 символов');
   return tx(() => {
     const row = getRequestRow(id);
-    if (!['line1', 'line2'].includes(row.status)) throw new DrillingError('Заявка уже обработана', 409);
+    if (!OPEN_STATUSES.includes(row.status)) throw new DrillingError('Заявка уже обработана', 409);
+
+    if (row.status === 'engineer') {
+      if (chiefEngineer()?.email !== normEmail(email)) throw new DrillingError('Эта заявка сейчас ждёт согласования главного инженера', 403);
+      const actor = normEmail(email);
+      if (action === 'accept') {
+        const next = executorStage();
+        db().prepare('UPDATE drilling_requests SET status = ?, updated_at = ? WHERE id = ?').run(next.status, now(), id);
+        logEvent(id, row.round, 'engineer_approved', { actor });
+      } else {
+        db().prepare("UPDATE drilling_requests SET status = 'returned', updated_at = ? WHERE id = ?").run(now(), id);
+        logEvent(id, row.round, 'engineer_rejected', { actor, reason: why });
+      }
+      return;
+    }
+
     const company = responderCompany(row, email);
     if (!company) throw new DrillingError('Эта заявка сейчас не ждёт вашей реакции', 403);
     const line = company.line;
@@ -274,48 +309,72 @@ function respond(id, email, action, reason) {
   });
 }
 
-function markItemDone(id, itemId, email, rawFact) {
+// Отметка выполнения одной или сразу нескольких строк (все проверяются до записи — либо
+// записываются все, либо ни одна). entries: [{ itemId, factQuantity, comment }].
+function markItemsDone(id, email, entries) {
   return tx(() => {
     const row = getRequestRow(id);
     requireInitiator(row, email);
     if (row.status !== 'accepted') throw new DrillingError('Отметить выполнение можно после принятия заявки', 409);
-    const item = db().prepare('SELECT * FROM drilling_request_items WHERE id = ? AND request_id = ?').get(itemId, id);
-    if (!item) throw new DrillingError('Строка не найдена', 404);
-    if (item.done_at) throw new DrillingError('Строка уже отмечена', 409);
-    const v = validateFact(rawFact, item);
-    if (!v.ok) throw new DrillingError(v.error);
-    db().prepare('UPDATE drilling_request_items SET fact_quantity = ?, done_at = ? WHERE id = ?').run(v.value, now(), itemId);
+    if (!Array.isArray(entries) || entries.length === 0) throw new DrillingError('Нет строк для отметки');
+    const seen = new Set();
+    const prepared = entries.map((e) => {
+      const item = db().prepare('SELECT * FROM drilling_request_items WHERE id = ? AND request_id = ?').get(Number(e.itemId), id);
+      if (!item) throw new DrillingError('Строка не найдена', 404);
+      if (item.done_at || seen.has(item.id)) throw new DrillingError(`Строка ${item.line_no} уже отмечена`, 409);
+      seen.add(item.id);
+      const v = validateFact(e.factQuantity, item);
+      if (!v.ok) throw new DrillingError(`Строка ${item.line_no}: ${v.error}`);
+      const comment = String(e.comment || '').trim();
+      if (comment.length > 300) throw new DrillingError(`Строка ${item.line_no}: комментарий длиннее 300 символов`);
+      return { item, value: v.value, comment };
+    });
+    const t = now();
+    for (const p of prepared) {
+      db().prepare('UPDATE drilling_request_items SET fact_quantity = ?, fact_comment = ?, done_at = ? WHERE id = ?').run(p.value, p.comment || null, t, p.item.id);
+    }
     const left = db().prepare('SELECT COUNT(*) AS n FROM drilling_request_items WHERE request_id = ? AND done_at IS NULL').get(id).n;
     if (left === 0) {
-      db().prepare("UPDATE drilling_requests SET status = 'completed', updated_at = ? WHERE id = ?").run(now(), id);
+      db().prepare("UPDATE drilling_requests SET status = 'completed', updated_at = ? WHERE id = ?").run(t, id);
       logEvent(id, row.round, 'completed', { actor: normEmail(email) });
     } else {
-      db().prepare('UPDATE drilling_requests SET updated_at = ? WHERE id = ?').run(now(), id);
+      db().prepare('UPDATE drilling_requests SET updated_at = ? WHERE id = ?').run(t, id);
     }
   });
 }
 
+function markItemDone(id, itemId, email, rawFact, comment) {
+  return markItemsDone(id, email, [{ itemId, factQuantity: rawFact, comment }]);
+}
+
 // ---------- чтение ----------
 
-// Видит ли пользователь заявку: автор, ответственный (сейчас или участвовал), админ.
+// Что пользователь значит для заявки. Главный инженер видит все заявки (все проходят
+// через него); исполнитель — те, что ждут его компанию или проходили через неё.
 function involvement(row, email, isAdmin) {
   const e = normEmail(email);
+  const me = ridesUser(e);
+  const isChief = me?.role === 'chief_engineer';
   const mine = companiesOfUser(e);
   const myIds = new Set(mine.map((c) => c.id));
   const isInitiator = row.initiator_email === e;
-  const waitingForMe = ['line1', 'line2'].includes(row.status) && !!responderCompany(row, e)
-    && !(row.status === 'line2' && rejectedCompanyIds(row.id, row.round, 2).has(responderCompany(row, e).id));
-  const wasInvolved = (row.accepted_company_id && myIds.has(row.accepted_company_id))
-    || db().prepare('SELECT company_id FROM drilling_events WHERE request_id = ? AND company_id IS NOT NULL').all(row.id).some((r) => myIds.has(r.company_id));
-  const visibleToLine = ['line1', 'line2'].includes(row.status) && !!responderCompany(row, e);
-  return { isInitiator, waitingForMe, canSee: isAdmin || isInitiator || waitingForMe || wasInvolved || visibleToLine, isResponsible: mine.length > 0 };
+  const responder = responderCompany(row, e);
+  const waitingForMe = (row.status === 'engineer' && isChief)
+    || (!!responder && !(row.status === 'line2' && rejectedCompanyIds(row.id, row.round, 2).has(responder.id)));
+  const wasInvolved = !!(row.accepted_company_id && myIds.has(row.accepted_company_id))
+    || (myIds.size > 0 && db().prepare('SELECT company_id FROM drilling_events WHERE request_id = ? AND company_id IS NOT NULL').all(row.id).some((r) => myIds.has(r.company_id)));
+  return {
+    isInitiator, isChief, waitingForMe,
+    canSee: isAdmin || isChief || isInitiator || waitingForMe || wasInvolved || !!responder,
+    isResponsible: mine.length > 0 || isChief,
+  };
 }
 
 function getItems(id) {
   return db().prepare('SELECT * FROM drilling_request_items WHERE request_id = ? ORDER BY line_no').all(id).map((i) => ({
     id: i.id, lineNo: i.line_no, object: i.object, position: i.obj_position, workType: i.work_type, material: i.material,
     diameterMm: i.diameter_mm, thicknessCm: i.thickness_cm, quantity: i.quantity, reason: i.reason,
-    factQuantity: i.fact_quantity, doneAt: i.done_at,
+    factQuantity: i.fact_quantity, factComment: i.fact_comment || '', doneAt: i.done_at,
   }));
 }
 
@@ -327,10 +386,6 @@ function getEvents(id) {
   ).all(id);
 }
 
-function getStaff(email) {
-  return db().prepare('SELECT email, full_name AS fullName, position, organization FROM drilling_staff WHERE email = ?').get(normEmail(email)) || null;
-}
-
 // Полные данные заявки + что с ней может делать этот пользователь.
 function getRequestView(id, email, isAdmin) {
   const row = getRequestRow(id);
@@ -339,22 +394,22 @@ function getRequestView(id, email, isAdmin) {
   const items = getItems(id);
   const acceptedCompany = row.accepted_company_id
     ? db().prepare('SELECT id, name, addressee FROM drilling_companies WHERE id = ?').get(row.accepted_company_id) : null;
-  const staff = getStaff(row.initiator_email);
+  const author = personCard(row.initiator_email);
   return {
     id: row.id,
     status: row.status,
     round: row.round,
-    initiator: { email: row.initiator_email, fullName: staff?.fullName || row.initiator_email, position: staff?.position || '' },
+    initiator: { email: author.email, fullName: author.fullName, position: author.position },
     acceptedCompany,
     acceptedBy: row.accepted_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     items,
-    events: getEvents(id),
+    events: getEvents(id).map((e) => ({ ...e, actorName: e.actor ? personCard(e.actor).fullName : null })),
     permissions: {
       accept: inv.waitingForMe,
       reject: inv.waitingForMe,
-      cancel: inv.isInitiator && ['line1', 'line2', 'returned'].includes(row.status),
+      cancel: inv.isInitiator && [...OPEN_STATUSES, 'returned'].includes(row.status),
       edit: inv.isInitiator && row.status === 'returned',
       restart: inv.isInitiator && row.status === 'returned',
       markDone: inv.isInitiator && row.status === 'accepted',
@@ -363,42 +418,43 @@ function getRequestView(id, email, isAdmin) {
   };
 }
 
-function summaries(rows) {
+function summaries(rows, email) {
   return rows.map((r) => {
     const items = getItems(r.id);
-    const staff = getStaff(r.initiator_email);
     return {
       id: r.id, status: r.status, round: r.round, createdAt: r.created_at, updatedAt: r.updated_at,
-      initiator: staff?.fullName || r.initiator_email,
+      waitingForMe: involvement(r, email, false).waitingForMe, // можно согласовать/принять/отклонить прямо из списка
+      initiator: personCard(r.initiator_email).fullName,
       itemsCount: items.length,
       places: [...new Set(items.map((i) => `${i.object}, ${i.position}`))].slice(0, 3),
     };
   });
 }
 
-// scope: mine — свои; inbox — ждёт моей реакции или принята моей компанией; all — все (админ).
+// Что пользователь может открыть списком: all — все (админ и главный инженер),
+// inbox — ждёт его реакции или принята его компанией, mine — свои.
 function listRequests(email, scope, isAdmin) {
   const e = normEmail(email);
   const all = db().prepare('SELECT * FROM drilling_requests ORDER BY id DESC').all();
   if (scope === 'all') {
-    if (!isAdmin) throw new DrillingError('Только для администратора', 403);
-    return summaries(all);
+    if (!isAdmin && ridesUser(e)?.role !== 'chief_engineer') throw new DrillingError('Только для администратора и главного инженера', 403);
+    return summaries(all, e);
   }
   if (scope === 'inbox') {
     const myIds = new Set(companiesOfUser(e).map((c) => c.id));
-    return summaries(all.filter((r) => involvement(r, e, false).waitingForMe || (r.accepted_company_id && myIds.has(r.accepted_company_id))));
+    return summaries(all.filter((r) => involvement(r, e, false).waitingForMe || (r.accepted_company_id && myIds.has(r.accepted_company_id))), e);
   }
-  return summaries(all.filter((r) => r.initiator_email === e));
+  return summaries(all.filter((r) => r.initiator_email === e), e);
 }
 
-// Красный счётчик: «ждёт вашей реакции» у ответственных; у инициатора —
+// Красный счётчик: «ждёт вашей реакции» у главного инженера и исполнителей; у автора —
 // возвращённые заявки и принятые, по которым ещё есть строки без отметки.
 // items — сами заявки, требующие действия (для выпадающего списка у логина):
-// kind respond — ждёт ответа исполнителя, returned — отказали все, mark — принята,
-// ждёт отметки выполнения. Свежие сверху.
+// kind respond — ждёт ответа, returned — вернули автору, mark — принята, ждёт отметки
+// выполнения. Свежие сверху.
 function counters(email) {
   const e = normEmail(email);
-  const all = db().prepare("SELECT * FROM drilling_requests WHERE status IN ('line1','line2','returned','accepted') ORDER BY id DESC").all();
+  const all = db().prepare("SELECT * FROM drilling_requests WHERE status IN ('engineer','line1','line2','returned','accepted') ORDER BY id DESC").all();
   const items = [];
   for (const r of all) {
     let kind = null;
@@ -407,40 +463,66 @@ function counters(email) {
     else if (r.initiator_email === e && r.status === 'accepted') kind = 'mark';
     if (!kind) continue;
     const places = [...new Set(getItems(r.id).map((i) => `${i.object}, ${i.position}`))];
-    items.push({ id: r.id, kind, places: places.slice(0, 2), createdAt: r.created_at });
+    items.push({ id: r.id, kind, status: r.status, places: places.slice(0, 2), createdAt: r.created_at });
   }
   const inbox = items.filter((i) => i.kind === 'respond').length;
   return { inbox, mine: items.length - inbox, total: items.length, items };
 }
 
-// ---------- реестр: все заявки построчно (по строкам работ) ----------
+// Профиль для страниц: роль, чем занимается, может ли подавать заявки.
+function profile(email, isAdmin) {
+  const e = normEmail(email);
+  const me = ridesUser(e);
+  const block = submitBlock(e, isAdmin);
+  return {
+    email: e,
+    role: me?.role || null,
+    isAdmin: !!isAdmin,
+    isChief: me?.role === 'chief_engineer',
+    companies: companiesOfUser(e),
+    canSubmit: !block,
+    submitBlock: block ? block.message : null,
+    counters: counters(e),
+  };
+}
+
+// ---------- реестр: заявки построчно (по строкам работ) ----------
 
 const almatyDate = (iso) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Almaty' }).format(new Date(iso));
 const round1 = (n) => Math.round(n * 10) / 10;
 
-// Реестр для личного кабинета: по одной строке на строку работ. Админ видит все
-// заявки, остальные — только поданные ими самими (рабочая очередь ответственных —
-// «Входящие» в listRequests, не реестр). filters: from, to (дата создания, «ГГГГ-ММ-ДД»,
-// по Алматы), status (массив), object, workType, company (название исполнителя),
-// author (email), onlyMine. facets — значения для выпадающих списков фильтров
-// среди ВСЕХ доступных пользователю заявок, до фильтрации.
+// Реестр для личного кабинета: по одной строке на строку работ. Видимость: админ и
+// главный инженер — все заявки; исполнитель — только заявки, принятые его компанией (итоги
+// не смешиваются с работами других исполнителей; ждущие его ответа — во «Входящих»);
+// остальные — только поданные ими самими.
+// filters: from, to (дата создания, «ГГГГ-ММ-ДД», по Алматы), status (массив), object,
+// workType, company (название исполнителя), author (ФИО), onlyMine. facets — значения
+// для списков фильтров среди ВСЕХ доступных пользователю заявок, до фильтрации.
 function registry(email, isAdmin, filters = {}) {
   const e = normEmail(email);
-  const requests = db().prepare('SELECT * FROM drilling_requests ORDER BY id DESC').all()
-    .filter((r) => isAdmin || r.initiator_email === e);
+  const me = ridesUser(e);
+  let scope = 'own';
+  const myCompanyIds = new Set(companiesOfUser(e).map((c) => c.id));
+  if (isAdmin || me?.role === 'chief_engineer') scope = 'all';
+  else if (myCompanyIds.size) scope = 'company';
+
+  const requests = db().prepare('SELECT * FROM drilling_requests ORDER BY id DESC').all().filter((r) => {
+    if (scope === 'all') return true;
+    if (scope === 'company') return !!r.accepted_company_id && myCompanyIds.has(r.accepted_company_id);
+    return r.initiator_email === e;
+  });
 
   const companyName = new Map(db().prepare('SELECT id, name FROM drilling_companies').all().map((c) => [c.id, c.name]));
   const acceptedAt = new Map(
     db().prepare("SELECT request_id, round, MAX(at) AS at FROM drilling_events WHERE type = 'accepted' GROUP BY request_id, round").all()
       .map((x) => [`${x.request_id}:${x.round}`, x.at])
   );
-  const staffName = new Map(db().prepare('SELECT email, full_name FROM drilling_staff').all().map((s) => [s.email, s.full_name]));
 
   const all = [];
   for (const r of requests) {
     const base = {
       requestId: r.id, status: r.status, round: r.round, createdAt: r.created_at,
-      authorEmail: r.initiator_email, author: staffName.get(r.initiator_email) || r.initiator_email,
+      authorEmail: r.initiator_email, author: personCard(r.initiator_email).fullName,
       company: r.accepted_company_id ? companyName.get(r.accepted_company_id) || '' : '',
       acceptedAt: r.accepted_company_id ? acceptedAt.get(`${r.id}:${r.round}`) || null : null,
     };
@@ -448,7 +530,7 @@ function registry(email, isAdmin, filters = {}) {
       all.push({
         ...base, itemId: i.id, lineNo: i.lineNo, object: i.object, position: i.position, workType: i.workType, material: i.material,
         diameterMm: i.diameterMm, thicknessCm: i.thicknessCm, quantity: i.quantity, unit: i.workType === 'drill' ? 'шт' : 'м.п.',
-        factQuantity: i.factQuantity, doneAt: i.doneAt, reason: i.reason,
+        factQuantity: i.factQuantity, factComment: i.factComment, doneAt: i.doneAt, reason: i.reason,
       });
     }
   }
@@ -478,19 +560,31 @@ function registry(email, isAdmin, filters = {}) {
   }
   for (const t of Object.values(totals)) { t.plan = round1(t.plan); t.fact = round1(t.fact); }
 
-  return { scope: isAdmin ? 'all' : 'own', rows, totals, facets, requestsCount: new Set(rows.map((x) => x.requestId)).size };
+  return { scope, rows, totals, facets, requestsCount: new Set(rows.map((x) => x.requestId)).size };
 }
 
-// Данные для документа Word.
+// ---------- данные для документа Word ----------
+
+const STAMP_TYPES = { accepted: 'принята', rejected: 'отклонена', engineer_approved: 'согласована', engineer_rejected: 'отклонена' };
+
 function getDocData(id) {
   const row = getRequestRow(id);
   const events = getEvents(id).filter((e) => e.round === row.round);
   const start = events.find((e) => e.type === 'created' || e.type === 'restarted');
-  const stamps = events.filter((e) => ['rejected', 'accepted'].includes(e.type))
-    .map((e) => ({ company: e.companyName, type: e.type, at: e.at }));
+  const stamps = events.filter((e) => STAMP_TYPES[e.type])
+    .map((e) => ({ company: e.companyName || 'Главный инженер', type: e.type, label: STAMP_TYPES[e.type], at: e.at }));
   const company = row.accepted_company_id
     ? db().prepare('SELECT id, name, addressee FROM drilling_companies WHERE id = ?').get(row.accepted_company_id) : null;
   const acceptedEvent = events.find((e) => e.type === 'accepted');
+
+  // «Согласовано» — главный инженер, согласовавший заявку в этом круге; для его
+  // собственной заявки — он сам, иначе действующий главный инженер.
+  const approvedBy = events.find((e) => e.type === 'engineer_approved')?.actor;
+  const chief = chiefEngineer();
+  const approverEmail = approvedBy || chief?.email || null;
+  const approverCard = approverEmail ? personCard(approverEmail) : null;
+
+  const author = personCard(row.initiator_email);
   return {
     id: row.id,
     status: row.status,
@@ -498,16 +592,15 @@ function getDocData(id) {
     roundStartedAt: start?.at || row.created_at,
     acceptedAt: acceptedEvent?.at || null,
     company,
-    initiator: getStaff(row.initiator_email) || { email: row.initiator_email, fullName: row.initiator_email, position: '', organization: '' },
-    approver: getApprover(),
+    initiator: { email: author.email, fullName: author.fullName, position: author.position },
+    approver: { fullName: approverCard?.fullName || '', position: approverCard?.position || 'Главный инженер' },
     items: getItems(id),
     stamps,
   };
 }
 
 module.exports = {
-  DrillingError, seedDefaults, getApprover, setApprover,
-  listCompanies, saveCompany, addCompanyUser, removeCompanyUser, listStaff, saveStaff, deleteStaff,
-  companiesOfUser, createRequest, updateRequest, restartRequest, cancelRequest, respond, markItemDone,
-  getRequestView, listRequests, counters, getDocData, registry,
+  DrillingError, seedDefaults, listCompanies, saveCompany, isSubcontractor,
+  companiesOfUser, createRequest, updateRequest, restartRequest, cancelRequest, respond, markItemDone, markItemsDone,
+  getRequestView, listRequests, counters, profile, getDocData, registry,
 };

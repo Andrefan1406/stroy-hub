@@ -358,26 +358,18 @@ CREATE TABLE IF NOT EXISTS drilling_companies (
   line      INTEGER NOT NULL CHECK(line IN (1, 2)),
   active    INTEGER NOT NULL DEFAULT 1
 );
--- drilling_company_users — кто из сотрудников отвечает за компанию (реагирует на заявки).
-CREATE TABLE IF NOT EXISTS drilling_company_users (
-  company_id INTEGER NOT NULL,
-  email      TEXT NOT NULL,
-  PRIMARY KEY (company_id, email)
-);
--- drilling_staff — справочник для подписей в Word (подставляется по email).
-CREATE TABLE IF NOT EXISTS drilling_staff (
-  email        TEXT PRIMARY KEY,
-  full_name    TEXT NOT NULL,
-  position     TEXT NOT NULL,
-  organization TEXT NOT NULL DEFAULT ''
-);
--- drilling_requests.status: line1/line2 — ждёт реакции линии, returned — отказали
--- все, у инициатора; accepted — принята (идёт выполнение); completed; cancelled.
+-- Кто отвечает за линию и чьи ФИО/должность попадают в подписи Word — берётся из
+-- ролей и карточек людей (rides.users, server/rides/usersRouter.js): Пром Альянс —
+-- линия 1, бурильщик (users.company_id) — компания линии 2, главный инженер — один.
+-- drilling_requests.status: engineer — ждёт согласования главного инженера (первый
+-- этап каждого круга), line1/line2 — ждёт реакции линии, returned — отказали (главный
+-- инженер или все исполнители), у автора; accepted — принята (идёт выполнение);
+-- completed; cancelled.
 -- round — номер круга согласования (растёт при перезапуске инициатором).
 CREATE TABLE IF NOT EXISTS drilling_requests (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   initiator_email     TEXT NOT NULL,
-  status              TEXT NOT NULL CHECK(status IN ('line1','line2','returned','accepted','completed','cancelled')),
+  status              TEXT NOT NULL CHECK(status IN ('engineer','line1','line2','returned','accepted','completed','cancelled')),
   round               INTEGER NOT NULL DEFAULT 1,
   accepted_company_id INTEGER,
   accepted_by         TEXT,
@@ -401,6 +393,7 @@ CREATE TABLE IF NOT EXISTS drilling_request_items (
   quantity      REAL NOT NULL,
   reason        TEXT NOT NULL DEFAULT '',
   fact_quantity REAL,
+  fact_comment  TEXT,   -- пояснение автора к выполнению (например, при расхождении с заявленным)
   done_at       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_drilling_items_request ON drilling_request_items(request_id);
@@ -473,6 +466,36 @@ function ensureDataDir() {
 // Добавляем сюда по мере необходимости; безопасно звать многократно —
 // проверяем PRAGMA table_info, ADD COLUMN шлём только если колонки ещё нет.
 function migrateSchema(db) {
+  // Комментарий к выполнению строки заявки на бурение (добавлен после первой версии).
+  const drItemCols = db.prepare('PRAGMA table_info(drilling_request_items)').all().map((c) => c.name);
+  if (drItemCols.length && !drItemCols.includes('fact_comment')) {
+    db.exec('ALTER TABLE drilling_request_items ADD COLUMN fact_comment TEXT');
+  }
+  // Заявки на бурение: ответственные переехали в роли (rides.users), добавлен этап
+  // главного инженера. Прежние таблицы ответственных и справочника не использовались в
+  // боевой работе — убираем; drilling_requests пересобираем с новым списком статусов.
+  db.exec('DROP TABLE IF EXISTS drilling_company_users; DROP TABLE IF EXISTS drilling_staff;');
+  const drReq = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'drilling_requests'").get();
+  if (drReq && !drReq.sql.includes("'engineer'")) {
+    db.transaction(() => {
+      db.exec(`ALTER TABLE drilling_requests RENAME TO drilling_requests_old;
+        CREATE TABLE drilling_requests (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          initiator_email     TEXT NOT NULL,
+          status              TEXT NOT NULL CHECK(status IN ('engineer','line1','line2','returned','accepted','completed','cancelled')),
+          round               INTEGER NOT NULL DEFAULT 1,
+          accepted_company_id INTEGER,
+          accepted_by         TEXT,
+          created_at          TEXT NOT NULL,
+          updated_at          TEXT NOT NULL
+        );
+        INSERT INTO drilling_requests SELECT id, initiator_email, status, round, accepted_company_id, accepted_by, created_at, updated_at FROM drilling_requests_old;
+        DROP TABLE drilling_requests_old;
+        CREATE INDEX IF NOT EXISTS idx_drilling_requests_status ON drilling_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_drilling_requests_initiator ON drilling_requests(initiator_email);`);
+    })();
+  }
+
   const columns = db.prepare("PRAGMA table_info(concrete_orders)").all().map((c) => c.name);
   if (!columns.includes('planned_delivery_date')) {
     db.exec('ALTER TABLE concrete_orders ADD COLUMN planned_delivery_date TEXT');

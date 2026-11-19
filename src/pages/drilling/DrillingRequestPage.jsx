@@ -3,18 +3,34 @@
 // сохранения правок она сразу уходит на новый круг согласования.
 // Бэкенд и правила: server/drilling/. Числа проверяются так же, как на сервере.
 import React, { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import css from "../../ConcreteRequestPage.module.css";
 import styles from "./Drilling.module.css";
 import { Field, SelectField } from "../../components/RequestFormFields";
+import DrillingNav from "./DrillingNav";
 import { objectPositionOptions } from "../../data/constructionData";
-import { createRequest, fetchRequest, restartRequest, sanitizeNumber, updateRequest } from "./drillingApi";
+import { createRequest, fetchMe, fetchRequest, restartRequest, sanitizeNumber, updateRequest } from "./drillingApi";
 
 const OBJECTS = Object.keys(objectPositionOptions);
 const MATERIALS = ["кирпич", "бетон"];
 const WORKS = [{ value: "drill", label: "Сверление" }, { value: "cut", label: "Резка" }];
 
 const emptyRow = () => ({ object: "", position: "", workType: "", material: "", diameterMm: "", thicknessCm: "", quantity: "", reason: "" });
+
+// Последний выбранный объект и позиция запоминаем в браузере: новая заявка начинается с них,
+// а новая строка — с объекта и позиции предыдущей строки (на одном объекте работ обычно много).
+const LAST_KEY = "drillingLastPlace";
+const readLastPlace = () => {
+  try { return JSON.parse(localStorage.getItem(LAST_KEY)) || {}; } catch { return {}; }
+};
+const rememberPlace = (object, position) => {
+  try { localStorage.setItem(LAST_KEY, JSON.stringify({ object, position })); } catch { /* без памяти браузера работаем как раньше */ }
+};
+const startRow = () => {
+  const last = readLastPlace();
+  const ok = last.object && (objectPositionOptions[last.object] || []).includes(last.position);
+  return ok ? { ...emptyRow(), object: last.object, position: last.position } : emptyRow();
+};
 
 const INT_RE = /^\d+$/;
 const DEC_RE = /^\d+([.,]\d)?$/;
@@ -40,11 +56,16 @@ const DrillingRequestPage = () => {
   const { id } = useParams();
   const editing = !!id;
   const navigate = useNavigate();
-  const [rows, setRows] = useState([emptyRow()]);
+  const [rows, setRows] = useState(() => [editing ? emptyRow() : startRow()]);
   const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(editing);
+  const [submitBlock, setSubmitBlock] = useState(""); // почему подача недоступна (роль, нет карточки)
+
+  useEffect(() => {
+    fetchMe().then((m) => setSubmitBlock(m.canSubmit ? "" : m.submitBlock || "")).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!editing) return;
@@ -82,6 +103,8 @@ const DrillingRequestPage = () => {
     }
     setSending(true);
     try {
+      const lastRow = rows[rows.length - 1];
+      rememberPlace(lastRow.object, lastRow.position);
       let req;
       if (editing) {
         await updateRequest(id, rows);
@@ -101,8 +124,9 @@ const DrillingRequestPage = () => {
   return (
     <div className={css.page}>
       <div className={css.content}>
-        <Link to={editing ? `/drilling-requests/${id}` : "/"} className={css.back}>← {editing ? "К заявке" : "На главную"}</Link>
+        <DrillingNav />
         <h1 className={css.title}>{editing ? `Заявка № ${id}: правка` : "Заявка на бурение и резку"}</h1>
+        {submitBlock && <div className={styles.error} role="alert">{submitBlock}</div>}
         <p className={css.legend}><span className={css.required} aria-hidden="true">*</span> — обязательное поле.</p>
 
         <form onSubmit={handleSubmit} noValidate>
@@ -175,12 +199,22 @@ const DrillingRequestPage = () => {
             );
           })}
 
-          <button type="button" className={css.addBtn} onClick={() => setRows((cur) => [...cur, emptyRow()])}>+ Добавить строку</button>
+          <button
+            type="button"
+            className={css.addBtn}
+            onClick={() => setRows((cur) => {
+              const prev = cur[cur.length - 1];
+              // новая строка начинается с объекта и позиции предыдущей — их не нужно выбирать заново
+              return [...cur, { ...emptyRow(), object: prev.object, position: prev.position }];
+            })}
+          >
+            + Добавить строку
+          </button>
 
           {error && <div className={styles.error} role="alert">{error}</div>}
 
           <div className={css.actions}>
-            <button type="submit" className={css.btnPrimary} disabled={sending}>
+            <button type="submit" className={css.btnPrimary} disabled={sending || !!submitBlock}>
               {sending ? "Отправка…" : editing ? "Сохранить и отправить заново" : "Отправить заявку"}
             </button>
           </div>

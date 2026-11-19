@@ -25,12 +25,7 @@ const router = express.Router();
 router.use(requireUser);
 
 router.get('/me', wrap((req, res) => {
-  res.json({
-    email: req.userEmail,
-    isAdmin: isAdmin(req.userEmail),
-    companies: svc.companiesOfUser(req.userEmail),
-    counters: svc.counters(req.userEmail),
-  });
+  res.json(svc.profile(req.userEmail, isAdmin(req.userEmail)));
 }));
 
 // Справочники формы (объекты и позиции — те же, что у заявки на бетон).
@@ -70,7 +65,7 @@ router.get('/requests', wrap((req, res) => {
 }));
 
 router.post('/requests', wrap((req, res) => {
-  const id = svc.createRequest(req.userEmail, req.body?.items);
+  const id = svc.createRequest(req.userEmail, req.body?.items, { isAdmin: isAdmin(req.userEmail) });
   res.status(201).json(svc.getRequestView(id, req.userEmail, isAdmin(req.userEmail)));
 }));
 
@@ -105,7 +100,13 @@ router.post('/requests/:id/reject', wrap((req, res) => {
 }));
 
 router.post('/requests/:id/items/:itemId/done', wrap((req, res) => {
-  svc.markItemDone(idOf(req), Number(req.params.itemId), req.userEmail, req.body?.factQuantity);
+  svc.markItemDone(idOf(req), Number(req.params.itemId), req.userEmail, req.body?.factQuantity, req.body?.comment);
+  res.json(viewOf(req, idOf(req)));
+}));
+
+// Сразу несколько строк (кнопка «Выполнить все строки»): { items: [{ itemId, factQuantity, comment }] }.
+router.post('/requests/:id/items-done', wrap((req, res) => {
+  svc.markItemsDone(idOf(req), req.userEmail, req.body?.items);
   res.json(viewOf(req, idOf(req)));
 }));
 
@@ -122,8 +123,10 @@ router.get('/requests/:id/docx', wrap(async (req, res) => {
 const adminRouter = express.Router();
 adminRouter.use(requireAdmin);
 
+// Исполнители (название, адресат в шапке Word, линия). Людей по ролям назначает главный
+// админ на /rides-admin (server/rides/usersRouter.js), здесь они только показаны.
 adminRouter.get('/', wrap((req, res) => {
-  res.json({ companies: svc.listCompanies(), staff: svc.listStaff(), approver: svc.getApprover() });
+  res.json({ companies: svc.listCompanies() });
 }));
 adminRouter.post('/companies', wrap((req, res) => {
   svc.saveCompany(req.body || {});
@@ -132,25 +135,6 @@ adminRouter.post('/companies', wrap((req, res) => {
 adminRouter.put('/companies/:id', wrap((req, res) => {
   svc.saveCompany({ ...(req.body || {}), id: Number(req.params.id) });
   res.json({ companies: svc.listCompanies() });
-}));
-adminRouter.post('/companies/:id/users', wrap((req, res) => {
-  svc.addCompanyUser(Number(req.params.id), req.body?.email);
-  res.json({ companies: svc.listCompanies() });
-}));
-adminRouter.delete('/companies/:id/users/:email', wrap((req, res) => {
-  svc.removeCompanyUser(Number(req.params.id), req.params.email);
-  res.json({ companies: svc.listCompanies() });
-}));
-adminRouter.put('/staff', wrap((req, res) => {
-  svc.saveStaff(req.body || {});
-  res.json({ staff: svc.listStaff() });
-}));
-adminRouter.delete('/staff/:email', wrap((req, res) => {
-  svc.deleteStaff(req.params.email);
-  res.json({ staff: svc.listStaff() });
-}));
-adminRouter.put('/approver', wrap((req, res) => {
-  res.json({ approver: svc.setApprover(req.body || {}, req.adminEmail) });
 }));
 
 module.exports = { router, adminRouter };

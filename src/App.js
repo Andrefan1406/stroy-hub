@@ -55,8 +55,8 @@ import PlanradarExportAdminPage from "./pages/PlanradarExportAdminPage";
 import DrillingRequestPage from "./pages/drilling/DrillingRequestPage";
 import DrillingRequestsPage from "./pages/drilling/DrillingRequestsPage";
 import DrillingRequestDetailPage from "./pages/drilling/DrillingRequestDetailPage";
-import DrillingAdminPage from "./pages/drilling/DrillingAdminPage";
 import AccountPage from "./pages/AccountPage";
+import NotFoundPage from "./pages/NotFoundPage";
 import DrillingRegistryPage from "./pages/drilling/DrillingRegistryPage";
 import RestrictedUserGate from "./components/RestrictedUserGate";
 import { PLANRADAR_REPORT_EMAILS } from "./restrictedAccess";
@@ -415,16 +415,6 @@ const App = () => {
         <Route path="/drilling-requests" element={<Protected><DrillingRequestsPage /></Protected>} />
         <Route path="/drilling-requests/:id" element={<Protected><DrillingRequestDetailPage /></Protected>} />
         <Route
-          path="/admin/drilling"
-          element={
-            <Protected>
-              <AdminRoute>
-                <DrillingAdminPage />
-              </AdminRoute>
-            </Protected>
-          }
-        />
-        <Route
           path="/admin/planradar-export"
           element={
             <Protected>
@@ -442,6 +432,8 @@ const App = () => {
             </Protected>
           }
         />
+        {/* Неверный адрес — сообщение с возвратом, а не пустой экран */}
+        <Route path="*" element={<Protected><NotFoundPage /></Protected>} />
       </Routes>
       </RideAccessGate>
       </RestrictedUserGate>

@@ -101,3 +101,8 @@ html.has-home-topbar {
     --account-bar-top: 11px; /* панель 56px */
   }
 }
+
+/* Печать (кнопка «Печать / PDF» на карточке заявки): убираем навигацию, кнопки и панель с логином */
+@media print {
+  .no-print { display: none !important; }
+}

@@ -35,8 +35,10 @@ export const restartRequest = (id) => json(`${BASE}/requests/${id}/restart`, { m
 export const cancelRequest = (id) => json(`${BASE}/requests/${id}/cancel`, { method: "POST" });
 export const acceptRequest = (id) => json(`${BASE}/requests/${id}/accept`, { method: "POST" });
 export const rejectRequest = (id, reason) => json(`${BASE}/requests/${id}/reject`, { method: "POST", body: { reason } });
-export const markItemDone = (id, itemId, factQuantity) =>
-  json(`${BASE}/requests/${id}/items/${itemId}/done`, { method: "POST", body: { factQuantity } });
+export const markItemDone = (id, itemId, factQuantity, comment = "") =>
+  json(`${BASE}/requests/${id}/items/${itemId}/done`, { method: "POST", body: { factQuantity, comment } });
+// Сразу несколько строк (все или ни одной): items = [{ itemId, factQuantity, comment }].
+export const markItemsDone = (id, items) => json(`${BASE}/requests/${id}/items-done`, { method: "POST", body: { items } });
 
 // Word отдаётся с токеном, поэтому скачиваем через blob, а не ссылкой.
 export async function downloadDocx(id) {
@@ -51,19 +53,15 @@ export async function downloadDocx(id) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-// ---------- админка ----------
+// ---------- исполнители (админка; людей назначают ролями на /rides-admin) ----------
 const ADMIN = "/api/admin/drilling";
 export const fetchDrillingAdmin = () => json(ADMIN);
 export const saveCompany = (company) =>
   json(company.id ? `${ADMIN}/companies/${company.id}` : `${ADMIN}/companies`, { method: company.id ? "PUT" : "POST", body: company });
-export const addCompanyUser = (id, email) => json(`${ADMIN}/companies/${id}/users`, { method: "POST", body: { email } });
-export const removeCompanyUser = (id, email) => json(`${ADMIN}/companies/${id}/users/${encodeURIComponent(email)}`, { method: "DELETE" });
-export const saveStaff = (staff) => json(`${ADMIN}/staff`, { method: "PUT", body: staff });
-export const deleteStaff = (email) => json(`${ADMIN}/staff/${encodeURIComponent(email)}`, { method: "DELETE" });
-export const saveApprover = (approver) => json(`${ADMIN}/approver`, { method: "PUT", body: approver });
 
 // ---------- подписи и числа ----------
 export const STATUS_LABELS = {
+  engineer: "Ждёт согласования главного инженера",
   line1: "Ждёт ответа исполнителя",
   line2: "Передана субподрядчику",
   returned: "Отклонена — нужно ваше решение",
@@ -74,6 +72,9 @@ export const STATUS_LABELS = {
 export const UNITS = { drill: "шт", cut: "м.п." };
 export const WORK_LABELS = { drill: "Сверление", cut: "Резка" };
 export const fmtNum = (n) => String(n).replace(".", ",");
+
+// Позиция в справочнике иногда уже «поз.56» — второе «поз.» не добавляем (как на сервере).
+export const positionLabel = (position) => (/^\s*поз/i.test(String(position)) ? String(position).trim() : `поз. ${position}`);
 
 // Только цифры и один разделитель (запятая/точка равнозначны), не больше
 // одного знака после него; для целых — только цифры.

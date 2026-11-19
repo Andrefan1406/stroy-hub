@@ -1,12 +1,13 @@
 // Word-документ «Наряд задание» по заявке на бурение и резку. Структура по
 // образцу samples/estimate/пример заявки.docx: адресат, «В работу» + дата,
 // заголовок, текст, таблица работ, подписи «Составил» / «Согласовано». В нижнем
-// колонтитуле — временные отметки ТЕКУЩЕГО круга согласования: «Создана …» и
-// короткие «Пром Альянс — принята/отклонена …» (предыдущие круги остаются в базе).
+// колонтитуле — временные отметки ТЕКУЩЕГО круга согласования: «Создана …», «Главный
+// инженер — согласована …» и короткие «Пром Альянс — принята/отклонена …» (предыдущие
+// круги остаются в базе). «Составил» и «Согласовано» — из карточек людей (ФИО, должность).
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, Footer, BorderStyle, VerticalAlign,
 } = require('docx');
-const { UNITS } = require('./validation');
+const { UNITS, positionLabel } = require('./validation');
 
 const FONT = 'Times New Roman';
 const TZ = 'Asia/Almaty';
@@ -52,7 +53,7 @@ function itemsTable(items) {
       cantSplit: true,
       children: [
         cell(i + 1, { width: widths[0], align: AlignmentType.CENTER }),
-        cell(`${it.object}\nпоз. ${it.position}`, { width: widths[1] }),
+        cell(`${it.object}\n${positionLabel(it.position)}`, { width: widths[1] }),
         cell(it.workType === 'drill' ? 'Сверление' : 'Резка', { width: widths[2] }),
         cell(sizeText(it), { width: widths[3] }),
         cell(it.material, { width: widths[4] }),
@@ -69,7 +70,7 @@ function signatures(data) {
   const left = (title, lines) => [para(run(title, { bold: true })), ...lines.map((l) => para(run(l)))];
   const half = 5100;
   const mk = (children) => new TableCell({ width: { size: half, type: WidthType.DXA }, borders: NO_BORDERS, children });
-  const iniPos = [ini.position, ini.organization].filter(Boolean).join(' ');
+  const iniPos = ini.position;
   return new Table({
     width: { size: half * 2, type: WidthType.DXA },
     columnWidths: [half, half],
@@ -85,7 +86,7 @@ function signatures(data) {
 
 function footerText(data) {
   const lines = [`Создана: ${fmtDateTime(data.roundStartedAt)}`];
-  for (const s of data.stamps) lines.push(`${s.company} — ${s.type === 'accepted' ? 'принята' : 'отклонена'} ${fmtDateTime(s.at)}`);
+  for (const s of data.stamps) lines.push(`${s.company} — ${s.label} ${fmtDateTime(s.at)}`);
   return lines;
 }
 

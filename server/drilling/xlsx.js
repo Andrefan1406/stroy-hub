@@ -5,6 +5,7 @@ const ExcelJS = require('exceljs');
 const { fmtDateTime } = require('./docx');
 
 const STATUS = {
+  engineer: 'Ждёт согласования главного инженера',
   line1: 'Ждёт ответа исполнителя',
   line2: 'Передана субподрядчику',
   returned: 'Отклонена',
@@ -29,6 +30,7 @@ const COLUMNS = [
   { header: 'Заявлено', key: 'quantity', width: 11 },
   { header: 'Ед.', key: 'unit', width: 6 },
   { header: 'Выполнено', key: 'factQuantity', width: 11 },
+  { header: 'Комментарий к выполнению', key: 'factComment', width: 30 },
   { header: 'Причина / комментарий', key: 'reason', width: 40 },
 ];
 

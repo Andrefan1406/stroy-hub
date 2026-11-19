@@ -1,13 +1,16 @@
-// Заявка на бурение и резку: статус согласования, строки, журнал всех кругов,
-// действия по роли — принять/отклонить (ответственный), править/перезапустить/
-// отменить и отмечать выполнение по строкам (инициатор), скачать Word.
+// Заявка на бурение и резку: статус согласования, строки, журнал всех кругов, действия по
+// роли — согласовать/принять/отклонить (ответственный), править/перезапустить/отменить и
+// отмечать выполнение (автор: по строке или сразу все), скачать Word, распечатать / сохранить в PDF.
 import React, { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import css from "../../ConcreteRequestPage.module.css";
 import styles from "./Drilling.module.css";
+import DrillingNav from "./DrillingNav";
+import RejectDialog from "./RejectDialog";
+import { useConfirm } from "../../components/ConfirmDialog";
 import {
-  acceptRequest, cancelRequest, downloadDocx, fetchRequest, markItemDone, rejectRequest, restartRequest,
-  STATUS_LABELS, UNITS, WORK_LABELS, fmtDateTime, fmtNum, sanitizeNumber,
+  acceptRequest, cancelRequest, downloadDocx, fetchRequest, markItemsDone, rejectRequest, restartRequest,
+  STATUS_LABELS, UNITS, WORK_LABELS, fmtDateTime, fmtNum, positionLabel, sanitizeNumber,
 } from "./drillingApi";
 
 const sizeOf = (i) => (i.workType === "drill" ? `Ø ${i.diameterMm} мм` : `толщина ${fmtNum(i.thicknessCm)} см`);
@@ -16,6 +19,8 @@ function eventText(e) {
   const who = e.companyName || "";
   switch (e.type) {
     case "created": return "Заявка создана";
+    case "engineer_approved": return `Главный инженер согласовал (${e.actorName || e.actor})`;
+    case "engineer_rejected": return <>Главный инженер отклонил — заявка возвращена автору. Причина: <span className={styles.reason}>{e.reason}</span></>;
     case "restarted": return "Заявка отправлена заново";
     case "edited": return "Заявка исправлена автором";
     case "rejected": return <>{who} отклонила. Причина: <span className={styles.reason}>{e.reason}</span></>;
@@ -28,69 +33,13 @@ function eventText(e) {
   }
 }
 
-const RejectDialog = ({ onCancel, onSubmit, busy }) => {
-  const [reason, setReason] = useState("");
-  return (
-    <div className={styles.overlay} role="dialog" aria-modal="true" aria-label="Отказ по заявке">
-      <div className={styles.modal}>
-        <h2 className={css.cardTitle}>Причина отказа</h2>
-        <textarea className={css.textarea} rows={4} maxLength={500} autoFocus value={reason} onChange={(e) => setReason(e.target.value)}
-          placeholder="Например: вышло из строя оборудование" />
-        <div className={styles.actionsBar}>
-          <button className={styles.btnDanger} disabled={busy || !reason.trim()} onClick={() => onSubmit(reason.trim())}>Отклонить</button>
-          <button className={css.btnGhost} style={{ marginRight: 0 }} onClick={onCancel}>Назад</button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-// Строка таблицы с полем «факт» — только когда заявка принята и строка ещё не отмечена.
-const ItemRow = ({ item, canMark, onMark }) => {
-  const [fact, setFact] = useState(String(item.quantity).replace(".", ","));
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState(false);
+// Проверка факта на стороне страницы (те же правила, что на сервере): число, не больше заявленного.
+function factError(item, fact) {
   const integer = item.workType === "drill";
-
-  const submit = async () => {
-    const n = Number(fact.replace(",", "."));
-    if (fact === "" || Number.isNaN(n)) return setErr("Введите число");
-    if (n > item.quantity) return setErr(`Не больше ${fmtNum(item.quantity)}`);
-    setBusy(true);
-    setErr("");
-    try {
-      await onMark(item.id, fact);
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <tr>
-      <td>{item.lineNo}</td>
-      <td>{item.object}<br />поз. {item.position}</td>
-      <td>{WORK_LABELS[item.workType]}</td>
-      <td>{sizeOf(item)}</td>
-      <td>{item.material}</td>
-      <td>{fmtNum(item.quantity)} {UNITS[item.workType]}</td>
-      <td>{item.reason || "—"}</td>
-      <td>
-        {item.doneAt ? (
-          <span className={styles.done}>Выполнено: {fmtNum(item.factQuantity)} {UNITS[item.workType]}</span>
-        ) : canMark ? (
-          <>
-            <input className={styles.factInput} inputMode={integer ? "numeric" : "decimal"} value={fact} aria-label={`Фактически, строка ${item.lineNo}`}
-              onChange={(e) => setFact(sanitizeNumber(e.target.value, integer))} />{" "}
-            <button className={styles.smallBtn} disabled={busy} onClick={submit}>Выполнено</button>
-            {err && <div className={css.fieldError}>{err}</div>}
-          </>
-        ) : "—"}
-      </td>
-    </tr>
-  );
-};
+  if (!(integer ? /^\d+$/ : /^\d+([.,]\d)?$/).test(fact)) return integer ? "Целое число" : "Число, до одного знака после запятой";
+  if (Number(fact.replace(",", ".")) > item.quantity) return `Не больше ${fmtNum(item.quantity)}`;
+  return "";
+}
 
 const DrillingRequestDetailPage = () => {
   const { id } = useParams();
@@ -99,6 +48,9 @@ const DrillingRequestDetailPage = () => {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [facts, setFacts] = useState({}); // itemId -> { fact, comment } для ещё не отмеченных строк
+  const [rowErrors, setRowErrors] = useState({}); // itemId -> текст ошибки
+  const [confirm, confirmDialog] = useConfirm();
 
   const load = useCallback(async () => {
     try {
@@ -115,8 +67,21 @@ const DrillingRequestDetailPage = () => {
     return () => clearInterval(timer);
   }, [load]);
 
-  const act = async (fn, confirmText) => {
-    if (confirmText && !window.confirm(confirmText)) return;
+  // по умолчанию в поле факта — заявленное количество; введённое не затираем при обновлении
+  useEffect(() => {
+    if (!req) return;
+    setFacts((cur) => {
+      const next = {};
+      for (const i of req.items) {
+        if (i.doneAt) continue;
+        next[i.id] = cur[i.id] || { fact: String(i.quantity).replace(".", ","), comment: "" };
+      }
+      return next;
+    });
+  }, [req]);
+
+  const act = async (fn, ask) => {
+    if (ask && !(await confirm(ask))) return;
     setBusy(true);
     setError("");
     try {
@@ -131,10 +96,27 @@ const DrillingRequestDetailPage = () => {
     }
   };
 
+  const setFact = (itemId, patch) => {
+    setFacts((cur) => ({ ...cur, [itemId]: { ...cur[itemId], ...patch } }));
+    setRowErrors((cur) => (cur[itemId] ? { ...cur, [itemId]: "" } : cur));
+  };
+
+  // Отметить выполнение: одну строку или все ещё не отмеченные разом (все проверяются до отправки).
+  const complete = async (items) => {
+    const errs = {};
+    for (const i of items) {
+      const e = factError(i, facts[i.id]?.fact ?? "");
+      if (e) errs[i.id] = e;
+    }
+    setRowErrors(errs);
+    if (Object.keys(errs).length) return;
+    await act(() => markItemsDone(id, items.map((i) => ({ itemId: i.id, factQuantity: facts[i.id].fact, comment: facts[i.id].comment }))));
+  };
+
   if (!req) {
     return (
       <div className={css.page}><div className={css.content}>
-        <Link to="/drilling-requests" className={css.back}>← К списку</Link>
+        <DrillingNav />
         {error ? <div className={styles.error}>{error}</div> : <div className={styles.empty}>Загрузка…</div>}
       </div></div>
     );
@@ -143,11 +125,12 @@ const DrillingRequestDetailPage = () => {
   const p = req.permissions;
   const showFact = ["accepted", "completed"].includes(req.status);
   const rounds = [...new Set(req.events.map((e) => e.round))];
+  const undone = req.items.filter((i) => !i.doneAt);
 
   return (
     <div className={css.page}>
       <div className={css.content}>
-        <Link to="/drilling-requests" className={css.back}>← К списку заявок</Link>
+        <DrillingNav />
         <div className={styles.head}>
           <h1 className={css.title}>Заявка № {req.id}</h1>
           <span className={`${styles.badge} ${styles[`st_${req.status}`]}`}>{STATUS_LABELS[req.status]}</span>
@@ -157,18 +140,39 @@ const DrillingRequestDetailPage = () => {
           {req.acceptedCompany && <> · исполнитель: <b>{req.acceptedCompany.name}</b></>}
         </div>
 
-        {error && <div className={styles.error} role="alert">{error}</div>}
+        {error && <div className={`${styles.error} no-print`} role="alert">{error}</div>}
         {req.status === "returned" && (
-          <div className={styles.error}>Все исполнители отказали (причины — в журнале ниже). Можно исправить заявку и отправить заново или отменить её.</div>
+          <div className={`${styles.error} no-print`}>Заявку не приняли (причины — в журнале ниже). Можно исправить её и отправить заново (согласование начнётся с главного инженера) или отменить.</div>
         )}
 
-        <div className={styles.actionsBar}>
-          {p.accept && <button className={css.btnPrimary} disabled={busy} onClick={() => act(() => acceptRequest(id), "Принять заявку в работу?")}>Принять в работу</button>}
+        <div className={`${styles.actionsBar} no-print`}>
+          {p.accept && (
+            <button className={css.btnPrimary} disabled={busy}
+              onClick={() => act(() => acceptRequest(id), {
+                title: req.status === "engineer" ? "Согласовать заявку и передать исполнителям?" : "Принять заявку в работу?",
+                confirmLabel: req.status === "engineer" ? "Согласовать" : "Принять",
+              })}>
+              {req.status === "engineer" ? "Согласовать" : "Принять в работу"}
+            </button>
+          )}
           {p.reject && <button className={styles.btnDanger} disabled={busy} onClick={() => setRejecting(true)}>Отклонить</button>}
           {p.edit && <button className={css.btnPrimary} disabled={busy} onClick={() => navigate(`/drilling-request/${id}/edit`)}>Исправить и отправить заново</button>}
-          {p.restart && <button className={css.btnGhost} style={{ marginRight: 0 }} disabled={busy} onClick={() => act(() => restartRequest(id), "Отправить заявку заново без изменений?")}>Отправить заново как есть</button>}
-          {p.cancel && <button className={styles.btnDanger} disabled={busy} onClick={() => act(() => cancelRequest(id), "Отменить заявку?")}>Отменить заявку</button>}
+          {p.restart && (
+            <button className={css.btnGhost} style={{ marginRight: 0 }} disabled={busy}
+              onClick={() => act(() => restartRequest(id), { title: "Отправить заявку заново без изменений?", confirmLabel: "Отправить" })}>
+              Отправить заново как есть
+            </button>
+          )}
+          {p.cancel && (
+            <button className={styles.btnDanger} disabled={busy}
+              onClick={() => act(() => cancelRequest(id), { title: "Отменить заявку?", text: "Отменённую заявку вернуть нельзя.", confirmLabel: "Отменить заявку", danger: true })}>
+              Отменить заявку
+            </button>
+          )}
           {p.download && <button className={css.btnGhost} style={{ marginRight: 0 }} onClick={() => downloadDocx(id).catch((e) => setError(e.message))}>Скачать Word</button>}
+          <button className={css.btnGhost} style={{ marginRight: 0 }} onClick={() => window.print()} title="Откроется печать: там же можно выбрать «Сохранить как PDF»">
+            Печать / PDF
+          </button>
         </div>
 
         <div className={styles.tableWrap}>
@@ -177,18 +181,54 @@ const DrillingRequestDetailPage = () => {
               <tr><th>№</th><th>Объект, позиция</th><th>Вид работ</th><th>Размер</th><th>Материал</th><th>Кол-во</th><th>Причина</th>{showFact && <th>Выполнение</th>}</tr>
             </thead>
             <tbody>
-              {req.items.map((i) => showFact
-                ? <ItemRow key={i.id} item={i} canMark={p.markDone} onMark={(itemId, fact) => markItemDone(id, itemId, fact).then(setReq)} />
-                : (
+              {req.items.map((i) => {
+                const f = facts[i.id];
+                const diff = f && f.fact !== "" && Number(f.fact.replace(",", ".")) !== i.quantity;
+                return (
                   <tr key={i.id}>
-                    <td>{i.lineNo}</td><td>{i.object}<br />поз. {i.position}</td><td>{WORK_LABELS[i.workType]}</td>
-                    <td>{sizeOf(i)}</td><td>{i.material}</td><td>{fmtNum(i.quantity)} {UNITS[i.workType]}</td><td>{i.reason || "—"}</td>
+                    <td>{i.lineNo}</td>
+                    <td>{i.object}<br />{positionLabel(i.position)}</td>
+                    <td>{WORK_LABELS[i.workType]}</td>
+                    <td>{sizeOf(i)}</td>
+                    <td>{i.material}</td>
+                    <td>{fmtNum(i.quantity)} {UNITS[i.workType]}</td>
+                    <td>{i.reason || "—"}</td>
+                    {showFact && (
+                      <td>
+                        {i.doneAt ? (
+                          <>
+                            <span className={styles.done}>Выполнено: {fmtNum(i.factQuantity)} {UNITS[i.workType]}</span>
+                            {i.factComment && <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>{i.factComment}</div>}
+                          </>
+                        ) : p.markDone && f ? (
+                          <div className="no-print">
+                            <input className={styles.factInput} inputMode={i.workType === "drill" ? "numeric" : "decimal"} value={f.fact}
+                              aria-label={`Фактически, строка ${i.lineNo}`}
+                              onChange={(e) => setFact(i.id, { fact: sanitizeNumber(e.target.value, i.workType === "drill") })} />{" "}
+                            <button className={styles.smallBtn} disabled={busy} onClick={() => complete([i])}>Выполнено</button>
+                            {diff && (
+                              <input className={styles.factComment} value={f.comment} maxLength={300} placeholder="Комментарий: почему не заявленное количество"
+                                aria-label={`Комментарий к строке ${i.lineNo}`} onChange={(e) => setFact(i.id, { comment: e.target.value })} />
+                            )}
+                            {rowErrors[i.id] && <div className={css.fieldError}>{rowErrors[i.id]}</div>}
+                          </div>
+                        ) : "—"}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
-        {p.markDone && <p className={styles.hint}>Отметьте выполнение по каждой строке. Если сделано меньше заявленного — укажите фактическое количество (больше заявленного нельзя).</p>}
+        {p.markDone && undone.length > 0 && (
+          <div className="no-print">
+            <p className={styles.hint}>Отметьте выполнение по строке или сразу по всем. Если сделано меньше заявленного — измените количество (больше заявленного нельзя) и при желании поясните комментарием.</p>
+            {undone.length > 1 && (
+              <button className={styles.btnOk} disabled={busy} onClick={() => complete(undone)}>Выполнить все строки ({undone.length})</button>
+            )}
+          </div>
+        )}
 
         <div className={styles.section}>
           <h2 className={styles.sectionTitle}>Журнал согласования</h2>
@@ -204,6 +244,7 @@ const DrillingRequestDetailPage = () => {
           ))}
         </div>
       </div>
+      {confirmDialog}
       {rejecting && <RejectDialog busy={busy} onCancel={() => setRejecting(false)} onSubmit={(reason) => act(() => rejectRequest(id, reason))} />}
     </div>
   );
