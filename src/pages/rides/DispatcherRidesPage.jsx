@@ -689,7 +689,7 @@ const s = {
   staleBadge: { marginLeft: "8px", fontSize: "11px", color: "#b8860b", fontWeight: 700 },
   pendingBadge: { marginLeft: "8px", fontSize: "11px", color: "#e67e22", fontWeight: 700, whiteSpace: "nowrap" },
   passengers: { marginTop: "4px", fontSize: "12px", lineHeight: 1.6 },
-  commentLine: { marginTop: "4px", fontSize: "12px", color: "#7a4b00", background: "#fff6e0", borderRadius: "4px", padding: "2px 6px", display: "inline-block" },
+  commentLine: { marginTop: "4px", fontSize: "15px", fontWeight: 700, color: "#d32f2f", background: "#fdecea", borderRadius: "4px", padding: "2px 8px", display: "inline-block" },
   mergeButton: { background: "#eef6ff", color: "#0b5cad", border: "1px solid #b8d9f7", borderRadius: "6px", padding: "6px 12px", cursor: "pointer", fontSize: "13px", marginRight: "6px" },
   mergeBadge: { marginLeft: "8px", fontSize: "11px", color: "#0b5cad", fontWeight: 700, whiteSpace: "nowrap" },
   returnBadge: { fontSize: "12px", color: "#888" },

@@ -345,7 +345,7 @@ export default function DriverDashboardPage() {
                 <div style={s.cardMeta}>Подача: {formatDateTime(r.requestedAt)} · Пассажиров: {r.passengersCount}</div>
                 {formatEstimate(r) && <div style={s.cardMeta}>{formatEstimate(r)}</div>}
                 {r.purpose && <div style={s.cardMeta}>Цель: {r.purpose}</div>}
-                {r.comment && <div style={s.cardMeta}>Комментарий: {r.comment}</div>}
+                {r.comment && <div style={s.commentAlert}>Комментарий: {r.comment}</div>}
                 <div style={s.cardMeta}>
                   Заказчик: {r.employeeName} — <a href={`tel:${r.employeePhone}`} style={s.phoneLink}>{r.employeePhone}</a>
                 </div>
@@ -366,7 +366,7 @@ export default function DriverDashboardPage() {
                           🔗 попутно заявка #{mr.id}{mr.employeeName ? `, ${mr.employeeName}` : ""}: {mr.fromAddress} → {mr.toAddress}
                           {isRiding(mr) && mr.pickupEtaAt && <> · посадка {formatClock(mr.pickupEtaAt)}</>}
                           {isRiding(mr) && mr.employeePhone && <> · <a href={`tel:${mr.employeePhone}`} style={s.phoneLink}>{mr.employeePhone}</a></>}
-                          {isRiding(mr) && mr.comment && <div>💬 {mr.comment}</div>}
+                          {isRiding(mr) && mr.comment && <div style={s.commentAlert}>💬 {mr.comment}</div>}
                         </span>
                         {!isRiding(mr) ? (
                           <span style={s.droppedBadge}>✓ высажен</span>
@@ -411,7 +411,7 @@ export default function DriverDashboardPage() {
                 <div style={s.cardMeta}>Подача: {formatDateTime(r.requestedAt)} · Пассажиров: {r.passengersCount}</div>
                 {formatEstimate(r) && <div style={s.cardMeta}>{formatEstimate(r)}</div>}
                 {r.purpose && <div style={s.cardMeta}>Цель: {r.purpose}</div>}
-                {r.comment && <div style={s.cardMeta}>Комментарий: {r.comment}</div>}
+                {r.comment && <div style={s.commentAlert}>Комментарий: {r.comment}</div>}
                 <div style={s.cardMeta}>
                   Заказчик: {r.employeeName} — <a href={`tel:${r.employeePhone}`} style={s.phoneLink}>{r.employeePhone}</a>
                 </div>
@@ -489,6 +489,8 @@ const s = {
   cards: { display: "flex", flexDirection: "column", gap: "12px" },
   card: { background: "#fff", border: "1px solid #eee", borderRadius: "10px", padding: "14px 16px", boxShadow: "0 1px 4px rgba(0,0,0,0.05)", boxSizing: "border-box" },
   cardRoute: { fontWeight: 700, fontSize: "14px", marginBottom: "4px", wordBreak: "break-word" },
+  // комментарий заказчика — крупно и красным: водитель не должен его пропустить
+  commentAlert: { fontSize: "18px", fontWeight: 700, color: "#d32f2f", lineHeight: 1.3, margin: "6px 0", wordBreak: "break-word" },
   cardMeta: { fontSize: "13px", color: "#555", marginBottom: "2px", wordBreak: "break-word" },
   cardStatus: { fontSize: "13px", fontWeight: 600, color: "#1976d2", marginTop: "6px" },
   cardActions: { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px" },
