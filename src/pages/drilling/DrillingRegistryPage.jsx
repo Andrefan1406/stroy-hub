@@ -133,7 +133,7 @@ const DrillingRegistryPage = () => {
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.itemId}>
-                      <td><Link to={`/drilling-requests/${r.requestId}`}>№ {r.requestId}</Link></td>
+                      <td><Link to={`/drilling-requests/${r.requestId}`} title={`Открыть заявку № ${r.requestId}`}>{r.requestId}</Link></td>
                       <td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(r.createdAt)}</td>
                       <td>{r.author}</td>
                       <td><span className={`${styles.badge} ${styles[`st_${r.status}`]}`}>{STATUS_LABELS[r.status]}</span></td>
