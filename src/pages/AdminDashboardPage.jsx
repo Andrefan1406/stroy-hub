@@ -4,8 +4,22 @@
 // неё с главной через маленькую кнопку «Личный кабинет» (см. HomePage.js).
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import useDrillingCounter from "./drilling/useDrillingCounter";
 
 const SECTIONS = [
+  {
+    title: "Статусы заявок на бурение и резку",
+    description: "Ход согласования заявок; входящие, если вы назначены ответственным",
+    path: "/drilling-requests",
+    color: "#485875",
+    badge: true,
+  },
+  {
+    title: "Реестр заявок на бурение и резку",
+    description: "Таблица заявок с содержимым и количествами, фильтры, выгрузка в Excel",
+    path: "/drilling-registry",
+    color: "#485875",
+  },
   {
     title: "Управление пользователями",
     description: "Правила проверки пропусков в отчётах по людям (email → участок)",
@@ -37,8 +51,8 @@ const SECTIONS = [
     color: "#6610f2",
   },
   {
-    title: "Система поездок — роли",
-    description: "Назначить роль (сотрудник/диспетчер/водитель) и доступ ко всему сайту",
+    title: "Роли и карточки людей",
+    description: "Роль, ФИО, телефон и должность: поездки, главный инженер, Пром Альянс, бурильщики; исполнители по заявкам на бурение",
     path: "/rides-admin",
     color: "#1976d2",
   },
@@ -70,6 +84,7 @@ const SECTIONS = [
 
 const AdminDashboardPage = () => {
   const navigate = useNavigate();
+  const drillingCount = useDrillingCounter();
 
   return (
     <div style={s.page}>
@@ -85,7 +100,10 @@ const AdminDashboardPage = () => {
             onClick={() => navigate(section.path)}
             style={{ ...s.card, borderTop: `4px solid ${section.color}` }}
           >
-            <div style={s.cardTitle}>{section.title}</div>
+            <div style={s.cardTitle}>
+              {section.title}
+              {section.badge && drillingCount > 0 && <span style={s.badge} aria-label={`Ждёт внимания: ${drillingCount}`}>{drillingCount}</span>}
+            </div>
             <div style={s.cardDescription}>{section.description}</div>
           </button>
         ))}
@@ -113,7 +131,8 @@ const s = {
     flexDirection: "column",
     gap: "6px",
   },
-  cardTitle: { fontSize: "15px", fontWeight: 700, color: "#222" },
+  cardTitle: { fontSize: "15px", fontWeight: 700, color: "#222", display: "flex", alignItems: "center", gap: "8px" },
+  badge: { minWidth: "22px", height: "22px", padding: "0 6px", borderRadius: "11px", background: "#d92d20", color: "#fff", fontSize: "13px", fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center" },
   cardDescription: { fontSize: "13px", color: "#666", lineHeight: 1.4 },
 };
 

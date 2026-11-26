@@ -24,6 +24,7 @@ import { ROLE_HOME_PATH, SITE_ADMIN_EMAIL } from "../rides/constants";
 // vehiclesRouter.js).
 const ROLE_EXTRA_PATHS = {
   dispatcher: ["/employee", "/rides-admin"],
+  driller: ["/drilling-registry"], // реестр заявок на бурение (карточка заявки — под /drilling-requests)
 };
 
 export default function RideAccessGate({ children }) {

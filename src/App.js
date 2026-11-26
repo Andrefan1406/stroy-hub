@@ -52,6 +52,12 @@ import TelegramMiniApp, { TelegramMiniAppRoute } from "./pages/rides/TelegramMin
 import FinancingPlanDashboardPage from "./pages/FinancingPlanDashboardPage";
 import FinancingResyncAdminPage from "./pages/FinancingResyncAdminPage";
 import PlanradarExportAdminPage from "./pages/PlanradarExportAdminPage";
+import DrillingRequestPage from "./pages/drilling/DrillingRequestPage";
+import DrillingRequestsPage from "./pages/drilling/DrillingRequestsPage";
+import DrillingRequestDetailPage from "./pages/drilling/DrillingRequestDetailPage";
+import AccountPage from "./pages/AccountPage";
+import NotFoundPage from "./pages/NotFoundPage";
+import DrillingRegistryPage from "./pages/drilling/DrillingRegistryPage";
 import RestrictedUserGate from "./components/RestrictedUserGate";
 import { PLANRADAR_REPORT_EMAILS } from "./restrictedAccess";
 
@@ -402,6 +408,12 @@ const App = () => {
             </Protected>
           }
         />
+        <Route path="/drilling-request" element={<Protected><DrillingRequestPage /></Protected>} />
+        <Route path="/drilling-request/:id/edit" element={<Protected><DrillingRequestPage /></Protected>} />
+        <Route path="/account" element={<Protected><AccountPage /></Protected>} />
+        <Route path="/drilling-registry" element={<Protected><DrillingRegistryPage /></Protected>} />
+        <Route path="/drilling-requests" element={<Protected><DrillingRequestsPage /></Protected>} />
+        <Route path="/drilling-requests/:id" element={<Protected><DrillingRequestDetailPage /></Protected>} />
         <Route
           path="/admin/planradar-export"
           element={
@@ -420,6 +432,8 @@ const App = () => {
             </Protected>
           }
         />
+        {/* Неверный адрес — сообщение с возвратом, а не пустой экран */}
+        <Route path="*" element={<Protected><NotFoundPage /></Protected>} />
       </Routes>
       </RideAccessGate>
       </RestrictedUserGate>

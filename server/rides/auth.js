@@ -124,11 +124,15 @@ async function loadRideUser(req, res, next) {
   next();
 }
 
-// Требует, чтобы пользователь был добавлен в систему поездок (любая роль).
+// Роли системы поездок. Остальные записи в users (сотрудник без транспорта, главный
+// инженер, Пром Альянс, бурильщик) нужны заявкам на бурение и к поездкам доступа не дают.
+const RIDE_ROLES = ['employee', 'dispatcher', 'driver', 'admin'];
+
+// Требует, чтобы пользователь был добавлен в систему поездок (любая её роль).
 function requireAnyRideUser(req, res, next) {
   loadRideUser(req, res, () => {
     if (req.isSiteAdmin) return next();
-    if (!req.rideUser) {
+    if (!req.rideUser || !RIDE_ROLES.includes(req.rideUser.role)) {
       return res.status(403).json({ error: 'Вы не добавлены как пользователь системы служебного транспорта' });
     }
     next();
@@ -179,6 +183,6 @@ function requireRoleOrSiteAdmin(...roles) {
 }
 
 module.exports = {
-  loadRideUser, requireAnyRideUser, requireRideRole, requireSiteAdmin, requireRoleOrSiteAdmin,
+  RIDE_ROLES, loadRideUser, requireAnyRideUser, requireRideRole, requireSiteAdmin, requireRoleOrSiteAdmin,
   findRideUserByEmail, rideUserForEmail, isSiteAdminEmail, verifyToken, decodeBearerToken,
 };

@@ -15,6 +15,30 @@ const Database = require('better-sqlite3');
 const DATA_DIR = process.env.RIDES_DATA_DIR || path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'db.sqlite');
 
+// Роли: employee/dispatcher/driver — система поездок (admin — служебная запись
+// главного админа). staff — сотрудник без доступа к поездкам; chief_engineer,
+// prom_alyans, driller — участники согласования заявок на бурение и резку
+// (server/drilling/): position — должность для подписей Word, company_id —
+// компания-субподрядчик бурильщика (id в drilling_companies другой БД, без FK).
+const USERS_ROLES = ['employee', 'dispatcher', 'driver', 'admin', 'staff', 'chief_engineer', 'prom_alyans', 'driller'];
+
+function usersDdl(table, ifNotExists = false) {
+  return `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${table} (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  email             TEXT NOT NULL UNIQUE,
+  name              TEXT NOT NULL,
+  phone             TEXT NOT NULL,
+  position          TEXT NOT NULL DEFAULT '',
+  company_id        INTEGER,
+  role              TEXT NOT NULL CHECK(role IN (${USERS_ROLES.map((r) => `'${r}'`).join(',')})),
+  full_site_access  INTEGER NOT NULL DEFAULT 0, -- 1 = сотрудник пользуется остальным сайтом вдобавок к
+                                                  -- своей роли. 0 (по умолчанию) — заперт только на
+                                                  -- странице своей роли (/driver, /dispatcher,
+                                                  -- /employee, /drilling-requests).
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);`;
+}
+
 const SCHEMA = `
 -- users — не общий список сотрудников компании (тех пускает Firebase Auth
 -- сам по себе), а закрытый список ДОПУЩЕННЫХ к системе поездок: строка
@@ -22,19 +46,7 @@ const SCHEMA = `
 -- странице /rides-admin. email — тот же, что в decoded.email из Firebase
 -- ID-токена (см. server/adminAuth.js) — пароль отдельно не храним, это
 -- делает Firebase.
-CREATE TABLE IF NOT EXISTS users (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  email             TEXT NOT NULL UNIQUE,
-  name              TEXT NOT NULL,
-  phone             TEXT NOT NULL,
-  role              TEXT NOT NULL CHECK(role IN ('employee','dispatcher','driver','admin')),
-  full_site_access  INTEGER NOT NULL DEFAULT 0, -- 1 = сотрудник уже пользовался остальным
-                                                  -- сайтом до попадания в систему поездок —
-                                                  -- сохраняет доступ туда вдобавок к своей роли
-                                                  -- здесь. 0 (по умолчанию) — заперт только на
-                                                  -- странице своей роли (/driver, /dispatcher, /employee).
-  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
-);
+${usersDdl('users', true)}
 
 CREATE TABLE IF NOT EXISTS vehicles (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,7 +276,34 @@ function initSchema() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   const db = getWriteDb();
   db.exec(SCHEMA);
+  migrateUsersTable(db);
   migrateSchema(db);
+}
+
+// Новые роли и колонки (position, company_id) требуют пересборки users: SQLite не
+// умеет менять CHECK на месте. Порядок — как в документации SQLite («12 шагов»):
+// внешние ключи на время выключены (на users ссылаются заявки, водители, журнал),
+// копируем строки с теми же id, подменяем таблицу, проверяем foreign_key_check ДО
+// фиксации — при любой проблеме транзакция откатывается и данные остаются как были.
+// Повторный запуск ничего не делает (в схеме уже есть 'chief_engineer').
+function migrateUsersTable(db) {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
+  if (!row || row.sql.includes("'chief_engineer'")) return;
+  const oldCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  const keep = ['id', 'email', 'name', 'phone', 'role', 'full_site_access', 'created_at'].filter((c) => oldCols.includes(c));
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.exec(usersDdl('users_new'));
+      db.exec(`INSERT INTO users_new (${keep.join(', ')}) SELECT ${keep.join(', ')} FROM users`);
+      db.exec('DROP TABLE users');
+      db.exec('ALTER TABLE users_new RENAME TO users');
+      const broken = db.prepare('PRAGMA foreign_key_check').all();
+      if (broken.length) throw new Error(`Миграция users нарушила внешние ключи (${broken.length}) — откат`);
+    })();
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
 }
 
 // CREATE TABLE IF NOT EXISTS — no-op на уже существующей локальной/прод
@@ -396,4 +435,4 @@ function getWriteDb() {
   return writeDb;
 }
 
-module.exports = { initSchema, getWriteDb, DB_PATH };
+module.exports = { initSchema, getWriteDb, DB_PATH, SCHEMA };

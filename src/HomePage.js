@@ -5,11 +5,11 @@ import { fetchMissingGapDates, gapWarningMessage } from './peopleGapsGate';
 import { fetchGprReportBlock, gprBlockMessage } from './gprReportGate';
 import { fetchPlanradarBlock, planradarBlockMessage } from './planradarGate';
 import { ridesApiFetch } from './rides/api';
-import { ROLE_HOME_PATH } from './rides/constants';
+import { DRILLING_NO_SUBMIT_ROLES, NON_RIDE_ROLES, ROLE_HOME_PATH } from './rides/constants';
 import { fetchManualBlock, manualBlockMessage } from './manualBlockGate';
 import {
   TbAlertTriangle, TbBolt, TbCar, TbChartBar, TbChevronRight, TbCrane, TbFileSpreadsheet, TbFlask,
-  TbLayoutGrid, TbLoader2, TbLock, TbRulerMeasure, TbSparkles, TbTruck, TbUsers, TbWall,
+  TbLayoutGrid, TbLoader2, TbLock, TbRulerMeasure, TbSparkles, TbTool, TbTruck, TbUsers, TbWall,
 } from 'react-icons/tb';
 import styles from './HomePage.module.css';
 
@@ -149,7 +149,7 @@ const HomePage = () => {
           ? planradarBlockMessage(planradarItems)
           : undefined;
 
-  const rideHomePath = rideRole && ROLE_HOME_PATH[rideRole];
+  const rideHomePath = rideRole && !NON_RIDE_ROLES.includes(rideRole) && ROLE_HOME_PATH[rideRole];
   // 'unverified' — проверки не успели (тайм-аут) или упали: плитки открыты,
   // а опоздавшие ответы на главной уже не показываем — иначе блок с
   // причинами вставился бы в сетку и сдвинул её.
@@ -292,6 +292,11 @@ const HomePage = () => {
           <Tile icon={<TbWall />} to="/znbrequest">
             Заявка на ж/б изделия
           </Tile>
+          {!DRILLING_NO_SUBMIT_ROLES.includes(rideRole) && (
+            <Tile icon={<TbTool />} to="/drilling-request">
+              Заявка на бурение и резку
+            </Tile>
+          )}
         </Section>
 
         <Section title="Инженерные службы">

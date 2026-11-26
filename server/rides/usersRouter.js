@@ -1,25 +1,27 @@
-// /api/v1/users — управление допуском к системе поездок.
+// /api/v1/users — роли и карточки людей (ФИО, телефон, должность).
 // GET /me — для любого залогиненного (Firebase) — есть ли у него запись
 // здесь и какая роль; на это опирается фронтовый гейт (см.
 // src/components/RideAccessGate.jsx), который прячет остальной сайт от
 // тех, у кого full_site_access = 0.
 //
-// Разделение обязанностей на остальных эндпоинтах:
-// - Главный админ сайта (ADMIN_EMAIL, server/adminAuth.js) — ТОЛЬКО
-//   назначает роль и full_site_access. Имя/телефон он не трогает и не
-//   видит их в своей форме — это не его забота. Ему самому роль не
-//   назначают: он проходит любую проверку роли по email (см. auth.js), а
-//   его служебная запись (role 'admin') в списке не показывается и через
-//   эти эндпоинты не меняется (rejectSiteAdminTarget).
-// - Диспетчер (он же ведёт справочники водителей/машин, см.
-//   driversRouter.js/vehiclesRouter.js) заполняет "карточку" — имя и
-//   телефон — тем, кому роль уже назначил главный админ. Роль и
-//   full_site_access ему не видны и не редактируются: это не его решение.
+// Всё про людей ведёт ТОЛЬКО главный админ сайта (ADMIN_EMAIL, server/adminAuth.js):
+// назначает роль и сразу заполняет карточку — ФИО, телефон, должность — в одной
+// форме (PUT /:email). Диспетчер карточки не правит: он их только читает (нужны
+// имена и телефоны водителей и пассажиров) и ведёт справочники водителей/машин
+// (driversRouter.js/vehiclesRouter.js). Главному админу роль не назначают: он
+// проходит любую проверку роли по email (см. auth.js), его служебная запись
+// (role 'admin') в списке не показывается и через эти эндпоинты не меняется
+// (rejectSiteAdminTarget); свои ФИО и телефон он вписывает сам (PATCH /me).
+//
+// Роли: employee/dispatcher/driver — система поездок; staff (сотрудник без
+// доступа к поездкам), chief_engineer, prom_alyans, driller — заявки на бурение
+// и резку (server/drilling/). У них доступ ко всему сайту зашит в роль:
+// driller заперт на своей странице, остальные пользуются всем сайтом.
 const express = require('express');
 const { z } = require('zod');
 const { getAuth } = require('firebase-admin/auth');
 const { getWriteDb } = require('./db');
-const { loadRideUser, requireSiteAdmin, requireRoleOrSiteAdmin, isSiteAdminEmail } = require('./auth');
+const { loadRideUser, requireSiteAdmin, requireRoleOrSiteAdmin, isSiteAdminEmail, RIDE_ROLES } = require('./auth');
 const { ADMIN_EMAIL } = require('../adminAuth');
 const telegramStore = require('./telegram/store');
 
@@ -41,6 +43,8 @@ function serializeUser(row) {
     email: row.email,
     name: row.name,
     phone: row.phone,
+    position: row.position || '',
+    companyId: row.company_id || null,
     role: row.role,
     fullSiteAccess: !!row.full_site_access,
   };
@@ -51,9 +55,8 @@ router.get('/me', loadRideUser, (req, res) => {
 });
 
 // Главный админ сам заполняет свои ФИО и телефон — их видит водитель в его
-// заявках. Его карточку диспетчер не ведёт (служебная запись скрыта из
-// списка, rejectSiteAdminTarget), остальным имя и телефон заполняет
-// диспетчер. Объявлено до /:email, иначе 'me' приняли бы за email.
+// заявках. Его карточку в списке не ведут (служебная запись скрыта,
+// rejectSiteAdminTarget). Объявлено до /:email, иначе 'me' приняли бы за email.
 const ownContactSchema = z.object({
   name: z.string().trim().min(2, 'Укажите ФИО').max(120),
   phone: z.string().trim().regex(/^\+?[\d\s()-]{10,20}$/, 'Укажите телефон, например +7 701 123 45 67'),
@@ -61,7 +64,7 @@ const ownContactSchema = z.object({
 
 router.patch('/me', loadRideUser, (req, res) => {
   if (!req.isSiteAdmin || !req.rideUser) {
-    return res.status(403).json({ error: 'Имя и телефон заполняет диспетчер' });
+    return res.status(403).json({ error: 'ФИО и телефон заполняет главный администратор' });
   }
   const result = ownContactSchema.safeParse(req.body);
   if (!result.success) {
@@ -73,9 +76,8 @@ router.patch('/me', loadRideUser, (req, res) => {
 });
 
 // И главному админу (полный список + назначение ролей), и диспетчеру
-// (карточки уже назначенных) нужен один и тот же список пользователей
-// Firebase — различается только то, что каждый из них в ответе видит и
-// может редактировать (см. фильтрацию в конце функции).
+// (только чтение карточек людей системы поездок) нужен один и тот же список
+// пользователей Firebase — различается то, что каждый из них видит.
 router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
   const db = getWriteDb();
   const isSiteAdmin = req.firebaseEmail?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
@@ -93,15 +95,11 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
   }
 
   // Весь остальной путь — тоже под try/catch (не только listUsers()): без
-  // этого любая неожиданная строка/данные (например, задание с БД до
-  // текущей NOT NULL-схемы) роняют запрос без JSON-тела — клиент видит
-  // голый "Ошибка сервера (500)" вместо понятного сообщения, а причина
-  // видна только тут, в логе бэкенда.
+  // этого любая неожиданная строка/данные роняют запрос без JSON-тела —
+  // клиент видит голый "Ошибка сервера (500)" вместо понятного сообщения.
   try {
     // .filter(r => r.email) — на случай строки без email, оставшейся с более
-    // ранней версии схемы (до NOT NULL на этой колонке, см. db.js): такая
-    // строка не даст восстановить исходный email обратно, но не должна
-    // обрушивать весь список остальных пользователей.
+    // ранней версии схемы: такая строка не должна обрушивать весь список.
     const localByEmail = new Map(
       db.prepare('SELECT * FROM users').all().filter((r) => r.email).map((r) => [r.email.toLowerCase(), r])
     );
@@ -118,6 +116,8 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
         displayName: fu.displayName || null,
         name: local?.name || '',
         phone: local?.phone || '',
+        position: local?.position || '',
+        companyId: local?.company_id || null,
         role: local?.role || null,
         fullSiteAccess: local ? !!local.full_site_access : false,
       });
@@ -132,6 +132,8 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
         displayName: null,
         name: leftover.name,
         phone: leftover.phone,
+        position: leftover.position || '',
+        companyId: leftover.company_id || null,
         role: leftover.role,
         fullSiteAccess: !!leftover.full_site_access,
       });
@@ -142,9 +144,10 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
       return res.json({ users: merged });
     }
 
-    // Диспетчер: только тем, кому роль уже назначена, без full_site_access
-    // (это не его рычаг) — заполняет карточку (имя/телефон) уже готовым записям.
-    const result = merged.filter((u) => u.role).map(({ fullSiteAccess, ...rest }) => rest);
+    // Диспетчер: только люди системы поездок, только чтение (имя и телефон).
+    const result = merged
+      .filter((u) => u.role && RIDE_ROLES.includes(u.role))
+      .map(({ fullSiteAccess, position, companyId, ...rest }) => rest);
     res.json({ users: result });
   } catch (err) {
     console.error('GET /api/v1/users не сработал:', err);
@@ -152,61 +155,66 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
   }
 });
 
+// Роли, которые назначает главный админ. Доступ ко всему сайту у ролей
+// по заявкам на бурение зашит: бурильщик заперт на своей странице, остальные
+// пользуются всем сайтом. Для ролей поездок флаг выбирает админ.
+const ASSIGNABLE_ROLES = ['employee', 'dispatcher', 'driver', 'staff', 'chief_engineer', 'prom_alyans', 'driller'];
+const FIXED_SITE_ACCESS = { staff: true, chief_engineer: true, prom_alyans: true, driller: false };
+const PHONE_REQUIRED_ROLES = ['employee', 'dispatcher', 'driver'];
+
 const roleAssignmentSchema = z.object({
-  role: z.enum(['employee', 'dispatcher', 'driver']),
+  role: z.enum(ASSIGNABLE_ROLES),
   fullSiteAccess: z.boolean().default(false),
+  name: z.string().trim().min(1, 'Укажите ФИО').max(120),
+  phone: z.string().trim().max(40).default(''),
+  position: z.string().trim().max(200).default(''),
+  companyId: z.number().int().positive().nullable().optional(),
 });
 
-const cardSchema = z.object({
-  name: z.string().trim().min(1, 'Укажите имя'),
-  phone: z.string().trim().min(1, 'Укажите телефон'),
-});
-
-// Главный админ: назначить/сменить роль и full_site_access. Имя/телефон
-// он не присылает — при первом назначении роли новому email они остаются
-// пустыми, пока диспетчер не заполнит карточку (см. PATCH ниже).
+// Главный админ: роль + карточка одной формой. ФИО нужно всем; телефон — ролям
+// поездок; должность — главному инженеру (она в подписи документа); бурильщику —
+// компания-субподрядчик. Главный инженер может быть только один.
 router.put('/:email', requireSiteAdmin, rejectSiteAdminTarget, (req, res) => {
   const result = roleAssignmentSchema.safeParse(req.body);
   if (!result.success) {
     return res.status(400).json({ error: result.error.issues[0]?.message || 'Некорректные данные запроса' });
   }
-  const { role, fullSiteAccess } = result.data;
+  const { role, name, phone, position, companyId } = result.data;
+  if (PHONE_REQUIRED_ROLES.includes(role) && !phone) {
+    return res.status(400).json({ error: 'Укажите телефон' });
+  }
+  if (role === 'chief_engineer' && !position) {
+    return res.status(400).json({ error: 'Укажите должность главного инженера — она печатается в подписи' });
+  }
+  if (role === 'driller') {
+    const drilling = require('../drilling/service');
+    if (!companyId || !drilling.isSubcontractor(companyId)) {
+      return res.status(400).json({ error: 'Выберите компанию-субподрядчика для бурильщика' });
+    }
+  }
 
   const db = getWriteDb();
   const email = req.params.email.toLowerCase();
+
+  if (role === 'chief_engineer') {
+    const other = db.prepare("SELECT email, name FROM users WHERE role = 'chief_engineer' AND email != ?").get(email);
+    if (other) {
+      return res.status(409).json({ error: `Главным инженером уже назначен ${other.name || other.email} (${other.email}). Сначала снимите роль с него.` });
+    }
+  }
+
+  const fullSiteAccess = role in FIXED_SITE_ACCESS ? FIXED_SITE_ACCESS[role] : result.data.fullSiteAccess;
+  const company = role === 'driller' ? companyId : null;
   const existing = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
 
   if (existing) {
-    db.prepare('UPDATE users SET role = ?, full_site_access = ? WHERE id = ?')
-      .run(role, fullSiteAccess ? 1 : 0, existing.id);
+    db.prepare('UPDATE users SET role = ?, full_site_access = ?, name = ?, phone = ?, position = ?, company_id = ? WHERE id = ?')
+      .run(role, fullSiteAccess ? 1 : 0, name, phone, position, company, existing.id);
   } else {
-    db.prepare('INSERT INTO users (email, name, phone, role, full_site_access) VALUES (?, ?, ?, ?, ?)')
-      .run(email, '', '', role, fullSiteAccess ? 1 : 0);
+    db.prepare('INSERT INTO users (email, name, phone, position, company_id, role, full_site_access) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(email, name, phone, position, company, role, fullSiteAccess ? 1 : 0);
   }
 
-  res.json({ user: serializeUser(db.prepare('SELECT * FROM users WHERE email = ?').get(email)) });
-});
-
-// Диспетчер: заполнить карточку (имя/телефон) уже существующей записи —
-// роль он не назначает и создать новую запись не может, только дополняет то,
-// что до него сделал главный админ.
-router.patch('/:email', requireRoleOrSiteAdmin('dispatcher'), rejectSiteAdminTarget, (req, res) => {
-  const isSiteAdmin = req.firebaseEmail?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-  if (isSiteAdmin) {
-    return res.status(403).json({ error: 'Имя и телефон заполняет диспетчер, не главный админ' });
-  }
-  const result = cardSchema.safeParse(req.body);
-  if (!result.success) {
-    return res.status(400).json({ error: result.error.issues[0]?.message || 'Некорректные данные запроса' });
-  }
-
-  const db = getWriteDb();
-  const email = req.params.email.toLowerCase();
-  const existing = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-  if (!existing) return res.status(404).json({ error: 'Сначала главный админ должен назначить этому email роль' });
-
-  db.prepare('UPDATE users SET name = ?, phone = ? WHERE id = ?')
-    .run(result.data.name, result.data.phone, existing.id);
   res.json({ user: serializeUser(db.prepare('SELECT * FROM users WHERE email = ?').get(email)) });
 });
 
