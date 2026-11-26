@@ -8,7 +8,7 @@ import css from "../../ConcreteRequestPage.module.css";
 import styles from "./Drilling.module.css";
 import { Field, SelectField } from "../../components/RequestFormFields";
 import DrillingNav from "./DrillingNav";
-import { AttachmentGallery, AttachmentPicker, PendingFiles, uploadMany } from "./Attachments";
+import { AttachmentGallery, AttachmentPicker, PendingFiles, toPending, uploadMany } from "./Attachments";
 import { objectPositionOptions } from "../../data/constructionData";
 import { createRequest, fetchMe, fetchRequest, localFileProblem, restartRequest, sanitizeNumber, updateRequest } from "./drillingApi";
 
@@ -63,7 +63,7 @@ const DrillingRequestPage = () => {
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(editing);
   const [submitBlock, setSubmitBlock] = useState(""); // почему подача недоступна (роль, нет карточки)
-  const [pending, setPending] = useState([]); // выбранные, ещё не отправленные файлы (чертежи, фото)
+  const [pending, setPending] = useState([]); // выбранные, ещё не отправленные файлы: { file, rotate } (чертежи, фото)
   const [existing, setExisting] = useState([]); // уже приложенные (при правке возвращённой заявки)
   const [uploadInfo, setUploadInfo] = useState(""); // «Загружаю файл 2 из 5…»
 
@@ -106,7 +106,7 @@ const DrillingRequestPage = () => {
       setError("Проверьте поля, отмеченные красным.");
       return;
     }
-    if (pending.some((f) => localFileProblem(f))) {
+    if (pending.some((it) => localFileProblem(it.file))) {
       setError("Среди файлов есть неподходящие — уберите их или замените.");
       return;
     }
@@ -225,13 +225,19 @@ const DrillingRequestPage = () => {
           <section className={css.card} aria-label="Чертежи и фото">
             <div className={css.cardHeader}><h2 className={css.cardTitle}>Чертежи и фото</h2></div>
             <p className={styles.hint}>
-              PDF или картинки (JPEG, PNG, WebP), до 15 файлов, каждый до 15 МБ. Необязательно. Фото с телефона сжимаются автоматически.
+              PDF или картинки (JPEG, PNG, WebP), до 15 файлов, каждый до 15 МБ. Необязательно. Фото с телефона сжимаются автоматически;
+              если снимок получился боком, поверните его кнопками ⟲ ⟳ до отправки.
             </p>
             {editing && (
               <AttachmentGallery requestId={id} attachments={existing} canEdit onChanged={(v) => setExisting(v.attachments)} onError={setError} />
             )}
-            <AttachmentPicker disabled={sending} onFiles={(files) => setPending((cur) => [...cur, ...files].slice(0, 15))} />
-            <PendingFiles files={pending} disabled={sending} onRemove={(i) => setPending((cur) => cur.filter((_, k) => k !== i))} />
+            <AttachmentPicker disabled={sending} onFiles={(files) => setPending((cur) => [...cur, ...toPending(files)].slice(0, 15))} />
+            <PendingFiles
+              items={pending}
+              disabled={sending}
+              onRotate={(i, d) => setPending((cur) => cur.map((it, k) => (k === i ? { ...it, rotate: it.rotate + d } : it)))}
+              onRemove={(i) => setPending((cur) => cur.filter((_, k) => k !== i))}
+            />
           </section>
 
           {error && <div className={styles.error} role="alert">{error}</div>}
