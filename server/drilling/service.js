@@ -498,6 +498,10 @@ function summaries(rows, email) {
       initiator: personCard(r.initiator_email).fullName,
       itemsCount: items.length,
       attachmentsCount: db().prepare('SELECT COUNT(*) AS n FROM drilling_attachments WHERE request_id = ?').get(r.id).n,
+      // коротко, что просят сделать — чтобы не открывать каждую заявку ради состава работ
+      works: items.slice(0, 3).map((i) => (i.workType === 'drill'
+        ? `Сверление Ø ${i.diameterMm} мм — ${i.quantity} шт, ${i.material}`
+        : `Резка, толщина ${String(i.thicknessCm).replace('.', ',')} см — ${String(i.quantity).replace('.', ',')} м.п., ${i.material}`)),
       places: [...new Set(items.map((i) => `${i.object}, ${i.position}`))].slice(0, 3),
     };
   });

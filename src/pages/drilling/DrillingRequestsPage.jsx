@@ -115,6 +115,8 @@ const DrillingRequestsPage = () => {
           <span className={styles.rowNum}>№ {r.id}</span>
           <span className={styles.rowMain}>
             <div className={styles.rowPlaces}>{r.places.join("; ")}{r.itemsCount > r.places.length ? "…" : ""}</div>
+            {r.works?.map((w) => <div key={w} className={styles.rowWorks}>{w}</div>)}
+            {r.itemsCount > (r.works?.length || 0) && <div className={styles.rowWorks}>…и ещё строк: {r.itemsCount - r.works.length}</div>}
             <div className={styles.rowMeta}>
               {fmtDateTime(r.createdAt)} · {r.initiator} · строк: {r.itemsCount}{r.attachmentsCount > 0 ? ` · 📎 ${r.attachmentsCount}` : ""}{r.round > 1 ? ` · круг ${r.round}` : ""}
             </div>
@@ -122,12 +124,15 @@ const DrillingRequestsPage = () => {
           <span className={`${styles.badge} ${styles[`st_${r.status}`]}`}>{STATUS_LABELS[r.status]}</span>
         </Link>
       </div>
-      {r.waitingForMe && (
-        <div className={styles.rowActions}>
-          <button className={styles.btnOk} disabled={busy} onClick={() => acceptOne(r)}>{acceptLabel(r.status)}</button>
-          <button className={styles.btnSmallDanger} disabled={busy} onClick={() => setRejecting([r.id])}>Отклонить</button>
-        </div>
-      )}
+      <div className={styles.rowActions}>
+        <Link to={`/drilling-requests/${r.id}`} className={styles.btnOpen}>Открыть заявку →</Link>
+        {r.waitingForMe && (
+          <>
+            <button className={styles.btnOk} disabled={busy} onClick={() => acceptOne(r)}>{acceptLabel(r.status)}</button>
+            <button className={styles.btnSmallDanger} disabled={busy} onClick={() => setRejecting([r.id])}>Отклонить</button>
+          </>
+        )}
+      </div>
     </div>
   );
 

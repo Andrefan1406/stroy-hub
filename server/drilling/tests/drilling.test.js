@@ -388,3 +388,10 @@ test('«поз.» не дублируется: «поз.56» остаётся «
   assert.equal(positionLabel('пятно I'), 'поз. пятно I');
   assert.equal(positionLabel('12'), 'поз. 12');
 });
+
+test('список: коротко показывает состав работ (чтобы не открывать каждую заявку)', () => {
+  const id = make([drill, cut]);
+  const row = svc.listRequests('init@x.kz', 'mine', false).find((r) => r.id === id);
+  assert.deepEqual(row.works, ['Сверление Ø 100 мм — 5 шт, кирпич', 'Резка, толщина 20,5 см — 11,5 м.п., бетон']);
+  assert.equal(row.itemsCount, 2);
+});

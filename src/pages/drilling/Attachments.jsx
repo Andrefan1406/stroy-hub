@@ -1,6 +1,7 @@
 // Чертежи и фото к заявке на бурение: выбор файлов (PDF, картинки), на телефоне — кнопка
-// «Сфотографировать»; список выбранных; галерея уже приложенных файлов; добавление к готовой
-// заявке. Фото сжимаются перед отправкой (см. prepareForUpload в drillingApi.js).
+// «Сфотографировать»; список выбранных с поворотом снимков; галерея приложенных файлов с
+// просмотром (картинку можно повернуть); добавление к готовой заявке. Фото сжимаются перед
+// отправкой (см. prepareForUpload в drillingApi.js).
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import css from "../../ConcreteRequestPage.module.css";
 import styles from "./Drilling.module.css";
@@ -10,6 +11,9 @@ import { deleteAttachment, fetchAttachmentBlob, localFileProblem, uploadAttachme
 const fmtSize = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1).replace(".", ",")} МБ` : `${Math.max(1, Math.round(bytes / 1024))} КБ`);
 const isTouch = () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
 const isImage = (mimeOrFile) => String(mimeOrFile?.type || mimeOrFile || "").startsWith("image/");
+// Выбранный файл в форме: сам файл и поворот (в градусах по часовой), который применится при отправке.
+export const toPending = (files) => files.map((file) => ({ file, rotate: 0 }));
+const asItem = (x) => (x && x.file ? x : { file: x, rotate: 0 });
 
 // Кнопки выбора. onFiles(File[]) — выбранные файлы (камера отдаёт один снимок).
 export function AttachmentPicker({ onFiles, disabled = false }) {
@@ -36,8 +40,8 @@ export function AttachmentPicker({ onFiles, disabled = false }) {
   );
 }
 
-// Миниатюра выбранного (ещё не отправленного) файла.
-function PendingThumb({ file }) {
+// Миниатюра выбранного (ещё не отправленного) файла; повёрнута так, как уйдёт на сервер.
+function PendingThumb({ file, rotate }) {
   const [src, setSrc] = useState("");
   useEffect(() => {
     if (!isImage(file)) return undefined;
@@ -45,25 +49,34 @@ function PendingThumb({ file }) {
     setSrc(url);
     return () => URL.revokeObjectURL(url);
   }, [file]);
-  return src ? <img src={src} alt="" className={styles.thumbImg} /> : <div className={styles.thumbIcon} aria-hidden="true">📄</div>;
+  return src
+    ? <img src={src} alt="" className={`${styles.thumbImg} ${styles.thumbRot}`} style={{ transform: `rotate(${rotate}deg)` }} />
+    : <div className={styles.thumbIcon} aria-hidden="true">📄</div>;
 }
 
-// Список выбранных файлов формы: имя, размер, замечание (если файл не подойдёт), кнопка «убрать».
-export function PendingFiles({ files, onRemove, disabled = false }) {
-  if (!files.length) return null;
+// Список выбранных файлов формы: имя, размер, замечание (если файл не подойдёт), поворот снимка, «убрать».
+export function PendingFiles({ items, onRotate, onRemove, disabled = false }) {
+  if (!items.length) return null;
   return (
     <ul className={styles.fileList}>
-      {files.map((f, i) => {
-        const problem = localFileProblem(f);
+      {items.map((raw, i) => {
+        const { file, rotate } = asItem(raw);
+        const problem = localFileProblem(file);
         return (
-          <li key={`${f.name}-${f.size}-${i}`} className={styles.fileCard}>
-            <PendingThumb file={f} />
+          <li key={`${file.name}-${file.size}-${i}`} className={styles.fileCard}>
+            <PendingThumb file={file} rotate={rotate} />
             <div className={styles.fileMeta}>
-              <div className={styles.fileName} title={f.name}>{f.name}</div>
-              <div className={styles.fileSub}>{fmtSize(f.size)}</div>
+              <div className={styles.fileName} title={file.name}>{file.name}</div>
+              <div className={styles.fileSub}>{fmtSize(file.size)}</div>
               {problem && <div className={css.fieldError}>{problem}</div>}
+              {isImage(file) && (
+                <div className={styles.rotateBar}>
+                  <button type="button" className={styles.rotateBtn} disabled={disabled} onClick={() => onRotate(i, -90)} title="Повернуть влево" aria-label={`Повернуть влево ${file.name}`}>⟲</button>
+                  <button type="button" className={styles.rotateBtn} disabled={disabled} onClick={() => onRotate(i, 90)} title="Повернуть вправо" aria-label={`Повернуть вправо ${file.name}`}>⟳</button>
+                </div>
+              )}
             </div>
-            <button type="button" className={styles.fileRemove} disabled={disabled} onClick={() => onRemove(i)} aria-label={`Убрать ${f.name}`}>×</button>
+            <button type="button" className={styles.fileRemove} disabled={disabled} onClick={() => onRemove(i)} aria-label={`Убрать ${file.name}`}>×</button>
           </li>
         );
       })}
@@ -71,15 +84,16 @@ export function PendingFiles({ files, onRemove, disabled = false }) {
   );
 }
 
-// Загружает файлы по очереди; возвращает [{ name, error }] по тем, что не удалось.
-export async function uploadMany(requestId, files, onProgress) {
+// Загружает файлы по очереди (с учётом поворота); возвращает [{ name, error }] по тем, что не удалось.
+export async function uploadMany(requestId, items, onProgress) {
   const failed = [];
-  for (let i = 0; i < files.length; i += 1) {
-    onProgress?.(i + 1, files.length);
+  for (let i = 0; i < items.length; i += 1) {
+    const { file, rotate } = asItem(items[i]);
+    onProgress?.(i + 1, items.length);
     try {
-      await uploadAttachment(requestId, files[i]);
+      await uploadAttachment(requestId, file, rotate);
     } catch (err) {
-      failed.push({ name: files[i].name, error: err.message });
+      failed.push({ name: file.name, error: err.message });
     }
   }
   return failed;
@@ -98,9 +112,42 @@ function Thumb({ requestId, att }) {
   return src ? <img src={src} alt={att.name} className={styles.thumbImg} /> : <div className={styles.thumbIcon} aria-hidden="true">{isImage(att.mime) ? "🖼" : "📄"}</div>;
 }
 
-// Открывает файл в новой вкладке. Вкладку открываем сразу (по нажатию), а адрес подставляем, когда
-// файл загружен: иначе браузер на телефоне блокирует «всплывающее окно».
-async function openInTab(requestId, att, onError) {
+// Просмотр картинки на весь экран: поворот влево/вправо (только для просмотра — файл не меняется), закрытие по Esc.
+function ImageViewer({ url, name, onClose }) {
+  const [rotate, setRotate] = useState(0);
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowLeft") setRotate((r) => r - 90);
+      if (e.key === "ArrowRight") setRotate((r) => r + 90);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const sideways = Math.abs(rotate / 90) % 2 === 1;
+  return (
+    <div className={styles.viewer} role="dialog" aria-modal="true" aria-label={name}>
+      <div className={styles.viewerBar}>
+        <div className={styles.viewerName} title={name}>{name}</div>
+        <button type="button" className={styles.viewerBtn} onClick={() => setRotate((r) => r - 90)} aria-label="Повернуть влево">⟲ Влево</button>
+        <button type="button" className={styles.viewerBtn} onClick={() => setRotate((r) => r + 90)} aria-label="Повернуть вправо">⟳ Вправо</button>
+        <button type="button" className={styles.viewerBtn} onClick={onClose}>Закрыть</button>
+      </div>
+      <div className={styles.viewerStage} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <img
+          src={url}
+          alt={name}
+          className={styles.viewerImg}
+          style={{ transform: `rotate(${rotate}deg)`, maxWidth: sideways ? "82vh" : "96vw", maxHeight: sideways ? "96vw" : "82vh" }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// PDF открываем в новой вкладке: вкладку открываем сразу (по нажатию), а адрес подставляем, когда файл
+// загружен, иначе браузер на телефоне блокирует «всплывающее окно».
+async function openPdfInTab(requestId, att, onError) {
   const tab = window.open("", "_blank");
   try {
     const blob = await fetchAttachmentBlob(requestId, att.id);
@@ -116,7 +163,22 @@ async function openInTab(requestId, att, onError) {
 // Галерея приложенных файлов. canEdit — автор может удалять (onChanged получает обновлённую заявку).
 export function AttachmentGallery({ requestId, attachments, canEdit = false, onChanged, onError }) {
   const [confirm, confirmDialog] = useConfirm();
-  if (!attachments.length) return null;
+  const [viewer, setViewer] = useState(null); // { url, name } — открытая на весь экран картинка
+  const closeViewer = useCallback(() => {
+    setViewer((v) => { if (v) URL.revokeObjectURL(v.url); return null; });
+  }, []);
+  if (!attachments.length) return confirmDialog;
+
+  const open = async (att) => {
+    if (!isImage(att.mime)) return openPdfInTab(requestId, att, onError);
+    try {
+      const blob = await fetchAttachmentBlob(requestId, att.id);
+      setViewer({ url: URL.createObjectURL(blob), name: att.name });
+    } catch (err) {
+      onError?.(err.message);
+    }
+    return undefined;
+  };
 
   const remove = async (att) => {
     if (!(await confirm({ title: "Удалить файл?", text: att.name, confirmLabel: "Удалить", danger: true }))) return;
@@ -132,43 +194,61 @@ export function AttachmentGallery({ requestId, attachments, canEdit = false, onC
       <ul className={styles.fileList}>
         {attachments.map((a) => (
           <li key={a.id} className={styles.fileCard}>
-            <button type="button" className={styles.thumbBtn} onClick={() => openInTab(requestId, a, onError)} aria-label={`Открыть ${a.name}`}>
+            <button type="button" className={styles.thumbBtn} onClick={() => open(a)} aria-label={`Открыть ${a.name}`}>
               <Thumb requestId={requestId} att={a} />
             </button>
             <div className={styles.fileMeta}>
               <div className={styles.fileName} title={a.name}>{a.name}</div>
               <div className={styles.fileSub}>{fmtSize(a.size)}</div>
-              <button type="button" className={styles.linkBtn} onClick={() => openInTab(requestId, a, onError)}>Открыть</button>
+              <button type="button" className={styles.linkBtn} onClick={() => open(a)}>{isImage(a.mime) ? "Открыть, повернуть" : "Открыть"}</button>
             </div>
             {canEdit && <button type="button" className={styles.fileRemove} onClick={() => remove(a)} aria-label={`Удалить ${a.name}`}>×</button>}
           </li>
         ))}
       </ul>
       {confirmDialog}
+      {viewer && <ImageViewer url={viewer.url} name={viewer.name} onClose={closeViewer} />}
     </>
   );
 }
 
-// Добавление файлов к уже поданной заявке (пока её не приняли): выбрал — сразу ушло.
+// Добавление файлов к уже поданной заявке (пока её не приняли): выбрал, при необходимости повернул, нажал «Загрузить».
 export function AttachmentAdder({ requestId, remaining, onDone, onError }) {
+  const [items, setItems] = useState([]);
   const [progress, setProgress] = useState(null); // { i, n }
-  const add = useCallback(async (files) => {
-    if (files.length > remaining) {
+
+  const pick = (files) => {
+    if (items.length + files.length > remaining) {
       onError?.(`Можно добавить ещё не больше ${remaining} файл(ов)`);
       return;
     }
-    const problems = files.map((f) => localFileProblem(f)).filter(Boolean);
-    if (problems.length) { onError?.(problems[0]); return; }
-    const failed = await uploadMany(requestId, files, (i, n) => setProgress({ i, n }));
+    setItems((cur) => [...cur, ...toPending(files)]);
+  };
+
+  const send = async () => {
+    const problem = items.map((it) => localFileProblem(it.file)).find(Boolean);
+    if (problem) { onError?.(problem); return; }
+    const failed = await uploadMany(requestId, items, (i, n) => setProgress({ i, n }));
     setProgress(null);
+    setItems(failed.length ? items.filter((it) => failed.some((f) => f.name === it.file.name)) : []);
     if (failed.length) onError?.(`Не загружено: ${failed.map((f) => `${f.name} — ${f.error}`).join("; ")}`);
     onDone?.();
-  }, [requestId, remaining, onDone, onError]);
+  };
 
   return (
     <div>
-      <AttachmentPicker onFiles={add} disabled={!!progress || remaining <= 0} />
-      {progress && <div className={styles.hint}>Загружаю файл {progress.i} из {progress.n}…</div>}
+      <AttachmentPicker onFiles={pick} disabled={!!progress || remaining <= 0} />
+      <PendingFiles
+        items={items}
+        disabled={!!progress}
+        onRotate={(i, d) => setItems((cur) => cur.map((it, k) => (k === i ? { ...it, rotate: it.rotate + d } : it)))}
+        onRemove={(i) => setItems((cur) => cur.filter((_, k) => k !== i))}
+      />
+      {items.length > 0 && (
+        <button type="button" className={css.btnPrimary} style={{ marginTop: 10 }} disabled={!!progress} onClick={send}>
+          {progress ? `Загружаю файл ${progress.i} из ${progress.n}…` : `Загрузить (${items.length})`}
+        </button>
+      )}
       {remaining <= 0 && <div className={styles.hint}>Достигнут предел числа файлов.</div>}
     </div>
   );

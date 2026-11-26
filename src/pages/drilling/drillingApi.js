@@ -138,8 +138,10 @@ export function localFileProblem(file) {
 
 // Фото с телефона — 5–12 МБ: перед отправкой уменьшаем до JPEG (до 2400 px), текст чертежа остаётся читаемым.
 // PDF и лёгкие картинки уходят как есть; если картинку не удалось прочитать — тоже как есть.
-export async function prepareForUpload(file) {
-  if (!String(file.type).startsWith("image/") || file.size < COMPRESS_FROM) return file;
+// rotate — поворот по часовой стрелке в градусах (кратно 90), выбранный пользователем.
+export async function prepareForUpload(file, rotate = 0) {
+  const turn = ((rotate % 360) + 360) % 360;
+  if (!String(file.type).startsWith("image/") || (file.size < COMPRESS_FROM && turn === 0)) return file;
   try {
     let bitmap;
     try {
@@ -148,23 +150,28 @@ export async function prepareForUpload(file) {
       bitmap = await createImageBitmap(file);
     }
     const scale = Math.min(1, IMAGE_SIDE / Math.max(bitmap.width, bitmap.height));
+    const w = Math.round(bitmap.width * scale);
+    const h = Math.round(bitmap.height * scale);
     const canvas = document.createElement("canvas");
-    canvas.width = Math.round(bitmap.width * scale);
-    canvas.height = Math.round(bitmap.height * scale);
+    canvas.width = turn % 180 === 0 ? w : h;
+    canvas.height = turn % 180 === 0 ? h : w;
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff"; // у PNG с прозрачностью фон иначе станет чёрным
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((turn * Math.PI) / 180);
+    ctx.drawImage(bitmap, -w / 2, -h / 2, w, h);
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
-    if (blob && blob.size < file.size) return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
+    // повернутый файл отдаём всегда; без поворота — только если стал легче
+    if (blob && (turn !== 0 || blob.size < file.size)) return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
   } catch {
     /* отправим исходный файл */
   }
   return file;
 }
 
-export async function uploadAttachment(id, file) {
-  const prepared = await prepareForUpload(file);
+export async function uploadAttachment(id, file, rotate = 0) {
+  const prepared = await prepareForUpload(file, rotate);
   if (prepared.size > MAX_FILE_MB * 1024 * 1024) throw new Error(`Файл больше ${MAX_FILE_MB} МБ`);
   const res = await fetch(`${API_URL}${BASE}/requests/${id}/attachments?name=${encodeURIComponent(prepared.name)}`, {
     method: "POST",
