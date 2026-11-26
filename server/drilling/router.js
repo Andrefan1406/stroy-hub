@@ -110,6 +110,28 @@ router.post('/requests/:id/items-done', wrap((req, res) => {
   res.json(viewOf(req, idOf(req)));
 }));
 
+// Чертежи и фото к заявке. Файл уходит телом запроса как есть (application/octet-stream), имя —
+// в ?name=; тип проверяется по содержимому. Автор — пока заявку не приняли; видят все, кто видит заявку.
+const rawFile = express.raw({ type: () => true, limit: '16mb' });
+router.post('/requests/:id/attachments', rawFile, wrap((req, res) => {
+  svc.addAttachment(idOf(req), req.userEmail, req.query.name, req.body);
+  res.status(201).json(viewOf(req, idOf(req)));
+}));
+
+router.get('/requests/:id/attachments/:aid', wrap((req, res) => {
+  const f = svc.getAttachmentFile(idOf(req), Number(req.params.aid), req.userEmail, isAdmin(req.userEmail));
+  res.setHeader('Content-Type', f.mime);
+  res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, max-age=600');
+  res.sendFile(f.file);
+}));
+
+router.delete('/requests/:id/attachments/:aid', wrap((req, res) => {
+  svc.removeAttachment(idOf(req), Number(req.params.aid), req.userEmail);
+  res.json(viewOf(req, idOf(req)));
+}));
+
 router.get('/requests/:id/docx', wrap(async (req, res) => {
   const view = viewOf(req, idOf(req)); // заодно проверка доступа
   if (!view.permissions.download) return res.status(409).json({ error: 'Документ доступен после принятия заявки в работу' });

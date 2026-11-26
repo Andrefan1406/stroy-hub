@@ -2,10 +2,11 @@
 // роли — согласовать/принять/отклонить (ответственный), править/перезапустить/отменить и
 // отмечать выполнение (автор: по строке или сразу все), скачать Word, распечатать / сохранить в PDF.
 import React, { useCallback, useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import css from "../../ConcreteRequestPage.module.css";
 import styles from "./Drilling.module.css";
 import DrillingNav from "./DrillingNav";
+import { AttachmentAdder, AttachmentGallery } from "./Attachments";
 import RejectDialog from "./RejectDialog";
 import { useConfirm } from "../../components/ConfirmDialog";
 import {
@@ -23,6 +24,8 @@ function eventText(e) {
     case "engineer_rejected": return <>Главный инженер отклонил — заявка возвращена автору. Причина: <span className={styles.reason}>{e.reason}</span></>;
     case "restarted": return "Заявка отправлена заново";
     case "edited": return "Заявка исправлена автором";
+    case "attached": return `Прикреплён файл: ${e.reason}`;
+    case "detached": return `Файл удалён: ${e.reason}`;
     case "rejected": return <>{who} отклонила. Причина: <span className={styles.reason}>{e.reason}</span></>;
     case "forwarded": return "Передана субподрядчикам";
     case "returned": return "Возвращена автору — отказали все исполнители";
@@ -51,6 +54,8 @@ const DrillingRequestDetailPage = () => {
   const [facts, setFacts] = useState({}); // itemId -> { fact, comment } для ещё не отмеченных строк
   const [rowErrors, setRowErrors] = useState({}); // itemId -> текст ошибки
   const [confirm, confirmDialog] = useConfirm();
+  const location = useLocation();
+  const uploadErrors = location.state?.uploadErrors || []; // файлы, которые не ушли при подаче заявки
 
   const load = useCallback(async () => {
     try {
@@ -229,6 +234,22 @@ const DrillingRequestDetailPage = () => {
             )}
           </div>
         )}
+
+        <div className={styles.section}>
+          <h2 className={styles.sectionTitle}>Чертежи и фото{req.attachments.length ? ` (${req.attachments.length})` : ""}</h2>
+          {uploadErrors.length > 0 && (
+            <div className={`${styles.error} no-print`} role="alert">
+              Заявка подана, но не загрузились файлы: {uploadErrors.map((f) => `${f.name} — ${f.error}`).join("; ")}. Добавьте их ниже.
+            </div>
+          )}
+          {req.attachments.length === 0 && <div className={styles.empty}>Файлы не приложены.</div>}
+          <AttachmentGallery requestId={id} attachments={req.attachments} canEdit={p.attach} onChanged={setReq} onError={setError} />
+          {p.attach && (
+            <div className="no-print" style={{ marginTop: 12 }}>
+              <AttachmentAdder requestId={id} remaining={req.attachmentLimits.maxFiles - req.attachments.length} onDone={load} onError={setError} />
+            </div>
+          )}
+        </div>
 
         <div className={styles.section}>
           <h2 className={styles.sectionTitle}>Журнал согласования</h2>

@@ -116,7 +116,7 @@ const DrillingRequestsPage = () => {
           <span className={styles.rowMain}>
             <div className={styles.rowPlaces}>{r.places.join("; ")}{r.itemsCount > r.places.length ? "…" : ""}</div>
             <div className={styles.rowMeta}>
-              {fmtDateTime(r.createdAt)} · {r.initiator} · строк: {r.itemsCount}{r.round > 1 ? ` · круг ${r.round}` : ""}
+              {fmtDateTime(r.createdAt)} · {r.initiator} · строк: {r.itemsCount}{r.attachmentsCount > 0 ? ` · 📎 ${r.attachmentsCount}` : ""}{r.round > 1 ? ` · круг ${r.round}` : ""}
             </div>
           </span>
           <span className={`${styles.badge} ${styles[`st_${r.status}`]}`}>{STATUS_LABELS[r.status]}</span>

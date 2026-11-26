@@ -119,3 +119,67 @@ export async function downloadRegistryXlsx(filters) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
+
+// ---------- чертежи и фото ----------
+export const MAX_FILE_MB = 15;
+const IMAGE_SIDE = 2400; // длинная сторона фото после сжатия, пикселей
+const COMPRESS_FROM = 1.5 * 1024 * 1024; // картинки легче не трогаем
+
+// Подходит ли выбранный файл (PDF или картинка); пустая строка — подходит.
+export function localFileProblem(file) {
+  const type = String(file.type || "").toLowerCase();
+  const isPdf = type === "application/pdf" || /\.pdf$/i.test(file.name);
+  const isImage = type.startsWith("image/") || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name);
+  if (!isPdf && !isImage) return "Допустимы PDF и картинки";
+  if (isPdf && file.size > MAX_FILE_MB * 1024 * 1024) return `PDF больше ${MAX_FILE_MB} МБ — уменьшите файл`;
+  if (isImage && file.size > 60 * 1024 * 1024) return "Картинка слишком большая";
+  return "";
+}
+
+// Фото с телефона — 5–12 МБ: перед отправкой уменьшаем до JPEG (до 2400 px), текст чертежа остаётся читаемым.
+// PDF и лёгкие картинки уходят как есть; если картинку не удалось прочитать — тоже как есть.
+export async function prepareForUpload(file) {
+  if (!String(file.type).startsWith("image/") || file.size < COMPRESS_FROM) return file;
+  try {
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(file, { imageOrientation: "from-image" }); // поворот по EXIF
+    } catch {
+      bitmap = await createImageBitmap(file);
+    }
+    const scale = Math.min(1, IMAGE_SIDE / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; // у PNG с прозрачностью фон иначе станет чёрным
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+    if (blob && blob.size < file.size) return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
+  } catch {
+    /* отправим исходный файл */
+  }
+  return file;
+}
+
+export async function uploadAttachment(id, file) {
+  const prepared = await prepareForUpload(file);
+  if (prepared.size > MAX_FILE_MB * 1024 * 1024) throw new Error(`Файл больше ${MAX_FILE_MB} МБ`);
+  const res = await fetch(`${API_URL}${BASE}/requests/${id}/attachments?name=${encodeURIComponent(prepared.name)}`, {
+    method: "POST",
+    headers: { ...(await authHeaders()), "Content-Type": "application/octet-stream" },
+    body: prepared,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || (res.status === 413 ? "Файл слишком большой" : `Ошибка сервера (HTTP ${res.status})`));
+  }
+  return res.json();
+}
+
+// Файл отдаётся только с токеном, поэтому картинки и PDF получаем как blob.
+export async function fetchAttachmentBlob(id, attachmentId) {
+  return (await call(`${BASE}/requests/${id}/attachments/${attachmentId}`)).blob();
+}
+export const deleteAttachment = (id, attachmentId) => json(`${BASE}/requests/${id}/attachments/${attachmentId}`, { method: "DELETE" });

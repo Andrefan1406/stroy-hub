@@ -8,8 +8,9 @@ import css from "../../ConcreteRequestPage.module.css";
 import styles from "./Drilling.module.css";
 import { Field, SelectField } from "../../components/RequestFormFields";
 import DrillingNav from "./DrillingNav";
+import { AttachmentGallery, AttachmentPicker, PendingFiles, uploadMany } from "./Attachments";
 import { objectPositionOptions } from "../../data/constructionData";
-import { createRequest, fetchMe, fetchRequest, restartRequest, sanitizeNumber, updateRequest } from "./drillingApi";
+import { createRequest, fetchMe, fetchRequest, localFileProblem, restartRequest, sanitizeNumber, updateRequest } from "./drillingApi";
 
 const OBJECTS = Object.keys(objectPositionOptions);
 const MATERIALS = ["кирпич", "бетон"];
@@ -62,6 +63,9 @@ const DrillingRequestPage = () => {
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(editing);
   const [submitBlock, setSubmitBlock] = useState(""); // почему подача недоступна (роль, нет карточки)
+  const [pending, setPending] = useState([]); // выбранные, ещё не отправленные файлы (чертежи, фото)
+  const [existing, setExisting] = useState([]); // уже приложенные (при правке возвращённой заявки)
+  const [uploadInfo, setUploadInfo] = useState(""); // «Загружаю файл 2 из 5…»
 
   useEffect(() => {
     fetchMe().then((m) => setSubmitBlock(m.canSubmit ? "" : m.submitBlock || "")).catch(() => {});
@@ -72,6 +76,7 @@ const DrillingRequestPage = () => {
     fetchRequest(id)
       .then((req) => {
         if (!req.permissions.edit) throw new Error("Эту заявку сейчас нельзя править");
+        setExisting(req.attachments || []);
         setRows(req.items.map((i) => ({
           object: i.object, position: i.position, workType: i.workType, material: i.material,
           diameterMm: i.diameterMm == null ? "" : String(i.diameterMm),
@@ -101,6 +106,10 @@ const DrillingRequestPage = () => {
       setError("Проверьте поля, отмеченные красным.");
       return;
     }
+    if (pending.some((f) => localFileProblem(f))) {
+      setError("Среди файлов есть неподходящие — уберите их или замените.");
+      return;
+    }
     setSending(true);
     try {
       const lastRow = rows[rows.length - 1];
@@ -112,7 +121,9 @@ const DrillingRequestPage = () => {
       } else {
         req = await createRequest(rows);
       }
-      navigate(`/drilling-requests/${req.id}`);
+      // Заявка уже создана; файлы отправляем следом. Что не загрузилось — покажем на её странице, там можно повторить.
+      const failed = pending.length ? await uploadMany(req.id, pending, (i, n) => setUploadInfo(`Загружаю файл ${i} из ${n}…`)) : [];
+      navigate(`/drilling-requests/${req.id}`, { state: failed.length ? { uploadErrors: failed } : undefined });
     } catch (err) {
       setError(err.message);
       setSending(false);
@@ -211,11 +222,23 @@ const DrillingRequestPage = () => {
             + Добавить строку
           </button>
 
+          <section className={css.card} aria-label="Чертежи и фото">
+            <div className={css.cardHeader}><h2 className={css.cardTitle}>Чертежи и фото</h2></div>
+            <p className={styles.hint}>
+              PDF или картинки (JPEG, PNG, WebP), до 15 файлов, каждый до 15 МБ. Необязательно. Фото с телефона сжимаются автоматически.
+            </p>
+            {editing && (
+              <AttachmentGallery requestId={id} attachments={existing} canEdit onChanged={(v) => setExisting(v.attachments)} onError={setError} />
+            )}
+            <AttachmentPicker disabled={sending} onFiles={(files) => setPending((cur) => [...cur, ...files].slice(0, 15))} />
+            <PendingFiles files={pending} disabled={sending} onRemove={(i) => setPending((cur) => cur.filter((_, k) => k !== i))} />
+          </section>
+
           {error && <div className={styles.error} role="alert">{error}</div>}
 
           <div className={css.actions}>
             <button type="submit" className={css.btnPrimary} disabled={sending || !!submitBlock}>
-              {sending ? "Отправка…" : editing ? "Сохранить и отправить заново" : "Отправить заявку"}
+              {sending ? (uploadInfo || "Отправка…") : editing ? "Сохранить и отправить заново" : "Отправить заявку"}
             </button>
           </div>
         </form>

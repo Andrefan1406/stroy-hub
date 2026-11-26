@@ -15,9 +15,13 @@
 // После возврата автор может исправить и перезапустить: новый круг, снова с главного
 // инженера. Люди (роль, ФИО, должность, компания бурильщика) берутся из rides.users —
 // они назначаются главным админом на /rides-admin. События — в drilling_events.
-const { getWriteDb } = require('../db');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { getWriteDb, DB_PATH } = require('../db');
 const { getWriteDb: ridesDb } = require('../rides/db');
 const { validateItems, validateFact } = require('./validation');
+const { MAX_FILE_BYTES, MAX_FILES_PER_REQUEST, detectFileType, safeFileName } = require('./files');
 
 class DrillingError extends Error {
   constructor(message, status = 400) {
@@ -347,6 +351,70 @@ function markItemDone(id, itemId, email, rawFact, comment) {
   return markItemsDone(id, email, [{ itemId, factQuantity: rawFact, comment }]);
 }
 
+// ---------- вложения: чертежи и фото ----------
+
+// Менять набор файлов может автор, пока заявку не приняли (и после возврата).
+const ATTACH_STATUSES = [...OPEN_STATUSES, 'returned'];
+const filesDir = () => process.env.DRILLING_FILES_DIR || path.join(path.dirname(DB_PATH), 'drilling-files');
+
+function listAttachments(requestId) {
+  return db().prepare('SELECT id, original_name AS name, mime, size, uploaded_by AS uploadedBy, uploaded_at AS uploadedAt FROM drilling_attachments WHERE request_id = ? ORDER BY id')
+    .all(requestId);
+}
+
+function addAttachment(requestId, email, originalName, buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw new DrillingError('Файл пустой');
+  const type = detectFileType(buffer);
+  if (buffer.length > MAX_FILE_BYTES) throw new DrillingError(`Файл больше ${MAX_FILE_BYTES / 1024 / 1024} МБ`, 413);
+  if (!type) throw new DrillingError('Допустимы файлы PDF и картинки (JPEG, PNG, WebP)', 415);
+  return tx(() => {
+    const row = getRequestRow(requestId);
+    requireInitiator(row, email);
+    if (!ATTACH_STATUSES.includes(row.status)) throw new DrillingError('Файлы можно менять, пока заявку не приняли', 409);
+    const count = db().prepare('SELECT COUNT(*) AS n FROM drilling_attachments WHERE request_id = ?').get(requestId).n;
+    if (count >= MAX_FILES_PER_REQUEST) throw new DrillingError(`К заявке можно приложить не больше ${MAX_FILES_PER_REQUEST} файлов`, 409);
+    const name = safeFileName(originalName, type.ext);
+    const stored = `${crypto.randomBytes(16).toString('hex')}${type.ext}`;
+    fs.mkdirSync(filesDir(), { recursive: true });
+    fs.writeFileSync(path.join(filesDir(), stored), buffer);
+    try {
+      const id = db().prepare(
+        'INSERT INTO drilling_attachments (request_id, original_name, stored_name, mime, size, uploaded_by, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(requestId, name, stored, type.mime, buffer.length, normEmail(email), now()).lastInsertRowid;
+      db().prepare('UPDATE drilling_requests SET updated_at = ? WHERE id = ?').run(now(), requestId);
+      logEvent(requestId, row.round, 'attached', { actor: normEmail(email), reason: name });
+      return Number(id);
+    } catch (err) {
+      fs.rmSync(path.join(filesDir(), stored), { force: true }); // запись не удалась — файл не оставляем
+      throw err;
+    }
+  });
+}
+
+function removeAttachment(requestId, attachmentId, email) {
+  return tx(() => {
+    const row = getRequestRow(requestId);
+    requireInitiator(row, email);
+    if (!ATTACH_STATUSES.includes(row.status)) throw new DrillingError('Файлы можно менять, пока заявку не приняли', 409);
+    const att = db().prepare('SELECT * FROM drilling_attachments WHERE id = ? AND request_id = ?').get(attachmentId, requestId);
+    if (!att) throw new DrillingError('Файл не найден', 404);
+    db().prepare('DELETE FROM drilling_attachments WHERE id = ?').run(att.id);
+    fs.rmSync(path.join(filesDir(), att.stored_name), { force: true });
+    logEvent(requestId, row.round, 'detached', { actor: normEmail(email), reason: att.original_name });
+  });
+}
+
+// Файл для просмотра/скачивания — тем, кто вправе видеть заявку.
+function getAttachmentFile(requestId, attachmentId, email, isAdmin) {
+  const row = getRequestRow(requestId);
+  if (!involvement(row, email, isAdmin).canSee) throw new DrillingError('Нет доступа к заявке', 403);
+  const att = db().prepare('SELECT * FROM drilling_attachments WHERE id = ? AND request_id = ?').get(attachmentId, requestId);
+  if (!att) throw new DrillingError('Файл не найден', 404);
+  const file = path.join(filesDir(), att.stored_name);
+  if (!fs.existsSync(file)) throw new DrillingError('Файл не найден на сервере', 404);
+  return { file, mime: att.mime, name: att.original_name };
+}
+
 // ---------- чтение ----------
 
 // Что пользователь значит для заявки. Главный инженер видит все заявки (все проходят
@@ -405,11 +473,14 @@ function getRequestView(id, email, isAdmin) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     items,
+    attachments: listAttachments(id),
+    attachmentLimits: { maxFiles: MAX_FILES_PER_REQUEST, maxMb: MAX_FILE_BYTES / 1024 / 1024 },
     events: getEvents(id).map((e) => ({ ...e, actorName: e.actor ? personCard(e.actor).fullName : null })),
     permissions: {
       accept: inv.waitingForMe,
       reject: inv.waitingForMe,
       cancel: inv.isInitiator && [...OPEN_STATUSES, 'returned'].includes(row.status),
+      attach: inv.isInitiator && ATTACH_STATUSES.includes(row.status), // добавлять и удалять чертежи и фото
       edit: inv.isInitiator && row.status === 'returned',
       restart: inv.isInitiator && row.status === 'returned',
       markDone: inv.isInitiator && row.status === 'accepted',
@@ -426,6 +497,7 @@ function summaries(rows, email) {
       waitingForMe: involvement(r, email, false).waitingForMe, // можно согласовать/принять/отклонить прямо из списка
       initiator: personCard(r.initiator_email).fullName,
       itemsCount: items.length,
+      attachmentsCount: db().prepare('SELECT COUNT(*) AS n FROM drilling_attachments WHERE request_id = ?').get(r.id).n,
       places: [...new Set(items.map((i) => `${i.object}, ${i.position}`))].slice(0, 3),
     };
   });
@@ -603,4 +675,5 @@ module.exports = {
   DrillingError, seedDefaults, listCompanies, saveCompany, isSubcontractor,
   companiesOfUser, createRequest, updateRequest, restartRequest, cancelRequest, respond, markItemDone, markItemsDone,
   getRequestView, listRequests, counters, profile, getDocData, registry,
+  addAttachment, removeAttachment, getAttachmentFile,
 };

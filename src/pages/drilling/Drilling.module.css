@@ -100,3 +100,16 @@
 .printOnly { display: none; }
 @media print { .printOnly { display: block; } }
 @media (max-width: 640px) { .rowTop { grid-template-columns: auto minmax(0, 1fr); } .rowTop .badge { grid-column: 2; justify-self: start; } }
+
+/* чертежи и фото */
+.pickerRow { display: flex; flex-wrap: wrap; gap: 10px; }
+.fileList { list-style: none; margin: 12px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.fileCard { position: relative; display: flex; gap: 10px; align-items: center; padding: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; min-width: 0; }
+.thumbImg { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; background: #e8ebf0; flex: none; }
+.thumbIcon { width: 64px; height: 64px; border-radius: 8px; background: #e8ebf0; display: flex; align-items: center; justify-content: center; font-size: 28px; flex: none; }
+.thumbBtn { border: none; background: none; padding: 0; cursor: pointer; flex: none; }
+.fileMeta { min-width: 0; flex: 1; }
+.fileName { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fileSub { font-size: 12px; color: var(--muted); }
+.fileRemove { flex: none; min-width: 36px; min-height: 36px; border: 1px solid var(--danger-border); border-radius: 8px; background: var(--danger-bg); color: var(--danger); font-size: 20px; cursor: pointer; }
+.linkBtn { border: none; background: none; padding: 0; color: var(--brand); font: inherit; font-size: 13px; text-decoration: underline; cursor: pointer; }

@@ -411,6 +411,19 @@ CREATE TABLE IF NOT EXISTS drilling_events (
   reason     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_drilling_events_request ON drilling_events(request_id);
+-- Чертежи и фото к заявке (PDF, JPEG, PNG, WebP). Сами файлы лежат на диске рядом с базой
+-- (drilling-files/, переопределяется DRILLING_FILES_DIR) под случайными именами; здесь — метаданные.
+CREATE TABLE IF NOT EXISTS drilling_attachments (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id    INTEGER NOT NULL,
+  original_name TEXT NOT NULL,
+  stored_name   TEXT NOT NULL UNIQUE,
+  mime          TEXT NOT NULL,
+  size          INTEGER NOT NULL,
+  uploaded_by   TEXT NOT NULL,
+  uploaded_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_drilling_attachments_request ON drilling_attachments(request_id);
 
 CREATE TABLE IF NOT EXISTS gpr_report_check_rules (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
