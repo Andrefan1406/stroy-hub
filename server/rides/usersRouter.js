@@ -14,7 +14,7 @@
 // (rejectSiteAdminTarget); свои ФИО и телефон он вписывает сам (PATCH /me).
 //
 // Роли: employee/dispatcher/driver — система поездок; staff (сотрудник без
-// доступа к поездкам), chief_engineer, prom_alyans, driller — заявки на бурение
+// доступа к поездкам), chief_engineer, prom_director, prom_alyans, driller — заявки на бурение
 // и резку (server/drilling/). У них доступ ко всему сайту зашит в роль:
 // driller заперт на своей странице, остальные пользуются всем сайтом.
 const express = require('express');
@@ -158,8 +158,8 @@ router.get('/', requireRoleOrSiteAdmin('dispatcher'), async (req, res) => {
 // Роли, которые назначает главный админ. Доступ ко всему сайту у ролей
 // по заявкам на бурение зашит: бурильщик заперт на своей странице, остальные
 // пользуются всем сайтом. Для ролей поездок флаг выбирает админ.
-const ASSIGNABLE_ROLES = ['employee', 'dispatcher', 'driver', 'staff', 'chief_engineer', 'prom_alyans', 'driller'];
-const FIXED_SITE_ACCESS = { staff: true, chief_engineer: true, prom_alyans: true, driller: false };
+const ASSIGNABLE_ROLES = ['employee', 'dispatcher', 'driver', 'staff', 'chief_engineer', 'prom_director', 'prom_alyans', 'driller'];
+const FIXED_SITE_ACCESS = { staff: true, chief_engineer: true, prom_director: true, prom_alyans: true, driller: false };
 const PHONE_REQUIRED_ROLES = ['employee', 'dispatcher', 'driver'];
 
 const roleAssignmentSchema = z.object({
@@ -200,6 +200,12 @@ router.put('/:email', requireSiteAdmin, rejectSiteAdminTarget, (req, res) => {
     const other = db.prepare("SELECT email, name FROM users WHERE role = 'chief_engineer' AND email != ?").get(email);
     if (other) {
       return res.status(409).json({ error: `Главным инженером уже назначен ${other.name || other.email} (${other.email}). Сначала снимите роль с него.` });
+    }
+  }
+  if (role === 'prom_director') {
+    const other = db.prepare("SELECT email, name FROM users WHERE role = 'prom_director' AND email != ?").get(email);
+    if (other) {
+      return res.status(409).json({ error: `Директором Пром Альянс уже назначен ${other.name || other.email} (${other.email}). Сначала снимите роль с него.` });
     }
   }
 

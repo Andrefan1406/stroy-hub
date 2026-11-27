@@ -10,7 +10,7 @@ import { Field, SelectField } from "../../components/RequestFormFields";
 import DrillingNav from "./DrillingNav";
 import { AttachmentGallery, AttachmentPicker, PendingFiles, toPending, uploadMany } from "./Attachments";
 import { objectPositionOptions } from "../../data/constructionData";
-import { createRequest, fetchMe, fetchRequest, localFileProblem, restartRequest, sanitizeNumber, updateRequest } from "./drillingApi";
+import { createRequest, fetchMe, fetchRequest, localFileProblem, restartRequest, sanitizeNumber, todayIso, updateRequest } from "./drillingApi";
 
 const OBJECTS = Object.keys(objectPositionOptions);
 const MATERIALS = ["кирпич", "бетон"];
@@ -58,6 +58,7 @@ const DrillingRequestPage = () => {
   const editing = !!id;
   const navigate = useNavigate();
   const [rows, setRows] = useState(() => [editing ? emptyRow() : startRow()]);
+  const [dueDate, setDueDate] = useState(""); // срок исполнения, ГГГГ-ММ-ДД
   const [showErrors, setShowErrors] = useState(false);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
@@ -77,6 +78,7 @@ const DrillingRequestPage = () => {
       .then((req) => {
         if (!req.permissions.edit) throw new Error("Эту заявку сейчас нельзя править");
         setExisting(req.attachments || []);
+        setDueDate(req.dueDate && req.dueDate >= todayIso() ? req.dueDate : ""); // прошедший срок надо назначить заново
         setRows(req.items.map((i) => ({
           object: i.object, position: i.position, workType: i.workType, material: i.material,
           diameterMm: i.diameterMm == null ? "" : String(i.diameterMm),
@@ -97,11 +99,13 @@ const DrillingRequestPage = () => {
   }));
   const setNumber = (index, name, value, integer) => setField(index, name, sanitizeNumber(value, integer));
 
+  const dueError = !dueDate ? "Укажите срок исполнения" : dueDate < todayIso() ? "Срок не может быть в прошлом" : "";
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (sending) return;
     setError("");
-    if (rows.some((r) => Object.keys(rowErrors(r)).length)) {
+    if (rows.some((r) => Object.keys(rowErrors(r)).length) || dueError) {
       setShowErrors(true);
       setError("Проверьте поля, отмеченные красным.");
       return;
@@ -116,10 +120,10 @@ const DrillingRequestPage = () => {
       rememberPlace(lastRow.object, lastRow.position);
       let req;
       if (editing) {
-        await updateRequest(id, rows);
+        await updateRequest(id, rows, dueDate);
         req = await restartRequest(id);
       } else {
-        req = await createRequest(rows);
+        req = await createRequest(rows, dueDate);
       }
       // Заявка уже создана; файлы отправляем следом. Что не загрузилось — покажем на её странице, там можно повторить.
       const failed = pending.length ? await uploadMany(req.id, pending, (i, n) => setUploadInfo(`Загружаю файл ${i} из ${n}…`)) : [];
@@ -141,6 +145,16 @@ const DrillingRequestPage = () => {
         <p className={css.legend}><span className={css.required} aria-hidden="true">*</span> — обязательное поле.</p>
 
         <form onSubmit={handleSubmit} noValidate>
+          <section className={css.card} aria-label="Срок исполнения">
+            <div className={css.cardHeader}><h2 className={css.cardTitle}>Срок исполнения</h2></div>
+            <div className={css.group}>
+              <Field label="Выполнить до" required htmlFor="dueDate" error={showErrors ? dueError : ""} errorId="dueDate-err">
+                <input id="dueDate" type="date" className={`${css.input} ${showErrors && dueError ? css.inputError : ""}`} min={todayIso()}
+                  value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+              </Field>
+            </div>
+          </section>
+
           {rows.map((row, index) => {
             const errs = showErrors ? rowErrors(row) : {};
             const drill = row.workType === "drill";

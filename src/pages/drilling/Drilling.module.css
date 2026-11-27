@@ -26,7 +26,7 @@
 .empty { color: var(--muted); padding: 24px 0; }
 
 .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; white-space: nowrap; }
-.st_engineer, .st_line1, .st_line2 { background: #fff4d6; color: #7a5200; }
+.st_engineer, .st_director, .st_director_decide, .st_line1, .st_line2 { background: #fff4d6; color: #7a5200; }
 .st_returned { background: var(--danger-bg); color: var(--danger); }
 .st_accepted { background: #e3efff; color: #1b4f9c; }
 .st_completed { background: var(--ok-bg); color: var(--ok); }
@@ -137,3 +137,8 @@
 .viewerBtn { min-height: 44px; min-width: 44px; padding: 0 14px; border: 1px solid #fff; border-radius: 10px; background: transparent; color: #fff; font: inherit; font-size: 16px; cursor: pointer; }
 .viewerStage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 8px; }
 .viewerImg { transition: transform 0.15s; }
+
+/* срок исполнения */
+.dueLine { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.overdueBadge { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px; background: var(--danger-bg); color: var(--danger); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.hintLine { font-size: 13px; color: var(--muted); margin: 6px 0 0; }

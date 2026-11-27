@@ -2,13 +2,16 @@
 // по строкам. Все изменения статуса — в транзакции (SQLite синхронный), поэтому
 // «кто первый среагировал, тот и зафиксирован» гарантировано.
 //
-// Путь заявки в каждом круге: главный инженер → линия 1 (Пром Альянс) → линия 2
-// (субподрядчики).
-// - Главный инженер (роль chief_engineer, один): согласует — заявка идёт в линию 1,
+// Путь заявки в каждом круге: главный инженер → директор Пром Альянс → исполнитель
+// Пром Альянс (линия 1) → линия 2 (субподрядчики).
+// - Главный инженер (роль chief_engineer, один): согласует — заявка идёт директору,
 //   отклоняет (с причиной) — сразу возвращается автору. Его собственная заявка этот
-//   этап пропускает и идёт в линию 1.
-// - Линия 1 (роль prom_alyans, несколько равнозначных): любой отказ передаёт заявку
-//   в линию 2; принял первый.
+//   этап пропускает и идёт директору.
+// - Директор Пром Альянс (роль prom_director, один): согласует — заявка идёт исполнителю
+//   Пром Альянс; отказывает (с причиной) — заявка идёт в линию 2 (Жеңіс групп).
+// - Линия 1 — исполнитель Пром Альянс (роль prom_alyans): принимает в работу; отказ
+//   возвращает заявку директору (статус director_decide): он передаёт её в линию 2
+//   или возвращает автору.
 // - Линия 2 (роль driller + компания-субподрядчик): все равнозначны, принимает
 //   первый; автору возвращают, только когда отказали ВСЕ субподрядчики (отказ
 //   компании — первая реакция любого её бурильщика).
@@ -20,7 +23,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { getWriteDb, DB_PATH } = require('../db');
 const { getWriteDb: ridesDb } = require('../rides/db');
-const { validateItems, validateFact } = require('./validation');
+const { validateItems, validateFact, validateDueDate } = require('./validation');
 const { MAX_FILE_BYTES, MAX_FILES_PER_REQUEST, detectFileType, safeFileName } = require('./files');
 
 class DrillingError extends Error {
@@ -35,8 +38,11 @@ const normEmail = (e) => String(e || '').trim().toLowerCase();
 const db = () => getWriteDb();
 
 // Роли, которым подача заявок на бурение закрыта (исполнители не подают сами себе).
-const SUBMIT_FORBIDDEN_ROLES = ['prom_alyans', 'driller'];
-const OPEN_STATUSES = ['engineer', 'line1', 'line2'];
+const SUBMIT_FORBIDDEN_ROLES = ['prom_director', 'prom_alyans', 'driller'];
+const OPEN_STATUSES = ['engineer', 'director', 'director_decide', 'line1', 'line2'];
+const DIRECTOR_STATUSES = ['director', 'director_decide'];
+// События, по которым видно, что заявка доходила до директора (его видимость возвращённых/отменённых).
+const DIRECTOR_EVENTS = ['engineer_approved', 'director_approved', 'director_rejected', 'director_forwarded', 'director_returned', 'returned_to_director'];
 
 // Первичное наполнение: две компании из согласованного сценария.
 function seedDefaults() {
@@ -51,6 +57,8 @@ function seedDefaults() {
 
 const ridesUser = (email) => ridesDb().prepare('SELECT * FROM users WHERE email = ?').get(normEmail(email)) || null;
 const chiefEngineer = () => ridesDb().prepare("SELECT * FROM users WHERE role = 'chief_engineer' ORDER BY id LIMIT 1").get() || null;
+const directorUser = () => ridesDb().prepare("SELECT * FROM users WHERE role = 'prom_director' ORDER BY id LIMIT 1").get() || null;
+const almatyToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Almaty' }).format(new Date());
 
 // ФИО и должность автора/подписанта для документов и списков.
 function personCard(email) {
@@ -158,8 +166,9 @@ function executorStage() {
 function firstStage(initiatorEmail) {
   const chief = chiefEngineer();
   if (!chief) throw new DrillingError('Главный инженер не назначен — обратитесь к администратору', 409);
-  const executors = executorStage(); // проверяем заранее, чтобы заявка не застряла после согласования
-  if (chief.email === normEmail(initiatorEmail)) return executors;
+  if (!directorUser()) throw new DrillingError('Директор Пром Альянс не назначен — обратитесь к администратору', 409);
+  executorStage(); // проверяем заранее, чтобы заявка не застряла после согласования директора
+  if (chief.email === normEmail(initiatorEmail)) return { status: 'director', line: null };
   return { status: 'engineer', line: null };
 }
 
@@ -173,6 +182,13 @@ function submitBlock(email, isAdmin) {
     return { status: 409, message: 'В вашей карточке не заполнены ФИО и должность — обратитесь к администратору' };
   }
   return null;
+}
+
+// Срок исполнения (ставит инициатор): проверка и значение.
+function checkDueDate(raw) {
+  const v = validateDueDate(raw, almatyToday());
+  if (!v.ok) throw new DrillingError(v.error);
+  return v.value;
 }
 
 function writeItems(requestId, items) {
@@ -193,31 +209,33 @@ function requireInitiator(row, email) {
 
 // ---------- действия ----------
 
-function createRequest(email, rawItems, { isAdmin = false } = {}) {
+function createRequest(email, rawItems, { isAdmin = false, dueDate } = {}) {
   const block = submitBlock(email, isAdmin);
   if (block) throw new DrillingError(block.message, block.status);
   const v = validateItems(rawItems);
   if (!v.ok) throw new DrillingError(v.error);
+  const due = checkDueDate(dueDate);
   return tx(() => {
     const first = firstStage(email);
     const t = now();
-    const id = db().prepare('INSERT INTO drilling_requests (initiator_email, status, round, created_at, updated_at) VALUES (?, ?, 1, ?, ?)')
-      .run(normEmail(email), first.status, t, t).lastInsertRowid;
+    const id = db().prepare('INSERT INTO drilling_requests (initiator_email, status, round, created_at, updated_at, due_date) VALUES (?, ?, 1, ?, ?, ?)')
+      .run(normEmail(email), first.status, t, t, due).lastInsertRowid;
     writeItems(id, v.items);
     logEvent(id, 1, 'created', { actor: normEmail(email), line: first.line });
     return Number(id);
   });
 }
 
-function updateRequest(id, email, rawItems) {
+function updateRequest(id, email, rawItems, dueDate) {
   const v = validateItems(rawItems);
   if (!v.ok) throw new DrillingError(v.error);
+  const due = checkDueDate(dueDate);
   return tx(() => {
     const row = getRequestRow(id);
     requireInitiator(row, email);
     if (row.status !== 'returned') throw new DrillingError('Править можно только возвращённую заявку', 409);
     writeItems(id, v.items);
-    db().prepare('UPDATE drilling_requests SET updated_at = ? WHERE id = ?').run(now(), id);
+    db().prepare('UPDATE drilling_requests SET updated_at = ?, due_date = ? WHERE id = ?').run(now(), due, id);
     logEvent(id, row.round, 'edited', { actor: normEmail(email) });
   });
 }
@@ -272,12 +290,42 @@ function respond(id, email, action, reason) {
       if (chiefEngineer()?.email !== normEmail(email)) throw new DrillingError('Эта заявка сейчас ждёт согласования главного инженера', 403);
       const actor = normEmail(email);
       if (action === 'accept') {
-        const next = executorStage();
-        db().prepare('UPDATE drilling_requests SET status = ?, updated_at = ? WHERE id = ?').run(next.status, now(), id);
+        db().prepare("UPDATE drilling_requests SET status = 'director', updated_at = ? WHERE id = ?").run(now(), id);
         logEvent(id, row.round, 'engineer_approved', { actor });
       } else {
         db().prepare("UPDATE drilling_requests SET status = 'returned', updated_at = ? WHERE id = ?").run(now(), id);
         logEvent(id, row.round, 'engineer_rejected', { actor, reason: why });
+      }
+      return;
+    }
+
+    if (DIRECTOR_STATUSES.includes(row.status)) {
+      if (directorUser()?.email !== normEmail(email)) throw new DrillingError('Эта заявка сейчас ждёт решения директора Пром Альянс', 403);
+      const actor = normEmail(email);
+      const setStatus = (status) => db().prepare('UPDATE drilling_requests SET status = ?, updated_at = ? WHERE id = ?').run(status, now(), id);
+      if (row.status === 'director') {
+        if (action === 'accept') {
+          setStatus(executorStage().status);
+          logEvent(id, row.round, 'director_approved', { actor });
+        } else {
+          // отказ директора — заявка идёт в Жеңіс групп (линия 2); некому — возвращается автору
+          logEvent(id, row.round, 'director_rejected', { actor, reason: why });
+          if (staffedCompanies(2).length) {
+            setStatus('line2');
+            logEvent(id, row.round, 'forwarded', { line: 2 });
+          } else {
+            setStatus('returned');
+            logEvent(id, row.round, 'returned');
+          }
+        }
+      } else if (action === 'accept') {
+        // исполнитель Пром Альянс отказал, директор передаёт заявку в Жеңіс групп
+        if (!staffedCompanies(2).length) throw new DrillingError('Исполнители Жеңіс групп не назначены — обратитесь к администратору', 409);
+        setStatus('line2');
+        logEvent(id, row.round, 'director_forwarded', { actor, line: 2 });
+      } else {
+        setStatus('returned');
+        logEvent(id, row.round, 'director_returned', { actor, reason: why });
       }
       return;
     }
@@ -299,14 +347,15 @@ function respond(id, email, action, reason) {
 
     let next = null;
     if (line === 1) {
-      next = staffedCompanies(2).length ? 'line2' : 'returned';
+      // отказ исполнителя Пром Альянс — решает директор; нет директора — сразу в Жеңіс групп
+      next = directorUser() ? 'director_decide' : (staffedCompanies(2).length ? 'line2' : 'returned');
     } else {
       const rejected = rejectedCompanyIds(id, row.round, 2);
       if (staffedCompanies(2).every((c) => rejected.has(c.id))) next = 'returned';
     }
     if (next) {
       db().prepare('UPDATE drilling_requests SET status = ?, updated_at = ? WHERE id = ?').run(next, now(), id);
-      logEvent(id, row.round, next === 'line2' ? 'forwarded' : 'returned', { line: next === 'line2' ? 2 : null });
+      logEvent(id, row.round, next === 'line2' ? 'forwarded' : next === 'director_decide' ? 'returned_to_director' : 'returned', { line: next === 'line2' ? 2 : null });
     } else {
       db().prepare('UPDATE drilling_requests SET updated_at = ? WHERE id = ?').run(now(), id);
     }
@@ -423,18 +472,25 @@ function involvement(row, email, isAdmin) {
   const e = normEmail(email);
   const me = ridesUser(e);
   const isChief = me?.role === 'chief_engineer';
+  const isDirector = me?.role === 'prom_director';
   const mine = companiesOfUser(e);
   const myIds = new Set(mine.map((c) => c.id));
   const isInitiator = row.initiator_email === e;
   const responder = responderCompany(row, e);
   const waitingForMe = (row.status === 'engineer' && isChief)
+    || (DIRECTOR_STATUSES.includes(row.status) && isDirector)
     || (!!responder && !(row.status === 'line2' && rejectedCompanyIds(row.id, row.round, 2).has(responder.id)));
   const wasInvolved = !!(row.accepted_company_id && myIds.has(row.accepted_company_id))
     || (myIds.size > 0 && db().prepare('SELECT company_id FROM drilling_events WHERE request_id = ? AND company_id IS NOT NULL').all(row.id).some((r) => myIds.has(r.company_id)));
+  // Директор видит заявки, дошедшие до него (и его решения в закрытых заявках).
+  const directorSeen = isDirector && (['director', 'director_decide', 'line1', 'line2', 'accepted', 'completed'].includes(row.status)
+    || !!db().prepare(`SELECT 1 FROM drilling_events WHERE request_id = ? AND type IN (${DIRECTOR_EVENTS.map(() => '?').join(',')}) LIMIT 1`).get(row.id, ...DIRECTOR_EVENTS));
   return {
-    isInitiator, isChief, waitingForMe,
-    canSee: isAdmin || isChief || isInitiator || waitingForMe || wasInvolved || !!responder,
-    isResponsible: mine.length > 0 || isChief,
+    isInitiator, isChief, isDirector, waitingForMe,
+    canSee: isAdmin || isChief || isInitiator || waitingForMe || wasInvolved || !!responder || directorSeen,
+    isResponsible: mine.length > 0 || isChief || isDirector,
+    // PDF: главный инженер, исполнитель и инициатор (и главный админ)
+    canDownload: isAdmin || isInitiator || isChief || mine.length > 0,
   };
 }
 
@@ -467,6 +523,8 @@ function getRequestView(id, email, isAdmin) {
     id: row.id,
     status: row.status,
     round: row.round,
+    dueDate: row.due_date || null,
+    overdue: isOverdue(row),
     initiator: { email: author.email, fullName: author.fullName, position: author.position },
     acceptedCompany,
     acceptedBy: row.accepted_by,
@@ -484,9 +542,14 @@ function getRequestView(id, email, isAdmin) {
       edit: inv.isInitiator && row.status === 'returned',
       restart: inv.isInitiator && row.status === 'returned',
       markDone: inv.isInitiator && row.status === 'accepted',
-      download: ['accepted', 'completed'].includes(row.status) && (isAdmin || inv.isInitiator || inv.isResponsible),
+      download: ['accepted', 'completed'].includes(row.status) && inv.canDownload,
     },
   };
+}
+
+// Просрочена: принята, не выполнена, срок исполнения уже прошёл.
+function isOverdue(row) {
+  return row.status === 'accepted' && !!row.due_date && row.due_date < almatyToday();
 }
 
 function summaries(rows, email) {
@@ -494,6 +557,7 @@ function summaries(rows, email) {
     const items = getItems(r.id);
     return {
       id: r.id, status: r.status, round: r.round, createdAt: r.created_at, updatedAt: r.updated_at,
+      dueDate: r.due_date || null, overdue: isOverdue(r),
       waitingForMe: involvement(r, email, false).waitingForMe, // можно согласовать/принять/отклонить прямо из списка
       initiator: personCard(r.initiator_email).fullName,
       itemsCount: items.length,
@@ -513,8 +577,10 @@ function listRequests(email, scope, isAdmin) {
   const e = normEmail(email);
   const all = db().prepare('SELECT * FROM drilling_requests ORDER BY id DESC').all();
   if (scope === 'all') {
-    if (!isAdmin && ridesUser(e)?.role !== 'chief_engineer') throw new DrillingError('Только для администратора и главного инженера', 403);
-    return summaries(all, e);
+    const role = ridesUser(e)?.role;
+    if (!isAdmin && role !== 'chief_engineer' && role !== 'prom_director') throw new DrillingError('Только для администратора, главного инженера и директора', 403);
+    // директор видит только дошедшие до него заявки
+    return summaries(role === 'prom_director' && !isAdmin ? all.filter((r) => involvement(r, e, false).canSee) : all, e);
   }
   if (scope === 'inbox') {
     const myIds = new Set(companiesOfUser(e).map((c) => c.id));
@@ -530,7 +596,7 @@ function listRequests(email, scope, isAdmin) {
 // выполнения. Свежие сверху.
 function counters(email) {
   const e = normEmail(email);
-  const all = db().prepare("SELECT * FROM drilling_requests WHERE status IN ('engineer','line1','line2','returned','accepted') ORDER BY id DESC").all();
+  const all = db().prepare("SELECT * FROM drilling_requests WHERE status IN ('engineer','director','director_decide','line1','line2','returned','accepted') ORDER BY id DESC").all();
   const items = [];
   for (const r of all) {
     let kind = null;
@@ -555,6 +621,7 @@ function profile(email, isAdmin) {
     role: me?.role || null,
     isAdmin: !!isAdmin,
     isChief: me?.role === 'chief_engineer',
+    isDirector: me?.role === 'prom_director',
     companies: companiesOfUser(e),
     canSubmit: !block,
     submitBlock: block ? block.message : null,
@@ -580,10 +647,12 @@ function registry(email, isAdmin, filters = {}) {
   let scope = 'own';
   const myCompanyIds = new Set(companiesOfUser(e).map((c) => c.id));
   if (isAdmin || me?.role === 'chief_engineer') scope = 'all';
+  else if (me?.role === 'prom_director') scope = 'director';
   else if (myCompanyIds.size) scope = 'company';
 
   const requests = db().prepare('SELECT * FROM drilling_requests ORDER BY id DESC').all().filter((r) => {
     if (scope === 'all') return true;
+    if (scope === 'director') return involvement(r, e, false).canSee;
     if (scope === 'company') return !!r.accepted_company_id && myCompanyIds.has(r.accepted_company_id);
     return r.initiator_email === e;
   });
@@ -598,6 +667,7 @@ function registry(email, isAdmin, filters = {}) {
   for (const r of requests) {
     const base = {
       requestId: r.id, status: r.status, round: r.round, createdAt: r.created_at,
+      dueDate: r.due_date || null, overdue: isOverdue(r),
       authorEmail: r.initiator_email, author: personCard(r.initiator_email).fullName,
       company: r.accepted_company_id ? companyName.get(r.accepted_company_id) || '' : '',
       acceptedAt: r.accepted_company_id ? acceptedAt.get(`${r.id}:${r.round}`) || null : null,
@@ -641,14 +711,20 @@ function registry(email, isAdmin, filters = {}) {
 
 // ---------- данные заявки для карточек и подписей ----------
 
-const STAMP_TYPES = { accepted: 'принята', rejected: 'отклонена', engineer_approved: 'согласована', engineer_rejected: 'отклонена' };
+const STAMP_TYPES = {
+  accepted: 'принята', rejected: 'отклонена', engineer_approved: 'согласована', engineer_rejected: 'отклонена',
+  director_approved: 'согласована', director_rejected: 'отклонена',
+};
 
 function getDocData(id) {
   const row = getRequestRow(id);
   const events = getEvents(id).filter((e) => e.round === row.round);
   const start = events.find((e) => e.type === 'created' || e.type === 'restarted');
   const stamps = events.filter((e) => STAMP_TYPES[e.type])
-    .map((e) => ({ company: e.companyName || 'Главный инженер', type: e.type, label: STAMP_TYPES[e.type], at: e.at }));
+    .map((e) => ({
+      company: e.companyName || (e.type.startsWith('director') ? 'Директор Пром Альянс' : 'Главный инженер'),
+      type: e.type, label: STAMP_TYPES[e.type], at: e.at,
+    }));
   const company = row.accepted_company_id
     ? db().prepare('SELECT id, name, addressee FROM drilling_companies WHERE id = ?').get(row.accepted_company_id) : null;
   const acceptedEvent = events.find((e) => e.type === 'accepted');
@@ -665,6 +741,7 @@ function getDocData(id) {
     id: row.id,
     status: row.status,
     createdAt: row.created_at,
+    dueDate: row.due_date || null,
     roundStartedAt: start?.at || row.created_at,
     acceptedAt: acceptedEvent?.at || null,
     company,

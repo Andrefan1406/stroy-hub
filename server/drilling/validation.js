@@ -91,4 +91,16 @@ function validateFact(raw, item) {
 // Позиция в справочнике иногда уже начинается с «поз.» («поз.56») — второе «поз.» не добавляем.
 const positionLabel = (position) => (/^\s*поз/i.test(String(position)) ? String(position).trim() : `поз. ${position}`);
 
-module.exports = { positionLabel, MATERIALS, WORK_TYPES, UNITS, OBJECTS, MAX_ITEMS, parseNumber, positionsOf, validateItem, validateItems, validateFact };
+// Срок исполнения: дата ГГГГ-ММ-ДД, обязательна, не раньше сегодняшней (today — «сегодня» по Алматы).
+function validateDueDate(raw, today) {
+  const v = String(raw ?? '').trim();
+  if (!v) return { ok: false, error: 'Укажите срок исполнения' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return { ok: false, error: 'Срок исполнения — дата в формате ГГГГ-ММ-ДД' };
+  const d = new Date(`${v}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v) return { ok: false, error: 'Такой даты не существует' };
+  if (v < today) return { ok: false, error: 'Срок исполнения не может быть в прошлом' };
+  return { ok: true, value: v };
+}
+
+module.exports = {
+  validateDueDate, positionLabel, MATERIALS, WORK_TYPES, UNITS, OBJECTS, MAX_ITEMS, parseNumber, positionsOf, validateItem, validateItems, validateFact };

@@ -114,3 +114,13 @@ test('новые роли не получают доступ к поездкам
   const me = await call('dr@x.kz', 'GET', '/api/v1/users/me');
   assert.equal(me.body.user.role, 'driller', 'а свою роль для гейта сайта видит');
 });
+
+test('директор Пром Альянс — только один, должность не обязательна', async () => {
+  assert.equal((await put('prom@x.kz', { role: 'prom_director', name: 'Директор' })).status, 200);
+  const second = await put('emp@x.kz', { role: 'prom_director', name: 'Другой', phone: '+7 701 000 00 09' });
+  assert.equal(second.status, 409);
+  assert.match(second.body.error, /Директором Пром Альянс уже назначен/);
+  assert.equal((await put('prom@x.kz', { role: 'prom_alyans', name: 'Директор' })).status, 200);
+  assert.equal((await put('emp@x.kz', { role: 'prom_director', name: 'Другой' })).status, 200, 'после снятия роли можно назначить другого');
+  await put('emp@x.kz', { role: 'staff', name: 'Другой' });
+});

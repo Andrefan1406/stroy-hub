@@ -1,6 +1,6 @@
 // Заявка на бурение и резку: статус согласования, строки, журнал всех кругов, действия по
 // роли — согласовать/принять/отклонить (ответственный), править/перезапустить/отменить и
-// отмечать выполнение (автор: по строке или сразу все), скачать чертежи, распечатать / сохранить в PDF.
+// отмечать выполнение (автор: по строке или сразу все), скачать один PDF (форма и все вложения).
 import React, { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import css from "../../ConcreteRequestPage.module.css";
@@ -10,8 +10,8 @@ import { AttachmentAdder, AttachmentGallery } from "./Attachments";
 import RejectDialog from "./RejectDialog";
 import { useConfirm } from "../../components/ConfirmDialog";
 import {
-  acceptRequest, cancelRequest, downloadAttachments, fetchRequest, markItemsDone, rejectRequest, restartRequest,
-  STATUS_LABELS, UNITS, WORK_LABELS, fmtDateTime, fmtNum, positionLabel, sanitizeNumber,
+  acceptRequest, cancelRequest, downloadRequestPdf, fetchRequest, markItemsDone, rejectRequest, restartRequest,
+  STATUS_LABELS, UNITS, WORK_LABELS, fmtDateTime, fmtDue, fmtNum, positionLabel, sanitizeNumber, stageTexts,
 } from "./drillingApi";
 
 const sizeOf = (i) => (i.workType === "drill" ? `Ø ${i.diameterMm} мм` : `толщина ${fmtNum(i.thicknessCm)} см`);
@@ -22,6 +22,11 @@ function eventText(e) {
     case "created": return "Заявка создана";
     case "engineer_approved": return `Главный инженер согласовал (${e.actorName || e.actor})`;
     case "engineer_rejected": return <>Главный инженер отклонил — заявка возвращена автору. Причина: <span className={styles.reason}>{e.reason}</span></>;
+    case "director_approved": return `Директор Пром Альянс согласовал (${e.actorName || e.actor})`;
+    case "director_rejected": return <>Директор Пром Альянс отказал. Причина: <span className={styles.reason}>{e.reason}</span></>;
+    case "returned_to_director": return "Исполнитель Пром Альянс отказал — заявка возвращена директору";
+    case "director_forwarded": return `Директор передал заявку в Жеңіс групп (${e.actorName || e.actor})`;
+    case "director_returned": return <>Директор вернул заявку автору. Причина: <span className={styles.reason}>{e.reason}</span></>;
     case "restarted": return "Заявка отправлена заново";
     case "edited": return "Заявка исправлена автором";
     case "attached": return `Прикреплён файл: ${e.reason}`;
@@ -51,6 +56,7 @@ const DrillingRequestDetailPage = () => {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [facts, setFacts] = useState({}); // itemId -> { fact, comment } для ещё не отмеченных строк
   const [rowErrors, setRowErrors] = useState({}); // itemId -> текст ошибки
   const [confirm, confirmDialog] = useConfirm();
@@ -101,6 +107,19 @@ const DrillingRequestDetailPage = () => {
     }
   };
 
+  // Скачать: форма «Наряд задание» и все вложения одним PDF.
+  const download = async () => {
+    setDownloading(true);
+    setError("");
+    try {
+      await downloadRequestPdf(id);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const setFact = (itemId, patch) => {
     setFacts((cur) => ({ ...cur, [itemId]: { ...cur[itemId], ...patch } }));
     setRowErrors((cur) => (cur[itemId] ? { ...cur, [itemId]: "" } : cur));
@@ -144,6 +163,12 @@ const DrillingRequestDetailPage = () => {
           Автор: {req.initiator.fullName}{req.initiator.position ? `, ${req.initiator.position}` : ""} · создана {fmtDateTime(req.createdAt)}
           {req.acceptedCompany && <> · исполнитель: <b>{req.acceptedCompany.name}</b></>}
         </div>
+        {req.dueDate && (
+          <div style={{ fontSize: 15, marginTop: 4 }}>
+            Срок исполнения: <b>до {fmtDue(req.dueDate)}</b>
+            {req.overdue && <span className={styles.overdueBadge}>просрочена</span>}
+          </div>
+        )}
 
         {error && <div className={`${styles.error} no-print`} role="alert">{error}</div>}
         {req.status === "returned" && (
@@ -154,13 +179,13 @@ const DrillingRequestDetailPage = () => {
           {p.accept && (
             <button className={css.btnPrimary} disabled={busy}
               onClick={() => act(() => acceptRequest(id), {
-                title: req.status === "engineer" ? "Согласовать заявку и передать исполнителям?" : "Принять заявку в работу?",
-                confirmLabel: req.status === "engineer" ? "Согласовать" : "Принять",
+                title: stageTexts(req.status).acceptTitle,
+                confirmLabel: stageTexts(req.status).accept,
               })}>
-              {req.status === "engineer" ? "Согласовать" : "Принять в работу"}
+              {stageTexts(req.status).accept}
             </button>
           )}
-          {p.reject && <button className={styles.btnDanger} disabled={busy} onClick={() => setRejecting(true)}>Отклонить</button>}
+          {p.reject && <button className={styles.btnDanger} disabled={busy} onClick={() => setRejecting(true)}>{stageTexts(req.status).reject}</button>}
           {p.edit && <button className={css.btnPrimary} disabled={busy} onClick={() => navigate(`/drilling-request/${id}/edit`)}>Исправить и отправить заново</button>}
           {p.restart && (
             <button className={css.btnGhost} style={{ marginRight: 0 }} disabled={busy}
@@ -174,14 +199,12 @@ const DrillingRequestDetailPage = () => {
               Отменить заявку
             </button>
           )}
-          {req.attachments?.length > 0 && (
-            <button className={css.btnGhost} style={{ marginRight: 0 }} onClick={() => downloadAttachments(id, req.attachments).catch((e) => setError(e.message))}>
-              Скачать чертежи ({req.attachments.length})
+          {p.download && (
+            <button className={css.btnPrimary} style={{ marginRight: 0 }} disabled={downloading} onClick={download}
+              title="Один PDF: форма заявки и все чертежи и фото, листы А4">
+              {downloading ? "Готовлю файл…" : "Скачать"}
             </button>
           )}
-          <button className={css.btnGhost} style={{ marginRight: 0 }} onClick={() => window.print()} title="Откроется печать: там же можно выбрать «Сохранить как PDF»">
-            Печать / PDF
-          </button>
         </div>
 
         <div className={styles.tableWrap}>
@@ -270,7 +293,10 @@ const DrillingRequestDetailPage = () => {
         </div>
       </div>
       {confirmDialog}
-      {rejecting && <RejectDialog busy={busy} onCancel={() => setRejecting(false)} onSubmit={(reason) => act(() => rejectRequest(id, reason))} />}
+      {rejecting && (
+        <RejectDialog busy={busy} onCancel={() => setRejecting(false)} onSubmit={(reason) => act(() => rejectRequest(id, reason))}
+          title={stageTexts(req.status).rejectTitle} hint={stageTexts(req.status).rejectHint} submitLabel={stageTexts(req.status).reject} />
+      )}
     </div>
   );
 };

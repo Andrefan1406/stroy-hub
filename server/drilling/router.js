@@ -1,10 +1,12 @@
 // REST для заявок на бурение и резку. Права определяются данными: автор,
 // ответственные линии, админ — проверяются в service.js; здесь только вход по
 // Firebase ID-токену (requireUser) и перевод ошибок в HTTP-ответы.
+const fs = require('fs');
 const express = require('express');
 const { requireUser, requireAdmin, ADMIN_EMAIL } = require('../adminAuth');
 const svc = require('./service');
 const { buildRegistryXlsx } = require('./xlsx');
+const { buildPdf } = require('./pdf');
 const { MATERIALS } = require('./validation');
 const taxonomy = require('../../src/data/concreteObjectTaxonomy.json');
 
@@ -64,7 +66,7 @@ router.get('/requests', wrap((req, res) => {
 }));
 
 router.post('/requests', wrap((req, res) => {
-  const id = svc.createRequest(req.userEmail, req.body?.items, { isAdmin: isAdmin(req.userEmail) });
+  const id = svc.createRequest(req.userEmail, req.body?.items, { isAdmin: isAdmin(req.userEmail), dueDate: req.body?.dueDate });
   res.status(201).json(svc.getRequestView(id, req.userEmail, isAdmin(req.userEmail)));
 }));
 
@@ -74,7 +76,7 @@ const idOf = (req) => Number(req.params.id);
 router.get('/requests/:id', wrap((req, res) => res.json(viewOf(req, idOf(req)))));
 
 router.put('/requests/:id', wrap((req, res) => {
-  svc.updateRequest(idOf(req), req.userEmail, req.body?.items);
+  svc.updateRequest(idOf(req), req.userEmail, req.body?.items, req.body?.dueDate);
   res.json(viewOf(req, idOf(req)));
 }));
 
@@ -129,6 +131,22 @@ router.get('/requests/:id/attachments/:aid', wrap((req, res) => {
 router.delete('/requests/:id/attachments/:aid', wrap((req, res) => {
   svc.removeAttachment(idOf(req), Number(req.params.aid), req.userEmail);
   res.json(viewOf(req, idOf(req)));
+}));
+
+// Один PDF: «Наряд задание» + все вложения (фото и PDF), все листы А4 книжные.
+// Доступен главному инженеру, исполнителю и автору, когда заявка согласована и принята в работу.
+router.get('/requests/:id/pdf', wrap(async (req, res) => {
+  const id = idOf(req);
+  const view = viewOf(req, id); // заодно проверка доступа
+  if (!view.permissions.download) return res.status(409).json({ error: 'Файл доступен после согласования главным инженером и принятия заявки исполнителем' });
+  const files = view.attachments.map((a) => {
+    const f = svc.getAttachmentFile(id, a.id, req.userEmail, isAdmin(req.userEmail));
+    return { name: a.name, mime: f.mime, buffer: fs.readFileSync(f.file) };
+  });
+  const buffer = await buildPdf(svc.getDocData(id), files);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="drilling-request-${id}.pdf"`);
+  res.send(buffer);
 }));
 
 // ---------- админка ----------

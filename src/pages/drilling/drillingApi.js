@@ -29,8 +29,8 @@ export const fetchMe = () => json(`${BASE}/me`);
 export const fetchCounter = () => json(`${BASE}/counter`);
 export const fetchRequests = (scope) => json(`${BASE}/requests?scope=${scope}`).then((d) => d.requests);
 export const fetchRequest = (id) => json(`${BASE}/requests/${id}`);
-export const createRequest = (items) => json(`${BASE}/requests`, { method: "POST", body: { items } });
-export const updateRequest = (id, items) => json(`${BASE}/requests/${id}`, { method: "PUT", body: { items } });
+export const createRequest = (items, dueDate) => json(`${BASE}/requests`, { method: "POST", body: { items, dueDate } });
+export const updateRequest = (id, items, dueDate) => json(`${BASE}/requests/${id}`, { method: "PUT", body: { items, dueDate } });
 export const restartRequest = (id) => json(`${BASE}/requests/${id}/restart`, { method: "POST" });
 export const cancelRequest = (id) => json(`${BASE}/requests/${id}/cancel`, { method: "POST" });
 export const acceptRequest = (id) => json(`${BASE}/requests/${id}/accept`, { method: "POST" });
@@ -49,6 +49,8 @@ export const saveCompany = (company) =>
 // ---------- подписи и числа ----------
 export const STATUS_LABELS = {
   engineer: "Ждёт согласования главного инженера",
+  director: "Ждёт согласования директора Пром Альянс",
+  director_decide: "Исполнитель отказал — решает директор",
   line1: "Ждёт ответа исполнителя",
   line2: "Передана субподрядчику",
   returned: "Отклонена — нужно ваше решение",
@@ -56,6 +58,25 @@ export const STATUS_LABELS = {
   completed: "Выполнена",
   cancelled: "Отменена",
 };
+// Что делают кнопки на каждом этапе. На шаге director_decide директор уже видит отказ исполнителя:
+// «принять» значит передать заявку в Жеңіс групп, «отказать» — вернуть автору.
+export function stageTexts(status) {
+  switch (status) {
+    case "engineer":
+      return { accept: "Согласовать", acceptTitle: "Согласовать заявку и передать директору Пром Альянс?", done: "Согласовано", reject: "Отклонить", rejectTitle: "Причина отказа", rejectHint: "Заявка вернётся автору." };
+    case "director":
+      return { accept: "Согласовать", acceptTitle: "Согласовать заявку и передать исполнителю Пром Альянс?", done: "Согласовано", reject: "Отказать", rejectTitle: "Причина отказа", rejectHint: "После отказа заявка уйдёт в Жеңіс групп." };
+    case "director_decide":
+      return { accept: "Передать в Жеңіс групп", acceptTitle: "Передать заявку в Жеңіс групп?", done: "Передано", reject: "Вернуть автору", rejectTitle: "Причина возврата", rejectHint: "Заявка вернётся автору." };
+    default:
+      return { accept: "Принять в работу", acceptTitle: "Принять заявку в работу?", done: "Принято", reject: "Отклонить", rejectTitle: "Причина отказа", rejectHint: "" };
+  }
+}
+
+// «2026-12-01» -> «01.12.2026»
+export const fmtDue = (d) => (d ? String(d).split("-").reverse().join(".") : "");
+export const todayIso = () => new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Almaty" });
+
 export const UNITS = { drill: "шт", cut: "м.п." };
 export const WORK_LABELS = { drill: "Сверление", cut: "Резка" };
 export const fmtNum = (n) => String(n).replace(".", ",");
@@ -128,7 +149,7 @@ export function localFileProblem(file) {
 // rotate — поворот по часовой стрелке в градусах (кратно 90), выбранный пользователем.
 export async function prepareForUpload(file, rotate = 0) {
   const turn = ((rotate % 360) + 360) % 360;
-  if (!String(file.type).startsWith("image/") || (file.size < COMPRESS_FROM && turn === 0)) return file;
+  if (!String(file.type).startsWith("image/") || (file.size < COMPRESS_FROM && turn === 0 && file.type !== "image/webp")) return file;
   try {
     let bitmap;
     try {
@@ -179,17 +200,16 @@ export async function fetchAttachmentBlob(id, attachmentId) {
 export const deleteAttachment = (id, attachmentId) => json(`${BASE}/requests/${id}/attachments/${attachmentId}`, { method: "DELETE" });
 
 
-// Скачать все чертежи и фото заявки (по одному файлу, с токеном — поэтому через blob).
-export async function downloadAttachments(id, attachments) {
-  for (const att of attachments) {
-    const url = URL.createObjectURL(await fetchAttachmentBlob(id, att.id));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = att.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-    await new Promise((r) => setTimeout(r, 400)); // браузеры гасят скачивания «пачкой» без паузы
-  }
+// Один PDF: форма заявки и все вложения. Отдаётся с токеном, поэтому качаем через blob, а не ссылкой.
+export async function downloadRequestPdf(id) {
+  const res = await call(`${BASE}/requests/${id}/pdf`);
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Наряд-задание-${id}.pdf`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
+

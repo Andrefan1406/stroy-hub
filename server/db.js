@@ -362,19 +362,23 @@ CREATE TABLE IF NOT EXISTS drilling_companies (
 -- ролей и карточек людей (rides.users, server/rides/usersRouter.js): Пром Альянс —
 -- линия 1, бурильщик (users.company_id) — компания линии 2, главный инженер — один.
 -- drilling_requests.status: engineer — ждёт согласования главного инженера (первый
--- этап каждого круга), line1/line2 — ждёт реакции линии, returned — отказали (главный
--- инженер или все исполнители), у автора; accepted — принята (идёт выполнение);
--- completed; cancelled.
+-- этап каждого круга); director — ждёт согласования директора Пром Альянс;
+-- director_decide — исполнитель Пром Альянс отказал, директор решает (в Жеңіс групп или
+-- вернуть автору); line1 — ждёт исполнителя Пром Альянс; line2 — ждёт Жеңіс групп;
+-- returned — отказали (главный инженер, директор или все исполнители), у автора;
+-- accepted — принята (идёт выполнение); completed; cancelled.
+-- due_date — срок исполнения (ГГГГ-ММ-ДД), его ставит инициатор.
 -- round — номер круга согласования (растёт при перезапуске инициатором).
 CREATE TABLE IF NOT EXISTS drilling_requests (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   initiator_email     TEXT NOT NULL,
-  status              TEXT NOT NULL CHECK(status IN ('engineer','line1','line2','returned','accepted','completed','cancelled')),
+  status              TEXT NOT NULL CHECK(status IN ('engineer','director','director_decide','line1','line2','returned','accepted','completed','cancelled')),
   round               INTEGER NOT NULL DEFAULT 1,
   accepted_company_id INTEGER,
   accepted_by         TEXT,
   created_at          TEXT NOT NULL,
-  updated_at          TEXT NOT NULL
+  updated_at          TEXT NOT NULL,
+  due_date            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_drilling_requests_status ON drilling_requests(status);
 CREATE INDEX IF NOT EXISTS idx_drilling_requests_initiator ON drilling_requests(initiator_email);
@@ -489,20 +493,26 @@ function migrateSchema(db) {
   // боевой работе — убираем; drilling_requests пересобираем с новым списком статусов.
   db.exec('DROP TABLE IF EXISTS drilling_company_users; DROP TABLE IF EXISTS drilling_staff;');
   const drReq = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'drilling_requests'").get();
-  if (drReq && !drReq.sql.includes("'engineer'")) {
+  // Новые статусы (director, director_decide) и срок исполнения: CHECK не поменять на месте —
+  // пересборка. Заявки, ждавшие исполнителя Пром Альянс (line1), переносятся на шаг директора:
+  // дальше все идут по новому маршруту.
+  if (drReq && !drReq.sql.includes("'director_decide'")) {
     db.transaction(() => {
       db.exec(`ALTER TABLE drilling_requests RENAME TO drilling_requests_old;
         CREATE TABLE drilling_requests (
           id                  INTEGER PRIMARY KEY AUTOINCREMENT,
           initiator_email     TEXT NOT NULL,
-          status              TEXT NOT NULL CHECK(status IN ('engineer','line1','line2','returned','accepted','completed','cancelled')),
+          status              TEXT NOT NULL CHECK(status IN ('engineer','director','director_decide','line1','line2','returned','accepted','completed','cancelled')),
           round               INTEGER NOT NULL DEFAULT 1,
           accepted_company_id INTEGER,
           accepted_by         TEXT,
           created_at          TEXT NOT NULL,
-          updated_at          TEXT NOT NULL
+          updated_at          TEXT NOT NULL,
+          due_date            TEXT
         );
-        INSERT INTO drilling_requests SELECT id, initiator_email, status, round, accepted_company_id, accepted_by, created_at, updated_at FROM drilling_requests_old;
+        INSERT INTO drilling_requests (id, initiator_email, status, round, accepted_company_id, accepted_by, created_at, updated_at)
+          SELECT id, initiator_email, CASE status WHEN 'line1' THEN 'director' ELSE status END, round, accepted_company_id, accepted_by, created_at, updated_at
+          FROM drilling_requests_old;
         DROP TABLE drilling_requests_old;
         CREATE INDEX IF NOT EXISTS idx_drilling_requests_status ON drilling_requests(status);
         CREATE INDEX IF NOT EXISTS idx_drilling_requests_initiator ON drilling_requests(initiator_email);`);

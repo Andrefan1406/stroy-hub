@@ -11,6 +11,8 @@ const fmtDateTime = (iso) => {
 
 const STATUS = {
   engineer: 'Ждёт согласования главного инженера',
+  director: 'Ждёт согласования директора Пром Альянс',
+  director_decide: 'Исполнитель отказал — решает директор',
   line1: 'Ждёт ответа исполнителя',
   line2: 'Передана субподрядчику',
   returned: 'Отклонена',
@@ -22,6 +24,7 @@ const STATUS = {
 const COLUMNS = [
   { header: '№ заявки', key: 'requestId', width: 10 },
   { header: 'Создана', key: 'createdAt', width: 17 },
+  { header: 'Срок исполнения', key: 'dueDate', width: 15 },
   { header: 'Автор', key: 'author', width: 24 },
   { header: 'Статус', key: 'status', width: 24 },
   { header: 'Исполнитель', key: 'company', width: 18 },
@@ -48,6 +51,7 @@ async function buildRegistryXlsx({ rows, totals }) {
     ws.addRow({
       ...r,
       createdAt: fmtDateTime(r.createdAt),
+      dueDate: r.dueDate ? r.dueDate.split('-').reverse().join('.') + (r.overdue ? ' (просрочена)' : '') : '',
       acceptedAt: r.acceptedAt ? fmtDateTime(r.acceptedAt) : '',
       status: STATUS[r.status] || r.status,
       work: r.workType === 'drill' ? 'Сверление' : 'Резка',

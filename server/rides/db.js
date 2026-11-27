@@ -17,10 +17,10 @@ const DB_PATH = path.join(DATA_DIR, 'db.sqlite');
 
 // Роли: employee/dispatcher/driver — система поездок (admin — служебная запись
 // главного админа). staff — сотрудник без доступа к поездкам; chief_engineer,
-// prom_alyans, driller — участники согласования заявок на бурение и резку
+// prom_director (директор Пром Альянс), prom_alyans (исполнитель), driller — участники согласования заявок на бурение и резку
 // (server/drilling/): position — должность для подписей Word, company_id —
 // компания-субподрядчик бурильщика (id в drilling_companies другой БД, без FK).
-const USERS_ROLES = ['employee', 'dispatcher', 'driver', 'admin', 'staff', 'chief_engineer', 'prom_alyans', 'driller'];
+const USERS_ROLES = ['employee', 'dispatcher', 'driver', 'admin', 'staff', 'chief_engineer', 'prom_director', 'prom_alyans', 'driller'];
 
 function usersDdl(table, ifNotExists = false) {
   return `CREATE TABLE ${ifNotExists ? 'IF NOT EXISTS ' : ''}${table} (
@@ -285,12 +285,12 @@ function initSchema() {
 // внешние ключи на время выключены (на users ссылаются заявки, водители, журнал),
 // копируем строки с теми же id, подменяем таблицу, проверяем foreign_key_check ДО
 // фиксации — при любой проблеме транзакция откатывается и данные остаются как были.
-// Повторный запуск ничего не делает (в схеме уже есть 'chief_engineer').
+// Повторный запуск ничего не делает (в схеме уже есть 'prom_director').
 function migrateUsersTable(db) {
   const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
-  if (!row || row.sql.includes("'chief_engineer'")) return;
+  if (!row || row.sql.includes("'prom_director'")) return;
   const oldCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
-  const keep = ['id', 'email', 'name', 'phone', 'role', 'full_site_access', 'created_at'].filter((c) => oldCols.includes(c));
+  const keep = ['id', 'email', 'name', 'phone', 'position', 'company_id', 'role', 'full_site_access', 'created_at'].filter((c) => oldCols.includes(c));
   db.pragma('foreign_keys = OFF');
   try {
     db.transaction(() => {

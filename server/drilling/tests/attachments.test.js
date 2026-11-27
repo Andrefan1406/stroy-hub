@@ -27,6 +27,7 @@ function addUser(email, role, o = {}) {
 }
 addUser('chief@x.kz', 'chief_engineer', { name: 'Главный', position: 'Главный инженер' });
 addUser('prom@x.kz', 'prom_alyans');
+addUser('dir@x.kz', 'prom_director', { name: 'Директор', position: 'Директор' });
 addUser('author@x.kz', 'staff', { name: 'Автор А.А.', position: 'Прораб' });
 addUser('other@x.kz', 'staff', { name: 'Другой Д.Д.', position: 'Инженер' });
 
@@ -49,7 +50,7 @@ const upload = (email, id, name, body) => fetch(url(`/requests/${id}/attachments
 });
 const json = async (res) => ({ status: res.status, body: await res.json().catch(() => ({})) });
 const drill = { object: 'Брик таун 2', position: 'пятно I', workType: 'drill', material: 'кирпич', diameterMm: '100', quantity: '5', reason: '' };
-const make = (by = 'author@x.kz') => svc.createRequest(by, [drill]);
+const make = (by = 'author@x.kz') => svc.createRequest(by, [drill], { dueDate: '2099-01-31' });
 const filesIn = () => (fs.existsSync(path.join(dir, 'drilling-files')) ? fs.readdirSync(path.join(dir, 'drilling-files')) : []);
 
 test('автор прикладывает PDF и картинки: тип по содержимому, имя с кириллицей сохраняется', async () => {
@@ -93,7 +94,7 @@ test('смотреть файл могут те, кто видит заявку;
   assert.equal((await get('chief@x.kz')).status, 200, 'главный инженер видит все заявки');
   assert.equal((await get('other@x.kz')).status, 403, 'чужой не видит');
   assert.equal((await get('prom@x.kz')).status, 403, 'линия 1 заявку ещё не получила');
-  svc.respond(id, 'chief@x.kz', 'accept');
+  svc.respond(id, 'chief@x.kz', 'accept'); svc.respond(id, 'dir@x.kz', 'accept');
   assert.equal((await get('prom@x.kz')).status, 200, 'после согласования исполнитель видит файлы');
 });
 
@@ -105,7 +106,7 @@ test('менять файлы может только автор и только
   const del = (email, aid) => fetch(url(`/requests/${id}/attachments/${aid}`), { method: 'DELETE', headers: auth(email) });
   assert.equal((await del('other@x.kz', att.id)).status, 403);
 
-  svc.respond(id, 'chief@x.kz', 'accept');
+  svc.respond(id, 'chief@x.kz', 'accept'); svc.respond(id, 'dir@x.kz', 'accept');
   svc.respond(id, 'prom@x.kz', 'accept');
   assert.equal(svc.getRequestView(id, 'author@x.kz', false).permissions.attach, false);
   assert.equal((await upload('author@x.kz', id, 'поздно.pdf', PDF)).status, 409, 'принятая заявка — файлы не меняются');

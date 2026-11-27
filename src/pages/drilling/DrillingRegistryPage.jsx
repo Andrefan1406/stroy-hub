@@ -7,10 +7,10 @@ import { Link } from "react-router-dom";
 import css from "../../ConcreteRequestPage.module.css";
 import styles from "./Drilling.module.css";
 import DrillingNav from "./DrillingNav";
-import { downloadRegistryXlsx, fetchRegistry, fmtDateTime, fmtNum, positionLabel, STATUS_LABELS, WORK_LABELS } from "./drillingApi";
+import { downloadRegistryXlsx, fetchRegistry, fmtDateTime, fmtDue, fmtNum, positionLabel, STATUS_LABELS, WORK_LABELS } from "./drillingApi";
 
 const EMPTY = { from: "", to: "", status: "", object: "", workType: "", company: "", author: "", onlyMine: false };
-const STATUS_ORDER = ["engineer", "line1", "line2", "returned", "accepted", "completed", "cancelled"];
+const STATUS_ORDER = ["engineer", "director", "director_decide", "line1", "line2", "returned", "accepted", "completed", "cancelled"];
 
 const sizeOf = (r) => (r.workType === "drill" ? `Ø ${r.diameterMm} мм` : `толщина ${fmtNum(r.thicknessCm)} см`);
 
@@ -125,7 +125,7 @@ const DrillingRegistryPage = () => {
               <table className={styles.table}>
                 <thead>
                   <tr>
-                    <th>№</th><th>Создана</th><th>Автор</th><th>Статус</th><th>Исполнитель</th>
+                    <th>№</th><th>Создана</th><th>Срок</th><th>Автор</th><th>Статус</th><th>Исполнитель</th>
                     <th>Объект, позиция</th><th>Вид работ</th><th>Размер</th><th>Материал</th>
                     <th>Заявлено</th><th>Выполнено</th><th>Причина</th>
                   </tr>
@@ -135,6 +135,7 @@ const DrillingRegistryPage = () => {
                     <tr key={r.itemId}>
                       <td><Link to={`/drilling-requests/${r.requestId}`} title={`Открыть заявку № ${r.requestId}`}>{r.requestId}</Link></td>
                       <td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(r.createdAt)}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>{fmtDue(r.dueDate) || "—"}{r.overdue && <span className={styles.overdueBadge}>просрочена</span>}</td>
                       <td>{r.author}</td>
                       <td><span className={`${styles.badge} ${styles[`st_${r.status}`]}`}>{STATUS_LABELS[r.status]}</span></td>
                       <td>{r.company || "—"}</td>

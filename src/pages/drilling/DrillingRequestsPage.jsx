@@ -8,16 +8,17 @@ import styles from "./Drilling.module.css";
 import DrillingNav from "./DrillingNav";
 import RejectDialog from "./RejectDialog";
 import { useConfirm } from "../../components/ConfirmDialog";
-import { acceptRequest, fetchMe, fetchRequests, rejectRequest, STATUS_LABELS, fmtDateTime } from "./drillingApi";
+import { acceptRequest, fetchMe, fetchRequests, rejectRequest, STATUS_LABELS, fmtDateTime, fmtDue, stageTexts } from "./drillingApi";
 
 // С какой вкладки начать: админ — «Все», главный инженер и исполнители — «Входящие», остальные — «Мои».
 function defaultTab(me) {
   if (me.isAdmin) return "all";
-  if (me.isChief || me.companies.length) return "inbox";
+  if (me.isChief || me.isDirector || me.companies.length) return "inbox";
   return "mine";
 }
 
-const acceptLabel = (status) => (status === "engineer" ? "Согласовать" : "Принять");
+const acceptLabel = (status) => stageTexts(status).accept;
+const bulkWord = (list) => (new Set(list.map((r) => r.status)).size === 1 ? stageTexts(list[0].status).accept : "Согласовать / принять");
 
 const DrillingRequestsPage = () => {
   const [me, setMe] = useState(null);
@@ -59,8 +60,8 @@ const DrillingRequestsPage = () => {
   // «Мои» — у тех, кто подаёт заявки; «Входящие» — у исполнителей и главного инженера (ждут их ответа);
   // «Все» — у админа и главного инженера.
   const tabs = [];
-  if (me?.isAdmin || me?.isChief) tabs.push({ key: "all", label: "Все заявки" });
-  if (me?.companies.length || me?.isChief) tabs.push({ key: "inbox", label: "Входящие", count: me.counters.inbox });
+  if (me?.isAdmin || me?.isChief || me?.isDirector) tabs.push({ key: "all", label: "Все заявки" });
+  if (me?.companies.length || me?.isChief || me?.isDirector) tabs.push({ key: "inbox", label: "Входящие", count: me.counters.inbox });
   if (me?.canSubmit) tabs.push({ key: "mine", label: "Мои заявки", count: me.counters.mine });
 
   const waiting = useMemo(() => (requests || []).filter((r) => r.waitingForMe), [requests]);
@@ -91,18 +92,15 @@ const DrillingRequestsPage = () => {
   };
 
   const acceptOne = async (r) => {
-    const ok = await confirm({
-      title: r.status === "engineer" ? `Согласовать заявку № ${r.id}?` : `Принять заявку № ${r.id} в работу?`,
-      confirmLabel: acceptLabel(r.status),
-    });
-    if (ok) runBulk([r.id], (id) => acceptRequest(id), r.status === "engineer" ? "Согласовано" : "Принято");
+    const t = stageTexts(r.status);
+    const ok = await confirm({ title: t.acceptTitle, text: `Заявка № ${r.id}`, confirmLabel: t.accept });
+    if (ok) runBulk([r.id], (id) => acceptRequest(id), t.done);
   };
 
   const acceptPicked = async () => {
-    const stages = new Set(pickedList.map((r) => r.status === "engineer"));
-    const word = stages.size === 2 ? "Согласовать / принять" : stages.has(true) ? "Согласовать" : "Принять";
+    const word = bulkWord(pickedList);
     const ok = await confirm({ title: `${word} выбранные заявки (${pickedList.length})?`, confirmLabel: word });
-    if (ok) runBulk(pickedList.map((r) => r.id), (id) => acceptRequest(id), stages.size === 2 ? "Обработано" : stages.has(true) ? "Согласовано" : "Принято");
+    if (ok) runBulk(pickedList.map((r) => r.id), (id) => acceptRequest(id), new Set(pickedList.map((r) => r.status)).size === 1 ? stageTexts(pickedList[0].status).done : "Обработано");
   };
 
   const renderRow = (r) => (
@@ -117,6 +115,12 @@ const DrillingRequestsPage = () => {
             <div className={styles.rowPlaces}>{r.places.join("; ")}{r.itemsCount > r.places.length ? "…" : ""}</div>
             {r.works?.map((w) => <div key={w} className={styles.rowWorks}>{w}</div>)}
             {r.itemsCount > (r.works?.length || 0) && <div className={styles.rowWorks}>…и ещё строк: {r.itemsCount - r.works.length}</div>}
+            {r.dueDate && (
+              <div className={styles.dueLine}>
+                Срок: до {fmtDue(r.dueDate)}
+                {r.overdue && <span className={styles.overdueBadge}>просрочена</span>}
+              </div>
+            )}
             <div className={styles.rowMeta}>
               {fmtDateTime(r.createdAt)} · {r.initiator} · строк: {r.itemsCount}{r.attachmentsCount > 0 ? ` · 📎 ${r.attachmentsCount}` : ""}{r.round > 1 ? ` · круг ${r.round}` : ""}
             </div>
@@ -164,7 +168,7 @@ const DrillingRequestsPage = () => {
           <div className={styles.bulkBar}>
             <b>Выбрано: {pickedList.length}</b>
             <button className={styles.btnOk} disabled={busy} onClick={acceptPicked}>
-              {pickedList.every((r) => r.status === "engineer") ? "Согласовать выбранные" : pickedList.every((r) => r.status !== "engineer") ? "Принять выбранные" : "Согласовать / принять выбранные"}
+              {bulkWord(pickedList)} выбранные
             </button>
             <button className={styles.btnSmallDanger} disabled={busy} onClick={() => setRejecting(pickedList.map((r) => r.id))}>Отклонить выбранные</button>
             <button className={css.btnGhost} style={{ minHeight: 40, marginRight: 0 }} onClick={() => setPicked(new Set())}>Снять выбор</button>

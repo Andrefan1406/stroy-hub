@@ -26,13 +26,14 @@ const ROLE_OPTIONS = [
   { value: "driver", label: "Водитель" },
   { value: "staff", label: "Сотрудник (без транспорта)" },
   { value: "chief_engineer", label: "Главный инженер" },
-  { value: "prom_alyans", label: "Пром Альянс" },
+  { value: "prom_director", label: "Директор Пром Альянс" },
+  { value: "prom_alyans", label: "Пром Альянс (исполнитель)" },
   { value: "driller", label: "Бурильщик" },
 ];
 
 // Совпадает с серверными правилами (server/rides/usersRouter.js): доступ ко всему сайту у
 // ролей по бурению зашит, телефон обязателен ролям поездок.
-const FIXED_SITE_ACCESS = { staff: true, chief_engineer: true, prom_alyans: true, driller: false };
+const FIXED_SITE_ACCESS = { staff: true, chief_engineer: true, prom_director: true, prom_alyans: true, driller: false };
 const PHONE_REQUIRED_ROLES = ["employee", "dispatcher", "driver"];
 
 // Таблица ролей всегда во всю ширину экрана, без горизонтальной прокрутки (кнопка «Сохранить» и
@@ -286,7 +287,7 @@ function RoleAssignmentTab() {
           <>
             <b style={{ fontSize: "13px" }}>Выбрано: {selectedEmails.length}</b>
             <select style={{ ...s.inputSmall, width: "auto" }} value={bulk.role} onChange={(e) => setBulk({ ...bulk, role: e.target.value })} aria-label="Роль для выбранных">
-              {ROLE_OPTIONS.filter((o) => o.value && o.value !== "chief_engineer").map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {ROLE_OPTIONS.filter((o) => o.value && o.value !== "chief_engineer" && o.value !== "prom_director").map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             {bulk.role === "driller" && (
               <select style={{ ...s.inputSmall, width: "auto" }} value={bulk.companyId} onChange={(e) => setBulk({ ...bulk, companyId: e.target.value })} aria-label="Компания для выбранных">
