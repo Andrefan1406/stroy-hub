@@ -40,19 +40,6 @@ export const markItemDone = (id, itemId, factQuantity, comment = "") =>
 // Сразу несколько строк (все или ни одной): items = [{ itemId, factQuantity, comment }].
 export const markItemsDone = (id, items) => json(`${BASE}/requests/${id}/items-done`, { method: "POST", body: { items } });
 
-// Word отдаётся с токеном, поэтому скачиваем через blob, а не ссылкой.
-export async function downloadDocx(id) {
-  const res = await call(`${BASE}/requests/${id}/docx`);
-  const url = URL.createObjectURL(await res.blob());
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `Наряд-задание-${id}.docx`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-}
-
 // ---------- исполнители (админка; людей назначают ролями на /rides-admin) ----------
 const ADMIN = "/api/admin/drilling";
 export const fetchDrillingAdmin = () => json(ADMIN);
@@ -190,3 +177,19 @@ export async function fetchAttachmentBlob(id, attachmentId) {
   return (await call(`${BASE}/requests/${id}/attachments/${attachmentId}`)).blob();
 }
 export const deleteAttachment = (id, attachmentId) => json(`${BASE}/requests/${id}/attachments/${attachmentId}`, { method: "DELETE" });
+
+
+// Скачать все чертежи и фото заявки (по одному файлу, с токеном — поэтому через blob).
+export async function downloadAttachments(id, attachments) {
+  for (const att of attachments) {
+    const url = URL.createObjectURL(await fetchAttachmentBlob(id, att.id));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = att.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    await new Promise((r) => setTimeout(r, 400)); // браузеры гасят скачивания «пачкой» без паузы
+  }
+}

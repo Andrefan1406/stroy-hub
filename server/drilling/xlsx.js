@@ -2,7 +2,12 @@
 // с теми же фильтрами, что на странице (см. service.registry), и итогами по
 // единицам измерения внизу.
 const ExcelJS = require('exceljs');
-const { fmtDateTime } = require('./docx');
+
+const fmtDateTime = (iso) => {
+  const o = Object.fromEntries(new Intl.DateTimeFormat('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date(iso)).map((p) => [p.type, p.value]));
+  return `${o.day}.${o.month}.${o.year} ${o.hour}:${o.minute}`;
+};
 
 const STATUS = {
   engineer: 'Ждёт согласования главного инженера',

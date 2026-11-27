@@ -1,6 +1,14 @@
 import concreteObjectTaxonomy from './concreteObjectTaxonomy.json';
 
-export const equipmentCategoryOptions = {
+// Пункты выпадающих списков — по алфавиту (числа внутри названий — по величине: «поз.2» перед «поз.10»).
+const collator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base' });
+const sortedList = (list) => [...list].sort(collator.compare);
+// { ключ: [значения] } -> и ключи, и значения по алфавиту
+const sortedMap = (map) => Object.fromEntries(
+  Object.keys(map).sort(collator.compare).map((key) => [key, sortedList(map[key])]),
+);
+
+export const equipmentCategoryOptions = sortedMap({
   "Автобетононасосы": ["Автобетононасос (стрела 37м)", "Автобетононасос (стрела 42м)", "Автобетононасос (стрела 50м)"],
   "Автобетоносмесители": ["Автобетоносмеситель (5м3)", "Автобетоносмеситель (7м3)", "Автобетоносмеситель (10м3)", "Автобетоносмеситель (самоходный 2м3)"],
   "Автокраны": ["Автокран (25т)", "Автокран (30т)", "Автокран (70т)"],
@@ -13,14 +21,14 @@ export const equipmentCategoryOptions = {
   "Спецтехника": ["Автовышка", "Автогрейдер", "Ассенизаторная машина", "Асфальтоукладчик", "Бульдозер", "Дизельная электростанция", "Компрессор", "Поливомоечная машина", "Пробивочная установка (для труб)", "Трактор Белорусь (с щеткой)", "Трактор Белорусь (с прицепом)", "Трактор Белорусь (с отвалом)", "Цементовоз"],
   "Экскаваторы": ["Экскаватор гусеничный (с ковшом)", "Экскаватор гусеничный (с гидромолотом)", "Экскаватор колесный (с ковшом)", "Экскаватор колесный (с гидромолотом)", "Экскаватор (мини)"],
   "Экскаваторы-Погрузчики": ["Экскаватор-Погрузчик (с ковшом)", "Экскаватор-Погрузчик (с гидромолотом)", "Экскаватор-Погрузчик (с буроямом)"],
-};
+});
 
 // Категории/объекты/позиции — общий источник с бэкендом (server/concreteDashboard.js),
 // чтобы фильтры дашборда по бетону классифицировали реальные данные по той же
 // таксономии, что и эта форма заявки. См. concreteObjectTaxonomy.json.
-export const objectCategoryOptions = concreteObjectTaxonomy.objectCategoryOptions;
+export const objectCategoryOptions = sortedMap(concreteObjectTaxonomy.objectCategoryOptions);
 
-export const objectPositionOptions = concreteObjectTaxonomy.objectPositionOptions;
+export const objectPositionOptions = sortedMap(concreteObjectTaxonomy.objectPositionOptions);
   export const positionBlockOptions = {
     'здание АТЦ': ['Блок 1 (14 эт)'],
     'паркинг АТЦ': ['Блок 1 (1 эт)'],

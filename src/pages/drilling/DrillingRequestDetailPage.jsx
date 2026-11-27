@@ -1,6 +1,6 @@
 // Заявка на бурение и резку: статус согласования, строки, журнал всех кругов, действия по
 // роли — согласовать/принять/отклонить (ответственный), править/перезапустить/отменить и
-// отмечать выполнение (автор: по строке или сразу все), скачать Word, распечатать / сохранить в PDF.
+// отмечать выполнение (автор: по строке или сразу все), скачать чертежи, распечатать / сохранить в PDF.
 import React, { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import css from "../../ConcreteRequestPage.module.css";
@@ -10,7 +10,7 @@ import { AttachmentAdder, AttachmentGallery } from "./Attachments";
 import RejectDialog from "./RejectDialog";
 import { useConfirm } from "../../components/ConfirmDialog";
 import {
-  acceptRequest, cancelRequest, downloadDocx, fetchRequest, markItemsDone, rejectRequest, restartRequest,
+  acceptRequest, cancelRequest, downloadAttachments, fetchRequest, markItemsDone, rejectRequest, restartRequest,
   STATUS_LABELS, UNITS, WORK_LABELS, fmtDateTime, fmtNum, positionLabel, sanitizeNumber,
 } from "./drillingApi";
 
@@ -174,7 +174,11 @@ const DrillingRequestDetailPage = () => {
               Отменить заявку
             </button>
           )}
-          {p.download && <button className={css.btnGhost} style={{ marginRight: 0 }} onClick={() => downloadDocx(id).catch((e) => setError(e.message))}>Скачать Word</button>}
+          {req.attachments?.length > 0 && (
+            <button className={css.btnGhost} style={{ marginRight: 0 }} onClick={() => downloadAttachments(id, req.attachments).catch((e) => setError(e.message))}>
+              Скачать чертежи ({req.attachments.length})
+            </button>
+          )}
           <button className={css.btnGhost} style={{ marginRight: 0 }} onClick={() => window.print()} title="Откроется печать: там же можно выбрать «Сохранить как PDF»">
             Печать / PDF
           </button>

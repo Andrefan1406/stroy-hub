@@ -4,7 +4,6 @@
 const express = require('express');
 const { requireUser, requireAdmin, ADMIN_EMAIL } = require('../adminAuth');
 const svc = require('./service');
-const { buildDocx } = require('./docx');
 const { buildRegistryXlsx } = require('./xlsx');
 const { MATERIALS } = require('./validation');
 const taxonomy = require('../../src/data/concreteObjectTaxonomy.json');
@@ -132,20 +131,11 @@ router.delete('/requests/:id/attachments/:aid', wrap((req, res) => {
   res.json(viewOf(req, idOf(req)));
 }));
 
-router.get('/requests/:id/docx', wrap(async (req, res) => {
-  const view = viewOf(req, idOf(req)); // заодно проверка доступа
-  if (!view.permissions.download) return res.status(409).json({ error: 'Документ доступен после принятия заявки в работу' });
-  const buffer = await buildDocx(svc.getDocData(idOf(req)));
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-  res.setHeader('Content-Disposition', `attachment; filename="drilling-request-${view.id}.docx"`);
-  res.send(buffer);
-}));
-
 // ---------- админка ----------
 const adminRouter = express.Router();
 adminRouter.use(requireAdmin);
 
-// Исполнители (название, адресат в шапке Word, линия). Людей по ролям назначает главный
+// Исполнители (название, адресат, линия). Людей по ролям назначает главный
 // админ на /rides-admin (server/rides/usersRouter.js), здесь они только показаны.
 adminRouter.get('/', wrap((req, res) => {
   res.json({ companies: svc.listCompanies() });

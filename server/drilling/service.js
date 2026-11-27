@@ -639,7 +639,7 @@ function registry(email, isAdmin, filters = {}) {
   return { scope, rows, totals, facets, requestsCount: new Set(rows.map((x) => x.requestId)).size };
 }
 
-// ---------- данные для документа Word ----------
+// ---------- данные заявки для карточек и подписей ----------
 
 const STAMP_TYPES = { accepted: 'принята', rejected: 'отклонена', engineer_approved: 'согласована', engineer_rejected: 'отклонена' };
 

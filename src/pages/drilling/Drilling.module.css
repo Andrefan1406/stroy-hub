@@ -99,7 +99,13 @@
 .factComment { width: 100%; min-height: 36px; margin-top: 6px; padding: 4px 8px; border: 1px solid var(--field-border); border-radius: 8px; font: inherit; font-size: 13px; }
 .printOnly { display: none; }
 @media print { .printOnly { display: block; } }
-@media (max-width: 640px) { .rowTop { grid-template-columns: auto minmax(0, 1fr); } .rowTop .badge { grid-column: 2; justify-self: start; } }
+/* телефон: номер рядом с галочкой, состав и статус — на всю ширину карточки, статус переносится по словам */
+@media (max-width: 640px) {
+  .rowTop { grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; }
+  .rowTop .rowNum { grid-column: 2; justify-self: end; }
+  .rowTop .rowMain { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
+  .rowTop .badge { grid-column: 1 / -1; justify-self: start; white-space: normal; max-width: 100%; }
+}
 
 /* чертежи и фото */
 .pickerRow { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -125,8 +131,8 @@
 .rotateBtn { min-width: 40px; min-height: 36px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-size: 18px; cursor: pointer; }
 .rotateBtn:hover { background: #e8ebf0; }
 .thumbRot { transition: transform 0.15s; }
-.viewer { position: fixed; inset: 0; z-index: 400; background: rgba(0, 0, 0, 0.92); display: flex; flex-direction: column; }
-.viewerBar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; color: #fff; }
+.viewer { position: fixed; inset: 0; height: 100dvh; z-index: 400; background: rgba(0, 0, 0, 0.92); display: flex; flex-direction: column; }
+.viewerBar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: max(10px, env(safe-area-inset-top)) 12px 10px; color: #fff; }
 .viewerName { flex: 1; min-width: 120px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .viewerBtn { min-height: 44px; min-width: 44px; padding: 0 14px; border: 1px solid #fff; border-radius: 10px; background: transparent; color: #fff; font: inherit; font-size: 16px; cursor: pointer; }
 .viewerStage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 8px; }

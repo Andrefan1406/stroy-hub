@@ -16,7 +16,6 @@ initSchema();
 rides.initSchema();
 const svc = require('../service');
 const { parseNumber, validateItems } = require('../validation');
-const { buildDocx } = require('../docx');
 svc.seedDefaults();
 
 const OWN = 1; // Пром Альянс (линия 1)
@@ -224,36 +223,14 @@ test('отмена и доступ: чужой не видит, главный �
   fails(() => svc.cancelRequest(id2, 'init@x.kz'), /нельзя отменить/);
 });
 
-test('Word: адресат, подписи из карточек, таблица и колонтитул с отметками текущего круга', async () => {
+test('скачивание: доступно после принятия заявки, ответственным и главному инженеру', () => {
   const id = approved();
   svc.respond(id, 'a1@x.kz', 'reject', 'нет бригады');
   svc.respond(id, 's1@x.kz', 'accept');
   assert.equal(view(id).permissions.download, true);
   assert.equal(view(id, 'a1@x.kz').permissions.download, true, 'ответственный тоже скачивает');
   assert.equal(view(id, 'chief@x.kz').permissions.download, true);
-  const JSZip = require('jszip');
-  const zip = await JSZip.loadAsync(await buildDocx(svc.getDocData(id)));
-  const doc = await zip.file('word/document.xml').async('string');
-  const footerName = Object.keys(zip.files).find((n) => /word\/footer\d*\.xml/.test(n));
-  const footer = await zip.file(footerName).async('string');
-  const text = (x) => x.replace(/<[^>]+>/g, ' ').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-  assert.match(text(doc), /Директору ТОО "Жеңіс групп"/);
-  assert.match(text(doc), /Наряд задание/);
-  assert.match(text(doc), /Макажанов Е\.С\./);
-  assert.match(text(doc), /Начальник строительного участка/);
-  assert.match(text(doc), /Титаренко В\.С\./, 'подпись «Согласовано» — из карточки главного инженера');
-  assert.match(text(doc), /Ø 100 мм/);
-  assert.match(text(doc), /толщина 20,5 см/);
-  assert.match(text(doc), /11,5 м\.п\./);
-  const lines = text(footer).replace(/\s+/g, ' ');
-  assert.match(lines, /Создана: \d\d\.\d\d\.\d{4} \d\d:\d\d/);
-  assert.match(lines, /Главный инженер — согласована/);
-  assert.match(lines, /Пром Альянс — отклонена/);
-  assert.match(lines, /Жеңіс групп — принята/);
-  assert.ok(lines.indexOf('Создана') < lines.indexOf('Главный инженер') && lines.indexOf('Главный инженер') < lines.indexOf('Пром Альянс'));
-
-  const id2 = make([drill]);
-  assert.equal(view(id2).permissions.download, false, 'до принятия нельзя');
+  assert.equal(view(make([drill])).permissions.download, false, 'до принятия нельзя');
 });
 
 test('счётчик: список заявок, требующих действия, по ролям', () => {
